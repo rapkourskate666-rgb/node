@@ -5,14 +5,19 @@
 #ifndef V8_OBJECTS_TAGGED_FIELD_H_
 #define V8_OBJECTS_TAGGED_FIELD_H_
 
+#include "include/v8config.h"
 #include "src/base/atomicops.h"
 #include "src/base/macros.h"
 #include "src/base/template-meta-programming/functional.h"
 #include "src/common/globals.h"
 #include "src/common/ptr-compr.h"
+#include "src/objects/bit-field-group.h"
 #include "src/objects/tagged-value.h"
+#include "src/utils/boxed-float.h"
 
 namespace v8::internal {
+
+class AllocationWitness;
 
 // TaggedMember<T> represents an potentially compressed V8 tagged pointer, which
 // is intended to be used as a member of a V8 object class.
@@ -21,6 +26,10 @@ namespace v8::internal {
 template <typename T, typename CompressionScheme = V8HeapCompressionScheme>
 class TaggedMember;
 
+// A `TaggedMember` whose host lives in trusted space and whose value is
+// another trusted object. These slots are always integrity-protected and
+// require the dedicated `WriteBarrier::ForProtectedPointer` to record
+// TRUSTED_TO_SHARED_TRUSTED remembered-set entries.
 template <typename T>
 using ProtectedTaggedMember = TaggedMember<T, TrustedSpaceCompressionScheme>;
 
@@ -30,38 +39,50 @@ using ProtectedTaggedMember = TaggedMember<T, TrustedSpaceCompressionScheme>;
 using TaggedMemberBase = TaggedImpl<HeapObjectReferenceType::WEAK, Tagged_t>;
 
 template <typename T, typename CompressionScheme>
-class TaggedMember : public TaggedMemberBase {
+class V8_GSL_POINTER TaggedMember : public TaggedMemberBase {
  public:
   constexpr TaggedMember() = default;
+  inline explicit TaggedMember(Tagged<Smi> value);
+  inline TaggedMember(Tagged<Smi> value, RelaxedStoreTag);
+  inline explicit TaggedMember(Tagged<ClearedWeakValue> value);
+  template <typename U>
+  inline explicit TaggedMember(Tagged<ReadOnly<U>> value)
+    requires(is_subtype_v<ReadOnly<U>, T>);
+  template <typename U>
+  inline TaggedMember(Tagged<ReadOnly<U>> value, RelaxedStoreTag)
+    requires(is_subtype_v<ReadOnly<U>, T>);
+  inline TaggedMember(const AllocationWitness& witness, Tagged<T> value);
+  inline TaggedMember(const AllocationWitness& witness, Tagged<T> value,
+                      RelaxedStoreTag);
 
   inline Tagged<T> load() const;
-  inline void store(HeapObjectLayout* host, Tagged<T> value,
+  inline void store(HeapObject* host, Tagged<T> value,
                     WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
   inline void store_no_write_barrier(Tagged<T> value);
 
   inline Tagged<T> Relaxed_Load() const;
-  inline void Relaxed_Store(HeapObjectLayout* host, Tagged<T> value,
+  inline void Relaxed_Store(HeapObject* host, Tagged<T> value,
                             WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
   inline void Relaxed_Store_no_write_barrier(Tagged<T> value);
 
   inline Tagged<T> Acquire_Load() const;
-  inline void Release_Store(HeapObjectLayout* host, Tagged<T> value,
+  inline void Release_Store(HeapObject* host, Tagged<T> value,
                             WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
   inline void Release_Store_no_write_barrier(Tagged<T> value);
 
   inline Tagged<T> SeqCst_Load() const;
-  inline void SeqCst_Store(HeapObjectLayout* host, Tagged<T> value,
+  inline void SeqCst_Store(HeapObject* host, Tagged<T> value,
                            WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
   inline void SeqCst_Store_no_write_barrier(Tagged<T> value);
 
-  inline Tagged<T> SeqCst_Swap(HeapObjectLayout* host, Tagged<T> value,
+  inline Tagged<T> SeqCst_Swap(HeapObject* host, Tagged<T> value,
                                WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
   inline Tagged<T> SeqCst_CompareAndSwap(
-      HeapObjectLayout* host, Tagged<T> expected_value, Tagged<T> value,
+      HeapObject* host, Tagged<T> expected_value, Tagged<T> value,
       WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
  private:
-  inline void WriteBarrier(HeapObjectLayout* host, Tagged<T> value,
+  inline void WriteBarrier(HeapObject* host, Tagged<T> value,
                            WriteBarrierMode mode);
   static inline Address tagged_to_full(Tagged_t tagged_value);
   static inline Tagged_t full_to_tagged(Address value);
@@ -70,31 +91,102 @@ class TaggedMember : public TaggedMemberBase {
 static_assert(alignof(TaggedMember<Object>) == alignof(Tagged_t));
 static_assert(sizeof(TaggedMember<Object>) == sizeof(Tagged_t));
 
+// Stores a BitFieldGroup<Group, uint32_t> as a Smi. The bits must fit in
+// 31 bits. Torque uses SmiTagged<GroupName>, where GroupName extends uint31.
+template <typename Group>
+class SmiBitFieldMember : private TaggedMember<Smi> {
+ public:
+  static_assert(std::is_base_of_v<BitFieldGroup<Group, uint32_t>, Group>);
+
+  constexpr SmiBitFieldMember() = default;
+
+  inline Group load() const;
+  inline void store(Group value);
+
+  inline Group Relaxed_Load() const;
+  inline void Relaxed_Store(Group value);
+
+  // Used by heap verification.
+  using TaggedMember<Smi>::IsSmi;
+};
+
 template <typename T>
 class UnalignedValueMember {
  public:
   UnalignedValueMember() = default;
+  explicit UnalignedValueMember(T value) { set_value(value); }
 
   T value() const { return base::ReadUnalignedValue<T>(storage_); }
   void set_value(T value) { base::WriteUnalignedValue(storage_, value); }
+
+  const T* address() const {
+    // Only safe to call when the storage was aligned after all by careful
+    // heap allocation.
+    DCHECK_EQ(reinterpret_cast<Address>(storage_) % alignof(T), 0);
+    return reinterpret_cast<const T*>(storage_);
+  }
+  T* address() {
+    // Only safe to call when the storage was aligned after all by careful
+    // heap allocation.
+    DCHECK_EQ(reinterpret_cast<Address>(storage_) % alignof(T), 0);
+    return reinterpret_cast<T*>(storage_);
+  }
 
  protected:
   alignas(alignof(Tagged_t)) char storage_[sizeof(T)];
 };
 
-class UnalignedDoubleMember : public UnalignedValueMember<double> {
+class UnalignedDoubleMember : public UnalignedValueMember<Float64> {
  public:
   UnalignedDoubleMember() = default;
+  explicit UnalignedDoubleMember(Float64 value)
+      : UnalignedValueMember<Float64>(value) {}
+  explicit UnalignedDoubleMember(double value)
+      : UnalignedValueMember<Float64>(Float64::FromMaybeNaN(value)) {}
 
+  double value() const {
+    return UnalignedValueMember<Float64>::value().get_scalar();
+  }
+  void set_value(double value) {
+    UnalignedValueMember<Float64>::set_value(Float64::FromMaybeNaN(value));
+  }
   uint64_t value_as_bits() const {
-    return base::ReadUnalignedValue<uint64_t>(storage_);
+    return UnalignedValueMember<Float64>::value().get_bits();
   }
   void set_value_as_bits(uint64_t value) {
-    base::WriteUnalignedValue(storage_, value);
+    UnalignedValueMember<Float64>::set_value(Float64::FromBits(value));
   }
 };
 static_assert(alignof(UnalignedDoubleMember) == alignof(Tagged_t));
 static_assert(sizeof(UnalignedDoubleMember) == sizeof(double));
+
+// JSDispatchHandleMember stores a 32-bit JSDispatchHandle as a member of a
+// HeapObject subclass. Explicit padding must be added to the containing
+// class on builds with kTaggedSize == 8.
+//
+// Use HeapObject::AllocateAndInstallJSDispatchHandle() to install the handle.
+class JSDispatchHandleMember {
+ public:
+  constexpr JSDispatchHandleMember() = default;
+
+  JSDispatchHandleMember(const JSDispatchHandleMember&) = delete;
+  JSDispatchHandleMember& operator=(const JSDispatchHandleMember&) = delete;
+
+  inline JSDispatchHandle Relaxed_Load() const;
+  inline JSDispatchHandle Acquire_Load() const;
+
+  // Resets the handle to kNullJSDispatchHandle. No write barrier (matches the
+  // semantics of clearing a dispatch handle on a dying object).
+  inline void Relaxed_Clear();
+
+  // Stores a new handle and emits the JSDispatchHandle write barrier.
+  inline void Release_Store(HeapObject* host, JSDispatchHandle handle,
+                            WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+
+ private:
+  std::atomic<uint32_t> storage_{0};
+};
+static_assert(sizeof(JSDispatchHandleMember) == sizeof(uint32_t));
 
 // FLEXIBLE_ARRAY_MEMBER(T, name) represents a marker for a variable-sized
 // suffix of members for a type.
@@ -118,17 +210,20 @@ static_assert(sizeof(UnalignedDoubleMember) == sizeof(double));
 // only used on classes with a FAM) on clang.
 // Return the zero length array by reference, to avoid array-to-pointer decay
 // which can lose aliasing information.
-#define FLEXIBLE_ARRAY_MEMBER(Type, name)                                  \
+// Place V8_TQ_* annotations before the member. After the [0] declarator, an
+// attribute would apply to the type instead.
+#define FLEXIBLE_ARRAY_MEMBER(Type, name, ...)                             \
   using FlexibleDataReturnType = Type[0];                                  \
   FlexibleDataReturnType& name() { return flexible_array_member_data_; }   \
   const FlexibleDataReturnType& name() const {                             \
     return flexible_array_member_data_;                                    \
   }                                                                        \
-  Type flexible_array_member_data_[0];                                     \
+  V8_TQ_FIELD_MARK("V8_TQ_NAME(" #name ")")                                \
+  __VA_ARGS__ Type flexible_array_member_data_[0];                         \
                                                                            \
  public:                                                                   \
   template <typename Class>                                                \
-  static constexpr auto OffsetOfDataStart() {                              \
+  static constexpr int OffsetOfDataStart() {                               \
     /* Produce a compiler error if {Class} is not this class */            \
     static_assert(base::tmp::lazy_true<                                    \
                   decltype(std::declval<Class>()                           \
@@ -173,30 +268,21 @@ class TaggedField : public AllStatic {
   static inline Address address(Tagged<HeapObject> host, int offset = 0);
 
   static inline PtrType load(Tagged<HeapObject> host, int offset = 0);
-  static inline PtrType load(PtrComprCageBase cage_base,
-                             Tagged<HeapObject> host, int offset = 0);
 
   static inline void store(Tagged<HeapObject> host, PtrType value);
   static inline void store(Tagged<HeapObject> host, int offset, PtrType value);
 
   static inline PtrType Relaxed_Load(Tagged<HeapObject> host, int offset = 0);
-  static inline PtrType Relaxed_Load(PtrComprCageBase cage_base,
-                                     Tagged<HeapObject> host, int offset = 0);
 
   static inline void Relaxed_Store(Tagged<HeapObject> host, PtrType value);
   static inline void Relaxed_Store(Tagged<HeapObject> host, int offset,
                                    PtrType value);
 
   static inline PtrType Acquire_Load(Tagged<HeapObject> host, int offset = 0);
-  static inline PtrType Acquire_Load_No_Unpack(PtrComprCageBase cage_base,
-                                               Tagged<HeapObject> host,
+  static inline PtrType Acquire_Load_No_Unpack(Tagged<HeapObject> host,
                                                int offset = 0);
-  static inline PtrType Acquire_Load(PtrComprCageBase cage_base,
-                                     Tagged<HeapObject> host, int offset = 0);
 
   static inline PtrType SeqCst_Load(Tagged<HeapObject> host, int offset = 0);
-  static inline PtrType SeqCst_Load(PtrComprCageBase cage_base,
-                                    Tagged<HeapObject> host, int offset = 0);
 
   static inline void Release_Store(Tagged<HeapObject> host, PtrType value);
   static inline void Release_Store(Tagged<HeapObject> host, int offset,
@@ -207,9 +293,6 @@ class TaggedField : public AllStatic {
                                   PtrType value);
 
   static inline PtrType SeqCst_Swap(Tagged<HeapObject> host, int offset,
-                                    PtrType value);
-  static inline PtrType SeqCst_Swap(PtrComprCageBase cage_base,
-                                    Tagged<HeapObject> host, int offset,
                                     PtrType value);
 
   static inline Tagged_t Release_CompareAndSwap(Tagged<HeapObject> host,
@@ -222,8 +305,7 @@ class TaggedField : public AllStatic {
 
   // Note: Use these *_Map_Word methods only when loading a MapWord from a
   // MapField.
-  static inline PtrType Relaxed_Load_Map_Word(PtrComprCageBase cage_base,
-                                              Tagged<HeapObject> host);
+  static inline PtrType Relaxed_Load_Map_Word(Tagged<HeapObject> host);
   static inline void Relaxed_Store_Map_Word(Tagged<HeapObject> host,
                                             PtrType value);
   static inline void Release_Store_Map_Word(Tagged<HeapObject> host,
@@ -232,9 +314,7 @@ class TaggedField : public AllStatic {
  private:
   static inline Tagged_t* location(Tagged<HeapObject> host, int offset = 0);
 
-  template <typename TOnHeapAddress>
-  static inline Address tagged_to_full(TOnHeapAddress on_heap_addr,
-                                       Tagged_t tagged_value);
+  static inline Address tagged_to_full(Tagged_t tagged_value);
 
   static inline Tagged_t full_to_tagged(Address value);
 };

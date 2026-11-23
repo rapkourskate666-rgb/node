@@ -11,7 +11,7 @@
 //   NameConverter converter;
 //   Disassembler d(converter);
 //   for (uint8_t* pc = begin; pc < end;) {
-//     v8::base::EmbeddedVector<char, 256> buffer;
+//     std::array<char, 256> buffer;
 //     uint8_t* prev_pc = pc;
 //     pc += d.InstructionDecode(buffer, pc);
 //     printf("%p    %08x      %s\n",
@@ -28,6 +28,8 @@
 #include <string.h>
 
 #if V8_TARGET_ARCH_PPC64
+
+#include <array>
 
 #include "src/base/platform/platform.h"
 #include "src/base/strings.h"
@@ -271,6 +273,15 @@ int Decoder::FormatOption(Instruction* instr, const char* format) {
       return FormatRegister(instr, format);
     }
     case 'D': {
+      if (format[1] == 'i') {
+        int d0 = instr->Bits(15, 6);
+        int d1 = instr->Bits(20, 16);
+        int d2 = instr->Bit(0);
+        int16_t imm_value = static_cast<int16_t>((d0 << 6) | (d1 << 1) | d2);
+        out_buffer_pos_ +=
+            base::SNPrintF(out_buffer_ + out_buffer_pos_, "%hd", imm_value);
+        return 2;
+      }
       return FormatFPRegister(instr, format);
     }
     case 'X': {
@@ -645,6 +656,12 @@ void Decoder::DecodeExt0(Instruction* instr) {
 }
 
 void Decoder::DecodeExt1(Instruction* instr) {
+  switch (EXT1 | (instr->BitField(5, 1))) {
+    case ADDPCIS: {
+      Format(instr, "addpcis 'rt, 'Di");
+      return;
+    }
+  }
   switch (EXT1 | (instr->BitField(10, 1))) {
     case MCRF: {
       UnknownFormat(instr, "mcrf");  // not used by V8
@@ -1906,7 +1923,7 @@ namespace disasm {
 
 const char* NameConverter::NameOfAddress(uint8_t* addr) const {
   v8::base::SNPrintF(tmp_buffer_, "%p", static_cast<void*>(addr));
-  return tmp_buffer_.begin();
+  return tmp_buffer_.data();
 }
 
 const char* NameConverter::NameOfConstant(uint8_t* addr) const {
@@ -1947,12 +1964,12 @@ void Disassembler::Disassemble(FILE* f, uint8_t* begin, uint8_t* end,
   NameConverter converter;
   Disassembler d(converter, unimplemented_action);
   for (uint8_t* pc = begin; pc < end;) {
-    v8::base::EmbeddedVector<char, 128> buffer;
+    std::array<char, 128> buffer;
     buffer[0] = '\0';
     uint8_t* prev_pc = pc;
     pc += d.InstructionDecode(buffer, pc);
     v8::internal::PrintF(f, "%p    %08x      %s\n", static_cast<void*>(prev_pc),
-                         *reinterpret_cast<int32_t*>(prev_pc), buffer.begin());
+                         *reinterpret_cast<int32_t*>(prev_pc), buffer.data());
   }
 }
 

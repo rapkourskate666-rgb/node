@@ -10,7 +10,6 @@
 #include <limits.h>
 #include <pthread.h>
 
-#include "src/base/fpu.h"
 #include "src/base/logging.h"
 #if defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <pthread_np.h>  // for pthread_set_name_np
@@ -401,7 +400,7 @@ void* OS::GetRandomMmapAddr() {
   // fulfilling our placement request.
   raw_addr &= uint64_t{0x3FFFFFFFF000};
 #elif V8_TARGET_ARCH_ARM64
-#if defined(V8_TARGET_OS_LINUX) || defined(V8_TARGET_OS_ANDROID)
+#if defined(V8_OS_LINUX) || defined(V8_OS_ANDROID)
   // On Linux, the default virtual address space is limited to 39 bits when
   // using 4KB pages, see arch/arm64/Kconfig. We truncate to 38 bits.
   raw_addr &= uint64_t{0x3FFFFFF000};
@@ -510,7 +509,7 @@ void* OS::Allocate(void* hint, size_t size, size_t alignment,
 
   if (aligned_base != base && handle.has_value()) {
     // We have to remap because the base of mapping must correspond to the base
-    // of the the underlying file.
+    // of the underlying file.
     uint8_t* new_base = reinterpret_cast<uint8_t*>(base::Allocate(
         aligned_base, size, access, page_type, handle, true /* fixed */));
     if (new_base != aligned_base) {
@@ -942,7 +941,7 @@ int OS::GetCurrentThreadIdInternal() {
 #elif V8_OS_SOLARIS
   return static_cast<int>(pthread_self());
 #elif V8_OS_ZOS
-  return gettid();
+  return __tcbtid();
 #else
   return static_cast<int>(reinterpret_cast<intptr_t>(pthread_self()));
 #endif
@@ -1101,8 +1100,7 @@ void OS::VPrintError(const char* format, va_list args) {
 #endif
 }
 
-
-int OS::SNPrintF(char* str, int length, const char* format, ...) {
+int OS::SNPrintF(char* str, size_t length, const char* format, ...) {
   va_list args;
   va_start(args, format);
   int result = VSNPrintF(str, length, format, args);
@@ -1110,28 +1108,24 @@ int OS::SNPrintF(char* str, int length, const char* format, ...) {
   return result;
 }
 
-
-int OS::VSNPrintF(char* str,
-                  int length,
-                  const char* format,
-                  va_list args) {
+int OS::VSNPrintF(char* str, size_t length, const char* format, va_list args) {
   int n = vsnprintf(str, length, format, args);
-  if (n < 0 || n >= length) {
+  if (n < 0 || static_cast<size_t>(n) >= length) {
     // If the length is zero, the assignment fails.
-    if (length > 0)
+    if (length > 0) {
       str[length - 1] = '\0';
+    }
     return -1;
   } else {
     return n;
   }
 }
 
-
 // ----------------------------------------------------------------------------
 // POSIX string support.
 //
 
-void OS::StrNCpy(char* dest, int length, const char* src, size_t n) {
+void OS::StrNCpy(char* dest, size_t length, const char* src, size_t n) {
   strncpy(dest, src, n);
 }
 
@@ -1276,9 +1270,7 @@ static void SetThreadName(const char* name) {
 }
 
 static void* ThreadEntry(void* arg) {
-  // Reset denormals state to default, in case we picked up a non-default one
-  // with the posix clone() call.
-  base::FPU::SetFlushDenormals(false);
+  Stack::SetCurrentThreadStackStart();
 
   Thread* thread = reinterpret_cast<Thread*>(arg);
   // We take the lock here to make sure that pthread_create finished first since
@@ -1497,8 +1489,49 @@ Stack::StackSlot Stack::ObtainCurrentThreadStackStart() {
 #endif  // V8_OS_ZOS
 }
 
+// static
+Stack::StackSlot Stack::ObtainCurrentThreadStackReservedLimit() {
+#if V8_OS_ZOS
+  return nullptr;
+#elif V8_OS_OPENBSD
+  stack_t stack;
+  int error = pthread_stackseg_np(pthread_self(), &stack);
+  if (error) {
+    DCHECK(MainThreadIsCurrentThread());
+    return nullptr;
+  }
+  return stack.ss_sp;
+#else
+// For most libcs, pthread_getattr_np() returns the the stack reserved
+// limit on the main thread, but musl only returns the current high-water
+// mark at the time of the call. There's no macro to detect musl, so
+// let the caller do a fallback in cases where the libc is not one that
+// is known to work.
+#if V8_OS_LINUX && !V8_LIBC_GLIBC && !V8_LIBC_BIONIC && !V8_LIBC_UCLIBC
+  if (syscall(__NR_gettid) == getpid()) return nullptr;
+#endif
+  pthread_attr_t attr;
+  int error = pthread_getattr_np(pthread_self(), &attr);
+  if (error) {
+    DCHECK(MainThreadIsCurrentThread());
+    return nullptr;
+  }
+  void* base;
+  size_t size;
+  error = pthread_attr_getstack(&attr, &base, &size);
+  CHECK(!error);
+  pthread_attr_destroy(&attr);
+  return base;
+#endif  // V8_OS_ZOS
+}
+
 #endif  // !defined(V8_OS_FREEBSD) && !defined(V8_OS_DARWIN) &&
         // !defined(_AIX) && !defined(V8_OS_SOLARIS)
+
+
+
+// static
+void Stack::SetCurrentThreadStackBounds(uintptr_t, uintptr_t) { UNREACHABLE(); }
 
 // static
 Stack::StackSlot Stack::GetCurrentStackPosition() {

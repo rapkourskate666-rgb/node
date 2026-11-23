@@ -4,6 +4,7 @@
 const common = require('../common');
 const assert = require('assert');
 const { pipeTo, pipeToSync, from, fromSync } = require('stream/iter');
+const { setTimeout } = require('timers/promises');
 
 async function testPipeToSync() {
   const written = [];
@@ -71,6 +72,7 @@ async function testPipeToSyncSourceError() {
   let failCalled = false;
   const writer = {
     writeSync() { return true; },
+    endSync: common.mustNotCall(),
     fail(reason) { failCalled = true; },
   };
   function* failingSource() {
@@ -93,7 +95,7 @@ async function testPipeToWithSignal() {
   };
   async function* slowSource() {
     yield [new TextEncoder().encode('a')];
-    await new Promise((r) => setTimeout(r, 50));
+    await setTimeout(50);
     yield [new TextEncoder().encode('b')];
   }
   ac.abort();
@@ -127,6 +129,7 @@ async function testPipeToSyncWithTransforms() {
   const chunks = [];
   const writer = {
     writeSync(chunk) { chunks.push(new TextDecoder().decode(chunk)); return true; },
+    endSync() { return 0; },
   };
   const upper = (batch) => {
     if (batch === null) return null;
@@ -160,6 +163,7 @@ async function testPipeToSyncWriterTransformMethodIgnored() {
       chunks.push(new TextDecoder().decode(chunk));
       return true;
     },
+    endSync() { return 0; },
   };
 
   pipeToSync(fromSync('hello'), writer);
@@ -240,11 +244,11 @@ async function testPipeToSyncMinimalWriter() {
     },
   };
 
-  pipeToSync(fromSync('minimal-sync'), minimalWriter);
+  pipeToSync(fromSync('minimal-sync'), minimalWriter, { preventClose: true });
   assert.strictEqual(chunks.length > 0, true);
 }
 
-async function testPipeToSyncIterableFastPathWritesIncrementally() {
+async function testPipeToSyncIterableUsesFromBatching() {
   let pulled = 0;
   let firstWritePulled = 0;
   const chunks = [];
@@ -267,7 +271,7 @@ async function testPipeToSyncIterableFastPathWritesIncrementally() {
 
   const totalBytes = await pipeTo(source(), writer);
   assert.strictEqual(totalBytes, 3);
-  assert.strictEqual(firstWritePulled, 1);
+  assert.strictEqual(firstWritePulled, 3);
   assert.deepStrictEqual(chunks, [
     new Uint8Array([0x61]),
     new Uint8Array([0x62]),
@@ -275,7 +279,31 @@ async function testPipeToSyncIterableFastPathWritesIncrementally() {
   ]);
 }
 
-async function testPipeToSyncIterableFastPathWriteFallback() {
+async function testPipeToSourceNormalizationIndependentOfWriter() {
+  function source() {
+    return {
+      *[Symbol.iterator]() {
+        yield {
+          async *[Symbol.asyncIterator]() {
+            yield 'nested';
+          },
+        };
+      },
+    };
+  }
+
+  for (const hasWriteSync of [false, true]) {
+    const writer = { write: common.mustNotCall() };
+    if (hasWriteSync) writer.writeSync = common.mustNotCall();
+
+    await assert.rejects(
+      pipeTo(source(), writer, { preventClose: true, preventFail: true }),
+      { code: 'ERR_INVALID_ARG_TYPE' },
+    );
+  }
+}
+
+async function testPipeToSyncIterableWriteFallback() {
   const asyncWrites = [];
   const writer = {
     writeSync(chunk) {
@@ -296,7 +324,7 @@ async function testPipeToSyncIterableFastPathWriteFallback() {
   assert.deepStrictEqual(asyncWrites, [new Uint8Array([0x62])]);
 }
 
-async function testPipeToSyncIterableFastPathAsyncValue() {
+async function testPipeToSyncIterableAsyncValue() {
   const chunks = [];
   const writer = {
     write: common.mustNotCall(),
@@ -317,6 +345,109 @@ async function testPipeToSyncIterableFastPathAsyncValue() {
   assert.strictEqual(result, 'ab');
 }
 
+// pipeTo() reads sync iterables synchronously when it can. An error writing
+// a batch must still close the source, ignoring an error closing it, and an
+// error reading the source must not close it.
+async function testPipeToSyncIterableWriteError() {
+  for (const returnThrows of [false, true]) {
+    const error = new Error('write');
+    let closed = false;
+    const source = {
+      [Symbol.iterator]() {
+        let i = 0;
+        return {
+          next() {
+            return { done: false, value: [new Uint8Array([i++])] };
+          },
+          return() {
+            closed = true;
+            if (returnThrows) throw new Error('return');
+            return { done: true };
+          },
+        };
+      },
+    };
+    await assert.rejects(pipeTo(source, {
+      write: common.mustNotCall(),
+      writeSync: common.mustCall(() => { throw error; }),
+      fail: common.mustCall((reason) => assert.strictEqual(reason, error)),
+    }), error);
+    assert.strictEqual(closed, true);
+  }
+
+  const error = new Error('source');
+  const source = {
+    [Symbol.iterator]() {
+      return {
+        next() { throw error; },
+        return: common.mustNotCall(),
+      };
+    },
+  };
+  await assert.rejects(pipeTo(source, {
+    write: common.mustNotCall(),
+    writeSync: common.mustNotCall(),
+    fail: common.mustCall((reason) => assert.strictEqual(reason, error)),
+  }), error);
+}
+
+// pipeTo() reads async iterables without waiting for a cancellation, since
+// nothing cancels them while a read is pending. An error writing a batch
+// must still close the source, ignoring an error closing it, an error
+// reading the source must not close it, and the source's results are still
+// checked.
+async function testPipeToAsyncIterableErrors() {
+  for (const returnRejects of [false, true]) {
+    const error = new Error('write');
+    let closed = false;
+    const source = {
+      [Symbol.asyncIterator]() {
+        let i = 0;
+        return {
+          async next() {
+            return { done: false, value: [new Uint8Array([i++])] };
+          },
+          async return() {
+            closed = true;
+            if (returnRejects) throw new Error('return');
+            return { done: true };
+          },
+        };
+      },
+    };
+    await assert.rejects(pipeTo(source, {
+      write: common.mustNotCall(),
+      writeSync: common.mustCall(() => { throw error; }),
+      fail: common.mustCall((reason) => assert.strictEqual(reason, error)),
+    }), error);
+    assert.strictEqual(closed, true);
+  }
+
+  const error = new Error('source');
+  await assert.rejects(pipeTo({
+    [Symbol.asyncIterator]() {
+      return {
+        next() { return Promise.reject(error); },
+        return: common.mustNotCall(),
+      };
+    },
+  }, {
+    write: common.mustNotCall(),
+    writeSync: common.mustNotCall(),
+    fail: common.mustCall((reason) => assert.strictEqual(reason, error)),
+  }), error);
+
+  await assert.rejects(pipeTo({
+    [Symbol.asyncIterator]() {
+      return { next: async () => 42 };
+    },
+  }, {
+    write: common.mustNotCall(),
+    writeSync: common.mustNotCall(),
+    fail: common.mustCall(),
+  }), { code: 'ERR_INVALID_RETURN_VALUE' });
+}
+
 Promise.all([
   testPipeToSync(),
   testPipeTo(),
@@ -334,7 +465,10 @@ Promise.all([
   testPipeToSyncPreventClose(),
   testPipeToMinimalWriter(),
   testPipeToSyncMinimalWriter(),
-  testPipeToSyncIterableFastPathWritesIncrementally(),
-  testPipeToSyncIterableFastPathWriteFallback(),
-  testPipeToSyncIterableFastPathAsyncValue(),
+  testPipeToSyncIterableUsesFromBatching(),
+  testPipeToSyncIterableWriteFallback(),
+  testPipeToSyncIterableAsyncValue(),
+  testPipeToSyncIterableWriteError(),
+  testPipeToAsyncIterableErrors(),
+  testPipeToSourceNormalizationIndependentOfWriter(),
 ]).then(common.mustCall());

@@ -22,21 +22,12 @@
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
-namespace U_ICU_NAMESPACE {
-class PluralRules;
-namespace number {
-class LocalizedNumberFormatter;
-class LocalizedNumberRangeFormatter;
-}  // namespace number
-}  // namespace U_ICU_NAMESPACE
-
 namespace v8 {
 namespace internal {
 
-#include "torque-generated/src/objects/js-plural-rules-tq.inc"
+class PluralRulesInternal;
 
-class JSPluralRules
-    : public TorqueGeneratedJSPluralRules<JSPluralRules, JSObject> {
+V8_OBJECT class JSPluralRules : public JSObject {
  public:
   V8_WARN_UNUSED_RESULT static MaybeDirectHandle<JSPluralRules> New(
       Isolate* isolate, DirectHandle<Map> map, DirectHandle<Object> locales,
@@ -64,19 +55,34 @@ class JSPluralRules
   Handle<String> TypeAsString(Isolate* isolate) const;
 
   DECL_PRINTER(JSPluralRules)
-
   // Bit positions in |flags|.
-  DEFINE_TORQUE_GENERATED_JS_PLURAL_RULES_FLAGS()
+  using TypeBit = base::BitField<JSPluralRules::Type, 0, 1, uint32_t>;
 
   static_assert(TypeBit::is_valid(Type::CARDINAL));
   static_assert(TypeBit::is_valid(Type::ORDINAL));
 
-  DECL_ACCESSORS(icu_plural_rules, Tagged<Managed<icu::PluralRules>>)
-  DECL_ACCESSORS(icu_number_formatter,
-                 Tagged<Managed<icu::number::LocalizedNumberFormatter>>)
+  inline Tagged<String> locale() const;
+  inline void set_locale(Tagged<String> value,
+                         WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
-  TQ_OBJECT_CONSTRUCTORS(JSPluralRules)
-};
+  inline int flags() const;
+  inline void set_flags(int value);
+
+  inline Tagged<CppGCManaged<PluralRulesInternal>> internal() const;
+  inline void set_internal(Tagged<CppGCManaged<PluralRulesInternal>> value,
+                           WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+
+  DECL_VERIFIER(JSPluralRules)
+
+  static const int kHeaderSize;
+
+ public:
+  TaggedMember<String> locale_;
+  TaggedMember<Smi> flags_ V8_TQ_TYPE(SmiTagged<JSPluralRulesFlags>);
+  TaggedMember<CppGCManaged<PluralRulesInternal>> internal_;
+} V8_OBJECT_END;
+
+inline constexpr int JSPluralRules::kHeaderSize = sizeof(JSPluralRules);
 
 }  // namespace internal
 }  // namespace v8

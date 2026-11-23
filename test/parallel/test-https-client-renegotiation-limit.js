@@ -20,12 +20,14 @@
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 'use strict';
+
 const common = require('../common');
+const { isBoringSSL } = require('../common/crypto');
 if (!common.hasCrypto) {
   common.skip('missing crypto');
 }
 
-if (process.features.openssl_is_boringssl) {
+if (isBoringSSL) {
   require('../common/boringssl').testRenegotiationUnsupported();
   return;
 }
@@ -55,6 +57,7 @@ function test(next) {
   const options = {
     cert: fixtures.readKey('rsa_cert.crt'),
     key: fixtures.readKey('rsa_private.pem'),
+    allowRenegotiation: true,
   };
 
   const server = https.createServer(options, common.mustCallAtLeast((req, res) => {
@@ -77,6 +80,7 @@ function test(next) {
 
     const options = {
       rejectUnauthorized: false,
+      allowRenegotiation: true,
       agent,
     };
 

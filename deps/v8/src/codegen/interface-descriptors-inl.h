@@ -331,33 +331,32 @@ constexpr RegList WriteBarrierDescriptor::ComputeSavedRegisters(
 }
 
 // static
-constexpr auto IndirectPointerWriteBarrierDescriptor::registers() {
+constexpr auto TrustedPointerWriteBarrierDescriptor::registers() {
   return WriteBarrierDescriptor::registers();
 }
 // static
-constexpr Register IndirectPointerWriteBarrierDescriptor::ObjectRegister() {
+constexpr Register TrustedPointerWriteBarrierDescriptor::ObjectRegister() {
   return std::get<kObject>(registers());
 }
 // static
-constexpr Register
-IndirectPointerWriteBarrierDescriptor::SlotAddressRegister() {
+constexpr Register TrustedPointerWriteBarrierDescriptor::SlotAddressRegister() {
   return std::get<kSlotAddress>(registers());
 }
 // static
 constexpr Register
-IndirectPointerWriteBarrierDescriptor::IndirectPointerTagRegister() {
-  return std::get<kIndirectPointerTag>(registers());
+TrustedPointerWriteBarrierDescriptor::TrustedPointerTagRegister() {
+  return std::get<kTrustedPointerTag>(registers());
 }
 
 // static
-constexpr RegList IndirectPointerWriteBarrierDescriptor::ComputeSavedRegisters(
+constexpr RegList TrustedPointerWriteBarrierDescriptor::ComputeSavedRegisters(
     Register object, Register slot_address) {
   DCHECK(!AreAliased(object, slot_address));
   // This write barrier behaves identical to the generic one, except that it
   // passes one additional parameter.
   RegList saved_registers =
       WriteBarrierDescriptor::ComputeSavedRegisters(object, slot_address);
-  saved_registers.set(IndirectPointerTagRegister());
+  saved_registers.set(TrustedPointerTagRegister());
   return saved_registers;
 }
 
@@ -630,6 +629,32 @@ constexpr auto GetIteratorStackParameterDescriptor::registers() {
 }
 
 // static
+constexpr auto
+ProxyGetPropertyTrapResultLazyDeoptContinuationDescriptor::registers() {
+  return RegisterArray();
+}
+
+// static
+constexpr auto ForOfNextResultDeoptContinuationDescriptor::registers() {
+  return RegisterArray();
+}
+
+// static
+constexpr auto ForOfNextLoadDoneLazyDeoptContinuationDescriptor::registers() {
+  return RegisterArray();
+}
+
+// static
+constexpr auto ForOfNextLoadValueLazyDeoptContinuationDescriptor::registers() {
+  return RegisterArray();
+}
+
+// static
+constexpr auto ForOfNextLoadValueEagerDeoptContinuationDescriptor::registers() {
+  return RegisterArray();
+}
+
+// static
 constexpr auto LoadWithVectorDescriptor::registers() {
   return RegisterArray(LoadDescriptor::ReceiverRegister(),
                        LoadDescriptor::NameRegister(),
@@ -802,6 +827,11 @@ constexpr inline Register WasmHandleStackOverflowDescriptor::GapRegister() {
   return std::get<kGap>(registers());
 }
 
+constexpr inline Register
+WasmHandleStackOverflowDescriptor::ParameterSlotsSizeRegister() {
+  return std::get<kParameterSlotsSize>(registers());
+}
+
 constexpr auto WasmToJSWrapperDescriptor::registers() {
 #if V8_ENABLE_WEBASSEMBLY
   return RegisterArray(wasm::kGpParamRegisters[0]);
@@ -838,10 +868,28 @@ constexpr auto WasmFXResumeThrowDescriptor::registers() {
   return RegisterArray(wasm::kGpParamRegisters[0], wasm::kGpParamRegisters[1],
                        wasm::kGpParamRegisters[2], wasm::kGpParamRegisters[3]);
 }
+constexpr auto WasmFXResumeThrowRefDescriptor::registers() {
+  return RegisterArray(wasm::kGpParamRegisters[0], wasm::kGpParamRegisters[1]);
+}
 constexpr auto WasmFXSuspendDescriptor::registers() {
   // Reg 0 is the context register.
   return RegisterArray(wasm::kGpParamRegisters[1], wasm::kGpParamRegisters[2],
                        wasm::kGpParamRegisters[3]);
+}
+constexpr auto WasmFXSwitchDescriptor::registers() {
+#if defined(V8_TARGET_ARCH_IA32)
+  return RegisterArray(wasm::kGpParamRegisters[1], wasm::kGpParamRegisters[2],
+                       wasm::kGpParamRegisters[3], edi);
+#elif defined(V8_TARGET_ARCH_ARM)
+  return RegisterArray(wasm::kGpParamRegisters[1], wasm::kGpParamRegisters[2],
+                       wasm::kGpParamRegisters[3], r4);
+#elif defined(V8_TARGET_ARCH_S390X)
+  return RegisterArray(wasm::kGpParamRegisters[1], wasm::kGpParamRegisters[2],
+                       wasm::kGpParamRegisters[3], r7);
+#else
+  return RegisterArray(wasm::kGpParamRegisters[1], wasm::kGpParamRegisters[2],
+                       wasm::kGpParamRegisters[3], wasm::kGpParamRegisters[4]);
+#endif
 }
 constexpr auto WasmFXReturnDescriptor::registers() {
   return RegisterArray(wasm::kGpParamRegisters[0]);

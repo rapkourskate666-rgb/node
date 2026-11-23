@@ -8,10 +8,11 @@
 #include "src/base/functional/function-ref.h"
 #include "src/codegen/macro-assembler.h"
 #include "src/regexp/regexp-macro-assembler.h"
-#include "src/zone/zone-chunk-list.h"
+#include "src/zone/zone-containers.h"
 
 namespace v8 {
 namespace internal {
+namespace regexp {
 
 class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
     : public NativeRegExpMacroAssembler {
@@ -55,8 +56,13 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   void CheckBitInTable(Handle<ByteArray> table, Label* on_bit_set) override;
   void SkipUntilBitInTable(int cp_offset, Handle<ByteArray> table,
                            Handle<ByteArray> nibble_table, int advance_by,
-                           Label* on_match, Label* on_no_match) override;
+                           int bounds_check_offset, Label* on_match,
+                           Label* on_no_match) override;
   bool SkipUntilBitInTableUseSimd(int advance_by) override;
+  bool SkipUntilCharAndUseSimd(int advance_by) override;
+  void SkipUntilCharAndSimd(int cp_offset, int advance_by, unsigned character,
+                            unsigned mask, int bounds_check_offset,
+                            Label* on_match, Label* on_no_match) override;
   void SkipUntilOneOfMasked(int cp_offset, int advance_by, unsigned both_chars,
                             unsigned both_mask, int max_offset, unsigned chars1,
                             unsigned mask1, unsigned chars2, unsigned mask2,
@@ -66,17 +72,31 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   bool SkipUntilOneOfMasked3UseSimd(
       const SkipUntilOneOfMasked3Args& args) override;
   void SkipUntilOneOfMasked3(const SkipUntilOneOfMasked3Args& args) override;
+  bool SkipUntilCharOrCharUseSimd(int advance_by) override;
+  void SkipUntilCharOrCharSimd(int cp_offset, int advance_by, unsigned char1,
+                               unsigned char2, int bounds_check_offset,
+                               Label* on_match, Label* on_no_match) override;
+  bool SkipUntilCharUseSimd(int advance_by) override;
+  void SkipUntilCharSimd(int cp_offset, int advance_by, unsigned character,
+                         int bounds_check_offset, Label* on_match,
+                         Label* on_no_match) override;
   // Checks whether the given offset from the current position is before
   // the end of the string.
   void CheckPosition(int cp_offset, Label* on_outside_input) override;
   void CheckSpecialClassRanges(StandardCharacterSet type,
                                Label* on_no_match) override;
 
+  bool CanTableSwitchOnBits() override;
+  void TableSwitchOnBits(int shift, int table_size, Label* table) override;
+  void EmitTableSwitchTable(Label* table,
+                            base::Vector<Label* const> targets) override;
+
   void BindJumpTarget(Label* label) override;
 
   void Fail() override;
-  DirectHandle<HeapObject> GetCode(DirectHandle<String> source,
-                                   RegExpFlags flags) override;
+  bool prologue_pushes_fail_label() const override { return true; }
+  DirectHandle<HeapObject> GetCode(DirectHandle<RegExpData> re_data,
+                                   Flags flags) override;
   void GoTo(Label* label) override;
   void IfRegisterGE(int reg, int comparand, Label* if_ge) override;
   void IfRegisterLT(int reg, int comparand, Label* if_lt) override;
@@ -239,6 +259,11 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   // object.
   static constexpr Register code_object_pointer() { return r8; }
 
+  // Register holding the address of the regexp stack's thread-local block,
+  // from which the stack limit, memory top and saved stack pointer are
+  // loaded at Stack::k*Offset.
+  static constexpr Register regexp_stack() { return r12; }
+
   inline ScaleFactor CharSizeScaleFactor() {
     switch (mode()) {
       case LATIN1:
@@ -249,9 +274,11 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
     UNREACHABLE();
   }
 
-  // Equivalent to an unconditional branch to the label, unless the label
-  // is nullptr, in which case it is a Backtrack.
-  void BranchOrBacktrack(Label* to);
+  // The real backtrack dispatch (pop a code offset and jump to it), emitted
+  // once in GetCode at backtrack_label_ when the backtrack stack is used.
+  // Backtrack() itself only jumps there, so emitting it does not by itself
+  // mark the backtrack stack as used.
+  void EmitBacktrack();
 
   // Equivalent to a conditional branch to the label, unless the label
   // is nullptr, in which case it is a conditional Backtrack.
@@ -292,7 +319,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   inline void Drop();
 
   void LoadRegExpStackPointerFromMemory(Register dst);
-  void StoreRegExpStackPointerToMemory(Register src, Register scratch);
+  void StoreRegExpStackPointerToMemory(Register src);
   void PushRegExpBasePointer(Register scratch_pointer, Register scratch);
   void PopRegExpBasePointer(Register scratch_pointer_out, Register scratch);
 
@@ -300,8 +327,11 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
 
   void EmitSkipUntilBitInTableSimdHelper(
       int cp_offset, int advance_by, Handle<ByteArray> nibble_table_handle,
-      int max_on_match_lookahead, Label* scalar_fallback,
+      int bounds_check_offset, Label* scalar_fallback,
       base::FunctionRef<void(Register, Register)> on_match);
+  void SplatToXMM(XMMRegister dst, uint64_t splat_value, Register scratch);
+  void SplatCharactersToXMM(XMMRegister dst, uint32_t value,
+                            int character_count, Register scratch);
 
   Isolate* isolate() const { return masm_.isolate(); }
 
@@ -315,7 +345,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   // consistency, we also keep it uninitialized here.
   const NoRootArrayScope no_root_array_scope_;
 
-  ZoneChunkList<int> code_relative_fixup_positions_;
+  ZoneVector<int> code_relative_fixup_positions_;
 
   // One greater than maximal register index actually used.
   int num_registers_;
@@ -335,6 +365,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   Label fallback_label_;
 };
 
+}  // namespace regexp
 }  // namespace internal
 }  // namespace v8
 

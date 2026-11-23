@@ -40,10 +40,15 @@ constexpr int kMaxLoadLiteralRange = 1 * MB;
 
 constexpr int kNumberOfRegisters = 32;
 constexpr int kNumberOfVRegisters = 32;
+constexpr int kNumberOfZRegisters = kNumberOfVRegisters;
 // Callee saved registers are x19-x28.
 constexpr int kNumberOfCalleeSavedRegisters = 10;
 // Callee saved FP registers are d8-d15.
-constexpr int kNumberOfCalleeSavedVRegisters = 8;
+constexpr int kNumberOfCalleeSavedDRegisters = 8;
+// AAPCS64 only requires the callee to preserve the *lower* 64 bits of v8-v15
+// (which are essentially the d8-d15 registers), thus none of the 128-bit
+// V registers are callee-saved.
+constexpr int kNumberOfCalleeSavedVRegisters = 0;
 constexpr int kWRegSizeInBits = 32;
 constexpr int kWRegSizeInBitsLog2 = 5;
 constexpr int kWRegSize = kWRegSizeInBits >> 3;
@@ -532,6 +537,13 @@ constexpr NEONScalarFormatField NEON_H = 0x00400000;
 constexpr NEONScalarFormatField NEON_S = 0x00800000;
 constexpr NEONScalarFormatField NEON_D = 0x00C00000;
 
+using SVESizeField = uint32_t;
+constexpr SVESizeField SVESizeFieldMask = 0x00C00000;
+constexpr SVESizeField SVE_B = 0x00000000;
+constexpr SVESizeField SVE_H = 0x00400000;
+constexpr SVESizeField SVE_S = 0x00800000;
+constexpr SVESizeField SVE_D = 0x00C00000;
+
 // PC relative addressing.
 using PCRelAddressingOp = uint32_t;
 constexpr PCRelAddressingOp PCRelAddressingFixed = 0x10000000;
@@ -959,6 +971,41 @@ constexpr LoadStoreUnscaledOffsetOp LoadStoreUnscaledOffsetMask = 0xFFE00C00;
       LoadStoreUnscaledOffsetFixed | D
 LOAD_STORE_OP_LIST(LOAD_STORE_UNSCALED);
 #undef LOAD_STORE_UNSCALED
+
+// Load-acquire/store-release unscaled offset [Armv8.4].
+using LoadStoreRCpcUnscaledOffsetOp = uint32_t;
+constexpr LoadStoreRCpcUnscaledOffsetOp LoadStoreRCpcUnscaledOffsetFixed =
+    0x19000000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LoadStoreRCpcUnscaledOffsetFMask =
+    0x3F200C00;
+constexpr LoadStoreRCpcUnscaledOffsetOp LoadStoreRCpcUnscaledOffsetMask =
+    0xFFE00C00;
+constexpr LoadStoreRCpcUnscaledOffsetOp STLURB =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x00000000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPURB =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x00400000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPURSB_x =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x00800000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPURSB_w =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x00C00000;
+constexpr LoadStoreRCpcUnscaledOffsetOp STLURH =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x40000000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPURH =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x40400000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPURSH_x =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x40800000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPURSH_w =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x40C00000;
+constexpr LoadStoreRCpcUnscaledOffsetOp STLUR_w =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x80000000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPUR_w =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x80400000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPURSW_x =
+    LoadStoreRCpcUnscaledOffsetFixed | 0x80800000;
+constexpr LoadStoreRCpcUnscaledOffsetOp STLUR_x =
+    LoadStoreRCpcUnscaledOffsetFixed | 0xC0000000;
+constexpr LoadStoreRCpcUnscaledOffsetOp LDAPUR_x =
+    LoadStoreRCpcUnscaledOffsetFixed | 0xC0400000;
 
 // Load/store (post, pre, offset and unsigned.)
 using LoadStoreOp = uint32_t;
@@ -2471,6 +2518,7 @@ constexpr NEONSHA3Op NEONSHA3FMask = 0xce000000;
 constexpr NEONSHA3Op NEONSHA3Mask = 0xcee00000;
 constexpr NEONSHA3Op NEON_BCAX = NEONSHA3Fixed | 0x00200000;
 constexpr NEONSHA3Op NEON_EOR3 = NEONSHA3Fixed;
+constexpr NEONSHA3Op NEON_XAR = NEONSHA3Fixed | 0x00800000;
 
 // NEON perm.
 using NEONPermOp = uint32_t;
@@ -2644,6 +2692,20 @@ constexpr NEONScalar3DiffOp NEON_SQDMLSL_scalar =
     NEON_Q | NEONScalar | NEON_SQDMLSL;
 constexpr NEONScalar3DiffOp NEON_SQDMULL_scalar =
     NEON_Q | NEONScalar | NEON_SQDMULL;
+
+// SVE bit permute instructions
+using SVEBitPermOp = uint32_t;
+constexpr SVEBitPermOp SVEBitPermFixed = 0x4500B000;
+constexpr SVEBitPermOp SVEBitPermFMask = 0xFF20F000;
+constexpr SVEBitPermOp SVEBitPermMask = 0xFF20FC00;
+constexpr SVEBitPermOp BEXT = SVEBitPermFixed;
+
+// SVE2 multiply (unpredicated) instructions.
+using SVE2MulOp = uint32_t;
+constexpr SVE2MulOp SVE2MulFixed = 0x04206000;
+constexpr SVE2MulOp SVE2MulFMask = 0xFF20F000;
+constexpr SVE2MulOp SVE2MulMask = 0xFF20FC00;
+constexpr SVE2MulOp SVE2_MUL = SVE2MulFixed;
 
 // Unimplemented and unallocated instructions. These are defined to make fixed
 // bit assertion easier.

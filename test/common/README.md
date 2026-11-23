@@ -28,6 +28,7 @@ several other tasks:
 ## Table of contents
 
 * [ArrayStream module](#arraystream-module)
+* [Bench module](#bench-module)
 * [Benchmark module](#benchmark-module)
 * [Child process module](#child-process-module)
 * [Common module API](#common-module-api)
@@ -48,6 +49,21 @@ several other tasks:
 * [tmpdir module](#tmpdir-module)
 * [UDP pair helper](#udp-pair-helper)
 * [WPT module](#wpt-module)
+
+## Bench module
+
+The `bench` module has helpers for tests of `node:bench`.
+
+### `completeSample(b[, operations[, options]])`
+
+* `b` The `BenchContext` passed to a `node:bench` benchmark function.
+* `operations` [\<number>][<number>] Passed to `b.end()`. **Default:** `1`.
+* `options` [\<Object>][<Object>] Passed to `b.end()`.
+* return the sample returned by `b.end()`.
+
+Calls `b.start()` and `b.end()` with at least one `process.hrtime.bigint()`
+tick in between, so the sample has a non-zero duration on hosts whose
+monotonic clock is coarse.
 
 ## Benchmark module
 
@@ -256,6 +272,13 @@ Indicates if [internationalization][] is supported.
 * [\<boolean>][<boolean>]
 
 Indicates whether `IPv6` is supported on this platform.
+
+### `hasV8Sandbox`
+
+* [\<boolean>][<boolean>]
+
+Indicates whether V8 was built with its sandbox enabled, in which case
+`ArrayBuffer`s cannot reference memory outside of it.
 
 ### `hasSQLite`
 
@@ -861,6 +884,24 @@ socket.write(frame.data);
 
 The serialized `Buffer` may be retrieved using the `frame.data` property.
 
+### Class: `DataFrame`
+
+The `http2.DataFrame` is a subclass of `http2.Frame` that serializes a `DATA`
+frame.
+
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
+
+```js
+// id is the 32-bit stream identifier
+// payload is a Buffer containing the DATA payload
+// padlen is an 8-bit integer giving the number of padding bytes to include
+// final is a boolean indicating whether the End-of-stream flag should be set,
+// defaults to false.
+const frame = new http2.DataFrame(id, payload, padlen, final);
+
+socket.write(frame.data);
+```
+
 ### Class: `HeadersFrame`
 
 The `http2.HeadersFrame` is a subclass of `http2.Frame` that serializes a
@@ -876,6 +917,21 @@ The `http2.HeadersFrame` is a subclass of `http2.Frame` that serializes a
 // final is a boolean indicating whether the End-of-stream flag should be set,
 // defaults to false.
 const frame = new http2.HeadersFrame(id, payload, padlen, final);
+
+socket.write(frame.data);
+```
+
+### Class: `RstStreamFrame`
+
+The `http2.RstStreamFrame` is a subclass of `http2.Frame` that serializes an
+`RST_STREAM` frame.
+
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
+
+```js
+// id is the 32-bit stream identifier
+// code is the 32-bit error code, defaults to 0 (NO_ERROR).
+const frame = new http2.RstStreamFrame(id, code);
 
 socket.write(frame.data);
 ```

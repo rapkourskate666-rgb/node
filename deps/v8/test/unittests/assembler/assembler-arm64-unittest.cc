@@ -121,7 +121,7 @@ namespace internal {
   CHECK_NOT_NULL(isolate);                                                    \
   auto owned_buf =                                                            \
       AllocateAssemblerBuffer(buf_size, nullptr, JitPermission::kNoJit);      \
-  MacroAssembler masm(isolate, v8::internal::CodeObjectRequired::kYes,        \
+  MacroAssembler masm(isolate, v8::internal::CodeObjectRequired{true},        \
                       ExternalAssemblerBuffer(owned_buf->start(), buf_size)); \
   Decoder<DispatchingDecoderVisitor>* decoder =                               \
       new Decoder<DispatchingDecoderVisitor>();                               \
@@ -179,7 +179,7 @@ namespace internal {
   HandleScope scope(isolate);                                          \
   CHECK_NOT_NULL(isolate);                                             \
   auto owned_buf = AllocateAssemblerBuffer(buf_size);                  \
-  MacroAssembler masm(isolate, v8::internal::CodeObjectRequired::kYes, \
+  MacroAssembler masm(isolate, v8::internal::CodeObjectRequired{true}, \
                       owned_buf->CreateView());                        \
   HandleScope handle_scope(isolate);                                   \
   Handle<Code> code;                                                   \
@@ -280,6 +280,12 @@ using AtomicMemoryStoreSignature =
 
 class AssemblerArm64Test : public i::TestWithIsolate {
  public:
+  AssemblerArm64Test() {
+#ifdef V8_ENABLE_GENERATED_CODE_VALIDATOR
+    v8_flags.validate_generated_code = false;
+#endif  // V8_ENABLE_GENERATED_CODE_VALIDATOR
+  }
+
   void SmullHelper(int64_t expected, int64_t a, int64_t b);
   void BtiHelper(Register ipreg);
   void LdrLiteralRangeHelper(size_t range, LiteralPoolEmitOutcome outcome,
@@ -321,6 +327,9 @@ class AssemblerArm64Test : public i::TestWithIsolate {
   void AbsHelperW(int32_t value);
   void MinMaxHelper(MinMaxOp op, bool is_signed, uint64_t a, uint64_t b,
                     uint32_t wexp, uint64_t xexp);
+
+ private:
+  SaveFlags save_flags_;
 };
 
 void AssemblerArm64Test::SmullHelper(int64_t expected, int64_t a, int64_t b) {
@@ -6760,6 +6769,56 @@ TEST_F(AssemblerArm64Test, ldur_stur) {
   CHECK_EQUAL_64(dst_base + 32, x20);
 }
 
+TEST_F(AssemblerArm64Test, ldapur_stlur) {
+  SETUP();
+  SETUP_FEATURE(LRCPC2);
+
+  uint64_t src[2] = {0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL};
+  uint64_t dst[3] = {0, 0, 0};
+  uintptr_t src_base = reinterpret_cast<uintptr_t>(src);
+  uintptr_t dst_base = reinterpret_cast<uintptr_t>(dst);
+
+  START();
+  __ Mov(x17, src_base + 1);
+  __ Mov(x28, dst_base + 1);
+  __ Mov(x19, src_base + 15);
+  __ Mov(x20, dst_base + 19);
+  __ Ldapur(w0, MemOperand(x17, -1));
+  __ Stlur(w0, MemOperand(x28, -1));
+  __ Ldapur(w2, MemOperand(x17, 3));
+  __ Stlur(w2, MemOperand(x28, 3));
+  __ Ldapur(x1, MemOperand(x17, 7));
+  __ Stlur(x1, MemOperand(x28, 7));
+  __ Ldapurb(w3, MemOperand(x19, -2));
+  __ Stlurb(w3, MemOperand(x20, -1));
+  __ Ldapursb(x4, MemOperand(x19, -15));
+  __ Ldapursh(x5, MemOperand(x19, -13));
+  __ Ldapursw(x6, MemOperand(x19, -3));
+  __ Ldapurh(w7, MemOperand(x19, -13));
+  __ Stlurh(w7, MemOperand(x20, -3));
+  END();
+
+  if (CAN_RUN()) {
+    RUN();
+
+    CHECK_EQUAL_64(0x89ABCDEFUL, x0);
+    CHECK_EQUAL_64(0x01234567UL, x2);
+    CHECK_EQUAL_64(0x0123456789ABCDEFUL, dst[0]);
+    CHECK_EQUAL_64(0xFEDCBA9876543210UL, x1);
+    CHECK_EQUAL_64(0xFEDCBA9876543210UL, dst[1]);
+    CHECK_EQUAL_64(0x000000BAUL, x3);
+    CHECK_EQUAL_64(0xFFFFFFFFFFFFFFEFUL, x4);
+    CHECK_EQUAL_64(0xFFFFFFFFFFFF89ABUL, x5);
+    CHECK_EQUAL_64(0xFFFFFFFFFEDCBA98UL, x6);
+    CHECK_EQUAL_64(0x000089ABUL, x7);
+    CHECK_EQUAL_64(0x00BA89ABUL, dst[2]);
+    CHECK_EQUAL_64(src_base + 1, x17);
+    CHECK_EQUAL_64(dst_base + 1, x28);
+    CHECK_EQUAL_64(src_base + 15, x19);
+    CHECK_EQUAL_64(dst_base + 19, x20);
+  }
+}
+
 TEST_F(AssemblerArm64Test, ldr_pcrel_large_offset) {
   SETUP_SIZE(1 * MB);
 
@@ -11751,6 +11810,48 @@ TEST_F(AssemblerArm64Test, scvtf_ucvtf_float) {
   TestUScvtf32Helper(0xFFFFFFFFFFFFFFFF, 0xBF800000, 0x5F800000);
 }
 
+TEST_F(AssemblerArm64Test, scvtf_ucvtf_upper_bits) {
+  SETUP();
+  START();
+
+  __ Movi(v0.V16B(), 0xFF);
+  __ Movi(v1.V16B(), 0xFF);
+  __ Movi(v4.V16B(), 0xFF);
+  __ Movi(v5.V16B(), 0xFF);
+  __ Movi(v6.V16B(), 0xFF);
+  __ Movi(v7.V16B(), 0xFF);
+
+  __ Mov(w0, 42);
+  __ Dup(v2.V2S(), w0);
+  __ Dup(v3.V2S(), w0);
+
+  // Vector 2S integer-to-float (upper 64 bits must be zeroed).
+  __ Ucvtf(v0.V2S(), v2.V2S());
+  __ Scvtf(v1.V2S(), v3.V2S());
+
+  // Vector 2S fixed-point-to-float (upper 64 bits must be zeroed).
+  __ Ucvtf(v4.V2S(), v2.V2S(), 1);
+  __ Scvtf(v5.V2S(), v3.V2S(), 1);
+
+  // Scalar 1D fixed-point-to-float (upper 64 bits must be zeroed).
+  __ Mov(x0, 42);
+  __ Fmov(v8_.V1D(), x0);
+  __ Ucvtf(v6.V1D(), v8_.V1D(), 1);
+  __ Scvtf(v7.V1D(), v8_.V1D(), 1);
+
+  END();
+  RUN();
+
+  CHECK_EQUAL_128(0, 0x4228000042280000, q0);
+  CHECK_EQUAL_128(0, 0x4228000042280000, q1);
+  // 42 >> 1 = 21.0f = 0x41a80000
+  CHECK_EQUAL_128(0, 0x41a8000041a80000, q4);
+  CHECK_EQUAL_128(0, 0x41a8000041a80000, q5);
+  // 42.0 / 2.0 = 21.0 = 0x4035000000000000
+  CHECK_EQUAL_128(0, 0x4035000000000000, q6);
+  CHECK_EQUAL_128(0, 0x4035000000000000, q7);
+}
+
 TEST_F(AssemblerArm64Test, system_mrs) {
   SETUP();
 
@@ -13967,193 +14068,6 @@ TEST_F(AssemblerArm64Test, cpureglist_utils_empty) {
   CHECK(fpreg64.IsEmpty());
 }
 
-TEST_F(AssemblerArm64Test, printf) {
-  SETUP_SIZE(BUF_SIZE * 2);
-  START();
-
-  char const* test_plain_string = "Printf with no arguments.\n";
-  char const* test_substring = "'This is a substring.'";
-  RegisterDump before;
-
-  // Initialize x29 to the value of the stack pointer. We will use x29 as a
-  // temporary stack pointer later, and initializing it in this way allows the
-  // RegisterDump check to pass.
-  __ Mov(x29, sp);
-
-  // Test simple integer arguments.
-  __ Mov(x0, 1234);
-  __ Mov(x1, 0x1234);
-
-  // Test simple floating-point arguments.
-  __ Fmov(d0, 1.234);
-
-  // Test pointer (string) arguments.
-  __ Mov(x2, reinterpret_cast<uintptr_t>(test_substring));
-
-  // Test the maximum number of arguments, and sign extension.
-  __ Mov(w3, 0xFFFFFFFF);
-  __ Mov(w4, 0xFFFFFFFF);
-  __ Mov(x5, 0xFFFFFFFFFFFFFFFF);
-  __ Mov(x6, 0xFFFFFFFFFFFFFFFF);
-  __ Fmov(s1, 1.234);
-  __ Fmov(s2, 2.345);
-  __ Fmov(d3, 3.456);
-  __ Fmov(d4, 4.567);
-
-  // Test printing callee-saved registers.
-  __ Mov(x28, 0x123456789ABCDEF);
-  __ Fmov(d10, 42.0);
-
-  // Test with three arguments.
-  __ Mov(x10, 3);
-  __ Mov(x11, 40);
-  __ Mov(x12, 500);
-
-  // A single character.
-  __ Mov(w13, 'x');
-
-  // Check that we don't clobber any registers.
-  before.Dump(&masm);
-
-  __ Printf(test_plain_string);  // NOLINT(runtime/printf)
-  __ Printf("x0: %" PRId64 ", x1: 0x%08" PRIx64 "\n", x0, x1);
-  __ Printf("w5: %" PRId32 ", x5: %" PRId64 "\n", w5, x5);
-  __ Printf("d0: %f\n", d0);
-  __ Printf("Test %%s: %s\n", x2);
-  __ Printf("w3(uint32): %" PRIu32 "\nw4(int32): %" PRId32
-            "\n"
-            "x5(uint64): %" PRIu64 "\nx6(int64): %" PRId64 "\n",
-            w3, w4, x5, x6);
-  __ Printf("%%f: %f\n%%g: %g\n%%e: %e\n%%E: %E\n", s1, s2, d3, d4);
-  __ Printf("0x%" PRIx32 ", 0x%" PRIx64 "\n", w28, x28);
-  __ Printf("%g\n", d10);
-  __ Printf("%%%%%s%%%c%%\n", x2, w13);
-
-  // Print the stack pointer.
-  __ Printf("StackPointer(sp): 0x%016" PRIx64 ", 0x%08" PRIx32 "\n", sp, wsp);
-
-  // Test with three arguments.
-  __ Printf("3=%u, 4=%u, 5=%u\n", x10, x11, x12);
-
-  // Mixed argument types.
-  __ Printf("w3: %" PRIu32 ", s1: %f, x5: %" PRIu64 ", d3: %f\n", w3, s1, x5,
-            d3);
-  __ Printf("s1: %f, d3: %f, w3: %" PRId32 ", x5: %" PRId64 "\n", s1, d3, w3,
-            x5);
-
-  END();
-  RUN();
-
-  // We cannot easily test the output of the Printf sequences, and because
-  // Printf preserves all registers by default, we can't look at the number of
-  // bytes that were printed. However, the printf_no_preserve test should check
-  // that, and here we just test that we didn't clobber any registers.
-  CHECK_EQUAL_REGISTERS(before);
-}
-
-TEST_F(AssemblerArm64Test, printf_no_preserve) {
-  SETUP();
-  START();
-
-  char const* test_plain_string = "Printf with no arguments.\n";
-  char const* test_substring = "'This is a substring.'";
-
-  __ PrintfNoPreserve(test_plain_string);
-  __ Mov(x19, x0);
-
-  // Test simple integer arguments.
-  __ Mov(x0, 1234);
-  __ Mov(x1, 0x1234);
-  __ PrintfNoPreserve("x0: %" PRId64 ", x1: 0x%08" PRIx64 "\n", x0, x1);
-  __ Mov(x20, x0);
-
-  // Test simple floating-point arguments.
-  __ Fmov(d0, 1.234);
-  __ PrintfNoPreserve("d0: %f\n", d0);
-  __ Mov(x21, x0);
-
-  // Test pointer (string) arguments.
-  __ Mov(x2, reinterpret_cast<uintptr_t>(test_substring));
-  __ PrintfNoPreserve("Test %%s: %s\n", x2);
-  __ Mov(x22, x0);
-
-  // Test the maximum number of arguments, and sign extension.
-  __ Mov(w3, 0xFFFFFFFF);
-  __ Mov(w4, 0xFFFFFFFF);
-  __ Mov(x5, 0xFFFFFFFFFFFFFFFF);
-  __ Mov(x6, 0xFFFFFFFFFFFFFFFF);
-  __ PrintfNoPreserve("w3(uint32): %" PRIu32 "\nw4(int32): %" PRId32
-                      "\n"
-                      "x5(uint64): %" PRIu64 "\nx6(int64): %" PRId64 "\n",
-                      w3, w4, x5, x6);
-  __ Mov(x23, x0);
-
-  __ Fmov(s1, 1.234);
-  __ Fmov(s2, 2.345);
-  __ Fmov(d3, 3.456);
-  __ Fmov(d4, 4.567);
-  __ PrintfNoPreserve("%%f: %f\n%%g: %g\n%%e: %e\n%%E: %E\n", s1, s2, d3, d4);
-  __ Mov(x24, x0);
-
-  // Test printing callee-saved registers.
-  __ Mov(x28, 0x123456789ABCDEF);
-  __ PrintfNoPreserve("0x%" PRIx32 ", 0x%" PRIx64 "\n", w28, x28);
-  __ Mov(x25, x0);
-
-  __ Fmov(d10, 42.0);
-  __ PrintfNoPreserve("%g\n", d10);
-  __ Mov(x26, x0);
-
-  // Test with three arguments.
-  __ Mov(x3, 3);
-  __ Mov(x4, 40);
-  __ Mov(x5, 500);
-  __ PrintfNoPreserve("3=%u, 4=%u, 5=%u\n", x3, x4, x5);
-  __ Mov(x27, x0);
-
-  // Mixed argument types.
-  __ Mov(w3, 0xFFFFFFFF);
-  __ Fmov(s1, 1.234);
-  __ Mov(x5, 0xFFFFFFFFFFFFFFFF);
-  __ Fmov(d3, 3.456);
-  __ PrintfNoPreserve("w3: %" PRIu32 ", s1: %f, x5: %" PRIu64 ", d3: %f\n", w3,
-                      s1, x5, d3);
-  __ Mov(x28, x0);
-
-  END();
-  RUN();
-
-  // We cannot easily test the exact output of the Printf sequences, but we can
-  // use the return code to check that the string length was correct.
-
-  // Printf with no arguments.
-  CHECK_EQUAL_64(strlen(test_plain_string), x19);
-  // x0: 1234, x1: 0x00001234
-  CHECK_EQUAL_64(25, x20);
-  // d0: 1.234000
-  CHECK_EQUAL_64(13, x21);
-  // Test %s: 'This is a substring.'
-  CHECK_EQUAL_64(32, x22);
-  // w3(uint32): 4294967295
-  // w4(int32): -1
-  // x5(uint64): 18446744073709551615
-  // x6(int64): -1
-  CHECK_EQUAL_64(23 + 14 + 33 + 14, x23);
-  // %f: 1.234000
-  // %g: 2.345
-  // %e: 3.456000e+00
-  // %E: 4.567000E+00
-  CHECK_EQUAL_64(13 + 10 + 17 + 17, x24);
-  // 0x89ABCDEF, 0x123456789ABCDEF
-  CHECK_EQUAL_64(30, x25);
-  // 42
-  CHECK_EQUAL_64(3, x26);
-  // 3=3, 4=40, 5=500
-  CHECK_EQUAL_64(17, x27);
-  // w3: 4294967295, s1: 1.234000, x5: 18446744073709551615, d3: 3.456000
-  CHECK_EQUAL_64(69, x28);
-}
-
 TEST_F(AssemblerArm64Test, blr_lr) {
   // A simple test to check that the simulator correcty handle "blr lr".
   SETUP();
@@ -16066,9 +15980,11 @@ TEST_F(AssemblerArm64Test, neon_sha3) {
 
   __ Movi(v10.V16B(), 0);
   __ Movi(v11.V16B(), 0);
+  __ Movi(v12.V16B(), 0);
 
   __ Bcax(v10.V16B(), v0.V16B(), v1.V16B(), v2.V16B());
   __ Eor3(v11.V16B(), v0.V16B(), v1.V16B(), v2.V16B());
+  __ Xar(v12.V2D(), v2.V2D(), v0.V2D(), 16);
 
   END();
 
@@ -16077,6 +15993,7 @@ TEST_F(AssemblerArm64Test, neon_sha3) {
 
     CHECK_EQUAL_128(0xaacc998822440000, 0xaacc998822440000, v10);
     CHECK_EQUAL_128(0xaacc9988aacc9988, 0xaacc9988aacc9988, v11);
+    CHECK_EQUAL_128(0xffeeccaaffeeccaa, 0xffeeccaaffeeccaa, v12);
   }
 }
 
@@ -16579,6 +16496,81 @@ TEST_F(AssemblerArm64Test, cssc_smax) {
   MinMaxHelper(op, true, s32min, s32max, s32max, s32min);
   MinMaxHelper(op, true, s64max, s32min, 0xffff'ffff, s64max);
   MinMaxHelper(op, true, s64min, s64max, 0, s64max);
+}
+
+TEST_F(AssemblerArm64Test, sve_bit_permute) {
+#ifdef V8_ENABLE_GENERATED_CODE_VALIDATOR
+  // TODO(523128533): Disarm doesn't support sve.
+  v8_flags.validate_generated_code = false;
+#endif  // V8_ENABLE_GENERATED_CODE_VALIDATOR
+
+  SETUP();
+  SETUP_FEATURE(SVEBITPERM);
+  START();
+
+  __ Movi(v0.V2D(), 0xd7'7b'28'84'd7'7b'28'84, 0xd7'7b'28'84'd7'7b'28'84);
+  __ Movi(v8.V2D(), 0x6a'95'6a'95'6a'95'6a'95, 0x6a'95'6a'95'6a'95'6a'95);
+  __ Movi(v12.V2D(), 0x4249'8442'4249'8442, 0x4249'8442'4249'8442);
+  __ Movi(v15.V2D(), 0xafee'7dbe'5011'8241, 0xafee'7dbe'5011'8241);
+  __ Movi(v16.V2D(), 0x48028205'85082141, 0xb7fd7dfa'7af7debe);
+  __ Movi(v22.V2D(), 0x40834281'21822481, 0xbf7cbd7e'de7ddb7e);
+  __ Movi(v29.V2D(), 0x8421481221841248, 0x8421481221841248);
+  __ Movi(v31.V2D(), 0xa13c36c9c8596aa6, 0x5ec3c93637a69559);
+
+  __ Bext(z0.VnB(), z0.VnB(), z8.VnB());
+  __ Bext(z12.VnH(), z12.VnH(), z15.VnH());
+  __ Bext(z16.VnS(), z16.VnS(), z22.VnS());
+  __ Bext(z29.VnD(), z29.VnD(), z31.VnD());
+
+  END();
+
+  if (CAN_RUN()) {
+    RUN();
+
+    CHECK_EQUAL_128(0x09'05'06'0a'09'05'06'0a, 0x09'05'06'0a'09'05'06'0a, q0);
+    CHECK_EQUAL_128(0x0094'0081'0009'000a, 0x0094'0081'0009'000a, q12);
+    CHECK_EQUAL_128(0x000000a5'00000049, 0x00eff7fd'0077bf9f, q16);
+    CHECK_EQUAL_128(0x0000000024000010, 0x0000000042cb1a4a, q29);
+  }
+}
+
+TEST_F(AssemblerArm64Test, sve2_mul) {
+  SETUP();
+  SETUP_FEATURE(SVE2);
+  START();
+
+  __ Movi(v1.V2D(), 0x00'00'00'00'00'00'00'02, 0x00'00'00'00'00'00'00'04);
+  __ Movi(v2.V2D(), 0x00'00'00'00'00'00'00'03, 0x00'00'00'00'00'00'00'03);
+  __ Movi(v4.V2D(), 0x0000'0000'0000'0002, 0x0000'0000'0000'0004);
+  __ Movi(v5.V2D(), 0x0000'0000'0000'0003, 0x0000'0000'0000'0003);
+  __ Movi(v7.V2D(), 0x00000000'00000002, 0x00000000'00000004);
+  __ Movi(v8.V2D(), 0x00000000'00000003, 0x00000000'00000003);
+  __ Movi(v10.V2D(), 0x7FFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF);
+  __ Movi(v11.V2D(), 0x7FFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF);
+  __ Movi(v12.V2D(), 0x00000000'00000003, 0x00000000'00000003);
+  __ Movi(v13.V2D(), 0x00000000'00000003, 0x00000000'00000003);
+  __ Movi(v14.V2D(), 0x00000000'00000003, 0x00000000'00000004);
+  __ Movi(v15.V2D(), 0x00000000'00000003, 0x00000000'00000004);
+
+  __ Mul(z0.VnB(), z1.VnB(), z2.VnB());
+  __ Mul(z3.VnH(), z4.VnH(), z5.VnH());
+  __ Mul(z6.VnS(), z7.VnS(), z8.VnS());
+  __ Mul(z9.VnD(), z10.VnD(), z11.VnD());
+  __ Mul(z12.VnD(), z12.VnD(), z13.VnD());
+  __ Mul(z15.VnD(), z14.VnD(), z15.VnD());
+
+  END();
+
+  if (CAN_RUN()) {
+    RUN();
+
+    CHECK_EQUAL_128(0x00'00'00'00'00'00'00'06, 0x00'00'00'00'00'00'00'0c, q0);
+    CHECK_EQUAL_128(0x0000'0000'0000'0006, 0x0000'0000'0000'000c, q3);
+    CHECK_EQUAL_128(0x00000000'00000006, 0x00000000'0000000c, q6);
+    CHECK_EQUAL_128(0x0000000000000001, 0x0000000000000001, q9);
+    CHECK_EQUAL_128(0x0000000000000009, 0x0000000000000009, q12);
+    CHECK_EQUAL_128(0x0000000000000009, 0x0000000000000010, q15);
+  }
 }
 
 }  // namespace internal

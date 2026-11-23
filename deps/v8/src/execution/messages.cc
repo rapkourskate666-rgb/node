@@ -24,6 +24,7 @@
 #include "src/parsing/parse-info.h"
 #include "src/parsing/parsing.h"
 #include "src/roots/roots.h"
+#include "src/sandbox/trusted-pointer-inl.h"
 #include "src/strings/string-builder-inl.h"
 
 namespace v8 {
@@ -154,13 +155,13 @@ void MessageHandler::ReportMessageNoExceptions(
 
   DirectHandle<ArrayList> global_listeners =
       isolate->factory()->message_listeners();
-  int global_length = global_listeners->length();
+  const uint32_t global_length = global_listeners->ulength().value();
   if (global_length == 0) {
     DefaultMessageReport(isolate, loc, message);
   } else {
-    for (int i = 0; i < global_length; i++) {
+    for (uint32_t i = 0; i < global_length; i++) {
       HandleScope scope(isolate);
-      if (IsUndefined(global_listeners->get(i), isolate)) continue;
+      if (IsUndefined(global_listeners->get(i))) continue;
       Tagged<FixedArray> listener = Cast<FixedArray>(global_listeners->get(i));
       Tagged<Foreign> callback_obj = Cast<Foreign>(listener->get(0));
       int32_t message_levels =
@@ -176,7 +177,7 @@ void MessageHandler::ReportMessageNoExceptions(
         RCS_SCOPE(isolate, RuntimeCallCounterId::kMessageListenerCallback);
         // Do not allow exceptions to propagate.
         v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
-        callback(api_message_obj, IsUndefined(*callback_data, isolate)
+        callback(api_message_obj, IsUndefined(*callback_data)
                                       ? api_exception_obj
                                       : v8::Utils::ToLocal(callback_data));
       }
@@ -188,8 +189,10 @@ DirectHandle<String> MessageHandler::GetMessage(Isolate* isolate,
                                                 DirectHandle<Object> data) {
   DirectHandle<JSMessageObject> message = Cast<JSMessageObject>(data);
   DirectHandle<Object> arg{message->argument(), isolate};
-  return MessageFormatter::Format(isolate, message->type(),
-                                  base::VectorOf({arg}));
+  return MessageFormatter::Format(
+      isolate, message->type(),
+      IsTheHole(*arg) ? base::Vector<const DirectHandle<Object>>{}
+                      : base::VectorOf({arg}));
 }
 
 std::unique_ptr<char[]> MessageHandler::GetLocalizedMessage(
@@ -202,15 +205,16 @@ namespace {
 
 // Convert the raw frames as written by Isolate::CaptureSimpleStackTrace into
 // a JSArray of JSCallSite objects.
-MaybeDirectHandle<JSArray> GetStackFrames(Isolate* isolate,
-                                          DirectHandle<FixedArray> frames) {
-  int frame_count = frames->length();
+MaybeDirectHandle<JSArray> GetStackFrames(
+    Isolate* isolate, DirectHandle<FixedArray> raw_data_for_call_site_infos) {
+  uint32_t frame_count = raw_data_for_call_site_infos->ulength().value() /
+                         CallSiteInfo::Fields::kCount;
   DirectHandle<JSFunction> constructor = isolate->callsite_function();
   DirectHandle<FixedArray> sites =
       isolate->factory()->NewFixedArray(frame_count);
-  for (int i = 0; i < frame_count; ++i) {
-    DirectHandle<CallSiteInfo> frame(Cast<CallSiteInfo>(frames->get(i)),
-                                     isolate);
+  for (uint32_t i = 0; i < frame_count; ++i) {
+    DirectHandle<CallSiteInfo> frame = CallSiteInfo::ConstructFromRawData(
+        isolate, raw_data_for_call_site_infos, i);
     DirectHandle<JSObject> site;
     ASSIGN_RETURN_ON_EXCEPTION(isolate, site,
                                JSObject::New(constructor, constructor,
@@ -285,14 +289,14 @@ class V8_NODISCARD PrepareStackTraceScope {
 }  // namespace
 
 // static
-MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
+MaybeDirectHandle<JSAny> ErrorUtils::FormatStackTrace(
     Isolate* isolate, DirectHandle<JSObject> error,
     DirectHandle<Object> raw_stack) {
   if (v8_flags.correctness_fuzzer_suppressions) {
     return isolate->factory()->empty_string();
   }
   DCHECK(IsFixedArray(*raw_stack));
-  auto elems = Cast<FixedArray>(raw_stack);
+  auto raw_data_for_call_site_infos = Cast<FixedArray>(raw_stack);
 
   const bool in_recursion = isolate->formatting_stack_trace();
   const bool has_overflowed = i::StackLimitCheck{isolate}.HasOverflowed();
@@ -303,14 +307,15 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
       PrepareStackTraceScope scope(isolate);
 
       DirectHandle<JSArray> sites;
-      ASSIGN_RETURN_ON_EXCEPTION(isolate, sites,
-                                 GetStackFrames(isolate, elems));
+      ASSIGN_RETURN_ON_EXCEPTION(
+          isolate, sites,
+          GetStackFrames(isolate, raw_data_for_call_site_infos));
 
       DirectHandle<Object> result;
       ASSIGN_RETURN_ON_EXCEPTION(
           isolate, result,
           isolate->RunPrepareStackTraceCallback(error_context, error, sites));
-      return result;
+      return Cast<JSAny>(result);
     } else {
       DirectHandle<JSFunction> global_error(error_context->error_function(),
                                             isolate);
@@ -321,7 +326,7 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
       DirectHandle<Object> prepare_stack_trace;
       ASSIGN_RETURN_ON_EXCEPTION(
           isolate, prepare_stack_trace,
-          JSFunction::GetProperty(isolate, global_error, "prepareStackTrace"));
+          JSReceiver::GetProperty(isolate, global_error, "prepareStackTrace"));
 
       if (IsJSFunction(*prepare_stack_trace)) {
         PrepareStackTraceScope scope(isolate);
@@ -329,8 +334,9 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
         isolate->CountUsage(v8::Isolate::kErrorPrepareStackTrace);
 
         DirectHandle<JSArray> sites;
-        ASSIGN_RETURN_ON_EXCEPTION(isolate, sites,
-                                   GetStackFrames(isolate, elems));
+        ASSIGN_RETURN_ON_EXCEPTION(
+            isolate, sites,
+            GetStackFrames(isolate, raw_data_for_call_site_infos));
 
         constexpr int argc = 2;
         std::array<DirectHandle<Object>, argc> args;
@@ -349,7 +355,7 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
             isolate, result,
             Execution::Call(isolate, prepare_stack_trace, global_error,
                             base::VectorOf(args)));
-        return result;
+        return Cast<JSAny>(result);
       }
     }
   }
@@ -359,12 +365,16 @@ MaybeDirectHandle<Object> ErrorUtils::FormatStackTrace(
 
   RETURN_ON_EXCEPTION(isolate, AppendErrorString(isolate, error, &builder));
 
-  for (int i = 0; i < elems->length(); ++i) {
+  uint32_t elems_len = raw_data_for_call_site_infos->ulength().value() /
+                       CallSiteInfo::Fields::kCount;
+  for (uint32_t i = 0; i < elems_len; ++i) {
     builder.AppendCStringLiteral("\n    at ");
 
-    DirectHandle<CallSiteInfo> frame(Cast<CallSiteInfo>(elems->get(i)),
-                                     isolate);
+    DirectHandle<CallSiteInfo> frame = CallSiteInfo::ConstructFromRawData(
+        isolate, raw_data_for_call_site_infos, i);
 
+    // TODO(marja): Avoid CallSiteInfo creation since we serialize it right
+    // away.
     v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
     SerializeCallSiteInfo(isolate, frame, &builder);
 
@@ -412,8 +422,7 @@ DirectHandle<String> MessageFormatter::Format(
   Handle<String> result_string;
   if (!maybe_result_string.ToHandle(&result_string)) {
     DCHECK(isolate->has_exception());
-    return isolate->factory()->InternalizeString(
-        base::StaticCharVector("<error>"));
+    return isolate->factory()->InternalizeString("<error>");
   }
   // A string that has been obtained from JS code in this way is
   // likely to be a complicated ConsString of some sort.  We flatten it
@@ -443,52 +452,6 @@ MaybeHandle<String> MessageFormatter::TryFormat(
 
   IncrementalStringBuilder builder(isolate);
 
-  // TODO(14386): Get this list empty.
-  static constexpr MessageTemplate kTemplatesWithMismatchedArguments[] = {
-      MessageTemplate::kConstAssign,
-      MessageTemplate::kConstructorNotReceiver,
-      MessageTemplate::kDataCloneErrorDetachedArrayBuffer,
-      MessageTemplate::kDataCloneErrorOutOfMemory,
-      MessageTemplate::kIncompatibleMethodReceiver,
-      MessageTemplate::kInvalidArgument,
-      MessageTemplate::kInvalidArrayLength,
-      MessageTemplate::kInvalidAtomicAccessIndex,
-      MessageTemplate::kInvalidDataViewLength,
-      MessageTemplate::kInvalidIndex,
-      MessageTemplate::kInvalidLhsInAssignment,
-      MessageTemplate::kInvalidLhsInFor,
-      MessageTemplate::kInvalidLhsInPostfixOp,
-      MessageTemplate::kInvalidLhsInPrefixOp,
-      MessageTemplate::kInvalidPrivateBrandReinitialization,
-      MessageTemplate::kInvalidPrivateFieldReinitialization,
-      MessageTemplate::kInvalidPrivateMemberWrite,
-      MessageTemplate::kInvalidRegExpExecResult,
-      MessageTemplate::kInvalidTimeValue,
-      MessageTemplate::kInvalidWeakMapKey,
-      MessageTemplate::kInvalidWeakSetValue,
-      MessageTemplate::kIteratorReduceNoInitial,
-      MessageTemplate::kJsonParseShortString,
-      MessageTemplate::kJsonParseUnexpectedEOS,
-      MessageTemplate::kJsonParseUnexpectedTokenEndStringWithContext,
-      MessageTemplate::kJsonParseUnexpectedTokenShortString,
-      MessageTemplate::kJsonParseUnexpectedTokenStartStringWithContext,
-      MessageTemplate::kJsonParseUnexpectedTokenSurroundStringWithContext,
-      MessageTemplate::kMustBePositive,
-      MessageTemplate::kNotIterable,
-      MessageTemplate::kNotTypedArray,
-      MessageTemplate::kProxyNonObject,
-      MessageTemplate::kProxyPrivate,
-      MessageTemplate::kProxyRevoked,
-      MessageTemplate::kProxyTrapReturnedFalsishFor,
-      MessageTemplate::kReduceNoInitial,
-      MessageTemplate::kSpreadIteratorSymbolNonCallable,
-      MessageTemplate::kSymbolIteratorInvalid,
-      MessageTemplate::kTopLevelAwaitStalled,
-      MessageTemplate::kUndefinedOrNullToObject,
-      MessageTemplate::kUnexpectedStrictReserved,
-      MessageTemplate::kUnexpectedTokenIdentifier,
-      MessageTemplate::kWeakRefsCleanupMustBeCallable};
-
   base::Vector<const DirectHandle<String>> remaining_args = args;
   for (const char* c = template_string; *c != '\0'; c++) {
     if (*c == '%') {
@@ -496,29 +459,19 @@ MaybeHandle<String> MessageFormatter::TryFormat(
       if (*(c + 1) == '%') {
         c++;
         builder.AppendCharacter('%');
+      } else if (remaining_args.empty()) {
+        FATAL("Missing argument to template (got %zu): %s", args.size(),
+              template_string);
       } else {
-        // TODO(14386): Remove this fallback.
-        if (remaining_args.empty()) {
-          if (std::count(std::begin(kTemplatesWithMismatchedArguments),
-                         std::end(kTemplatesWithMismatchedArguments), index)) {
-            builder.AppendCString("undefined");
-          } else {
-            FATAL("Missing argument to template (got %zu): %s", args.size(),
-                  template_string);
-          }
-        } else {
-          DirectHandle<String> arg = remaining_args[0];
-          remaining_args += 1;
-          builder.AppendString(arg);
-        }
+        DirectHandle<String> arg = remaining_args[0];
+        remaining_args += 1;
+        builder.AppendString(arg);
       }
     } else {
       builder.AppendCharacter(*c);
     }
   }
-  if (!remaining_args.empty() &&
-      std::count(std::begin(kTemplatesWithMismatchedArguments),
-                 std::end(kTemplatesWithMismatchedArguments), index) == 0) {
+  if (!remaining_args.empty()) {
     FATAL("Too many arguments to template (expected %zu, got %zu): %s",
           args.size() - remaining_args.size(), args.size(), template_string);
   }
@@ -555,7 +508,7 @@ MaybeHandle<JSObject> ErrorUtils::Construct(
     // Abort range errors in correctness fuzzing, as their causes differ
     // across correctness-fuzzing scenarios.
     if (target.is_identical_to(isolate->range_error_function())) {
-      FATAL("Aborting on range error");
+      base::FatalNoSecurityImpact("Aborting on range error");
     }
     // Ignore error messages in correctness fuzzing, because the spec leaves
     // room for undefined behavior.
@@ -581,7 +534,7 @@ MaybeHandle<JSObject> ErrorUtils::Construct(
   //     true, [[Enumerable]]: false, [[Configurable]]: true}.
   //  c. Perform ! DefinePropertyOrThrow(O, "message", msgDesc).
   // 4. Return O.
-  if (!IsUndefined(*message, isolate)) {
+  if (!IsUndefined(*message)) {
     DirectHandle<String> msg_string;
     ASSIGN_RETURN_ON_EXCEPTION(isolate, msg_string,
                                Object::ToString(isolate, message));
@@ -597,7 +550,7 @@ MaybeHandle<JSObject> ErrorUtils::Construct(
     }
   }
 
-  if (!IsUndefined(*options, isolate)) {
+  if (!IsUndefined(*options)) {
     // If Type(options) is Object and ? HasProperty(options, "cause") then
     //   a. Let cause be ? Get(options, "cause").
     //   b. Perform ! CreateNonEnumerableDataPropertyOrThrow(O, "cause", cause).
@@ -605,7 +558,7 @@ MaybeHandle<JSObject> ErrorUtils::Construct(
     if (IsJSReceiver(*options)) {
       DirectHandle<JSReceiver> js_options = Cast<JSReceiver>(options);
       Maybe<bool> has_cause =
-          JSObject::HasProperty(isolate, js_options, cause_string);
+          JSReceiver::HasProperty(isolate, js_options, cause_string);
       if (has_cause.IsNothing()) {
         DCHECK((isolate)->has_exception());
         return MaybeHandle<JSObject>();
@@ -614,7 +567,7 @@ MaybeHandle<JSObject> ErrorUtils::Construct(
         DirectHandle<Object> cause;
         ASSIGN_RETURN_ON_EXCEPTION(
             isolate, cause,
-            JSObject::GetProperty(isolate, js_options, cause_string));
+            JSReceiver::GetProperty(isolate, js_options, cause_string));
         RETURN_ON_EXCEPTION(isolate, JSObject::SetOwnPropertyIgnoreAttributes(
                                          err, cause_string, cause, DONT_ENUM));
       }
@@ -641,10 +594,10 @@ MaybeHandle<String> GetStringPropertyOrDefault(Isolate* isolate,
                                                Handle<String> default_str) {
   Handle<Object> obj;
   ASSIGN_RETURN_ON_EXCEPTION(isolate, obj,
-                             JSObject::GetProperty(isolate, recv, key));
+                             JSReceiver::GetProperty(isolate, recv, key));
 
   Handle<String> str;
-  if (IsUndefined(*obj, isolate)) {
+  if (IsUndefined(*obj)) {
     str = default_str;
   } else {
     ASSIGN_RETURN_ON_EXCEPTION(isolate, str, Object::ToString(isolate, obj));
@@ -691,10 +644,10 @@ MaybeHandle<String> ErrorUtils::ToString(Isolate* isolate,
     // is accessed the first time.
     //
     // If |recv| was not constructed with %Error%, use the "message" property.
-    LookupIterator it(isolate, LookupIterator::PROTOTYPE_CHAIN_SKIP_INTERCEPTOR,
-                      recv, isolate->factory()->error_message_symbol());
+    LookupIterator it(isolate, recv, isolate->factory()->error_message_symbol(),
+                      LookupIterator::OWN_SKIP_INTERCEPTOR);
     Handle<Object> result = JSReceiver::GetDataProperty(&it);
-    if (it.IsFound() && IsUndefined(*result, isolate)) {
+    if (it.IsFound() && IsUndefined(*result)) {
       msg = msg_default;
     } else if (it.IsFound()) {
       ASSIGN_RETURN_ON_EXCEPTION(isolate, msg,
@@ -831,14 +784,20 @@ bool ComputeLocation(Isolate* isolate, MessageLocation* target) {
     // baseline code. For optimized code this will use the deoptimization
     // information to get canonical location information.
     FrameSummaries summaries = it.frame()->Summarize();
+#if V8_ENABLE_WEBASSEMBLY
+    if (summaries.size() == 0) {
+      DCHECK_EQ(it.frame()->function()->shared()->builtin_id(),
+                Builtin::kWasmMethodWrapper);
+      return false;
+    }
+#endif
     auto& summary = summaries.frames.back().AsJavaScript();
     Handle<SharedFunctionInfo> shared(summary.function()->shared(), isolate);
     Handle<Object> script(shared->script(), isolate);
     SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate, shared);
     int pos =
         summary.abstract_code()->SourcePosition(isolate, summary.code_offset());
-    if (IsScript(*script) &&
-        !(IsUndefined(Cast<Script>(script)->source(), isolate))) {
+    if (IsScript(*script) && !(IsUndefined(Cast<Script>(script)->source()))) {
       Handle<Script> casted_script = Cast<Script>(script);
       *target = MessageLocation(casted_script, pos, pos + 1, shared);
       return true;
@@ -858,20 +817,13 @@ DirectHandle<String> BuildDefaultCallSite(Isolate* isolate,
     // This threshold must be sufficiently far below String::kMaxLength that
     // the {builder}'s result can never exceed that limit.
     constexpr int kMaxPrintedStringLength = 100;
-    if (string->length() <= kMaxPrintedStringLength) {
-      builder.AppendString(string);
-    } else {
-      string = isolate->factory()->NewProperSubString(string, 0,
-                                                      kMaxPrintedStringLength);
-      builder.AppendString(string);
-      builder.AppendCStringLiteral("<...>");
-    }
+    builder.AppendStringCapped(string, kMaxPrintedStringLength);
     builder.AppendCStringLiteral("\"");
-  } else if (IsNull(*object, isolate)) {
+  } else if (IsNull(*object)) {
     builder.AppendCStringLiteral(" null");
-  } else if (IsTrue(*object, isolate)) {
+  } else if (IsTrue(*object)) {
     builder.AppendCStringLiteral(" true");
-  } else if (IsFalse(*object, isolate)) {
+  } else if (IsFalse(*object)) {
     builder.AppendCStringLiteral(" false");
   } else if (IsNumber(*object)) {
     builder.AppendCharacter(' ');
@@ -893,7 +845,7 @@ DirectHandle<String> RenderCallSite(Isolate* isolate,
     ReusableUnoptimizedCompileState reusable_state(isolate);
     ParseInfo info(isolate, flags, &compile_state, &reusable_state);
     if (parsing::ParseAny(&info, location->shared(), isolate,
-                          parsing::ReportStatisticsMode::kNo)) {
+                          parsing::ReportStatisticsMode{false})) {
       info.ast_value_factory()->Internalize(isolate);
       CallPrinter printer(isolate, location->shared()->IsUserJavaScript());
       DirectHandle<String> str =
@@ -923,6 +875,7 @@ MessageTemplate UpdateErrorTemplate(CallPrinter::ErrorHint hint,
     case CallPrinter::ErrorHint::kNone:
       return default_id;
   }
+  UNREACHABLE();
 }
 
 }  // namespace
@@ -958,7 +911,7 @@ Tagged<Object> ErrorUtils::ThrowSpreadArgError(Isolate* isolate,
     ReusableUnoptimizedCompileState reusable_state(isolate);
     ParseInfo info(isolate, flags, &compile_state, &reusable_state);
     if (parsing::ParseAny(&info, location.shared(), isolate,
-                          parsing::ReportStatisticsMode::kNo)) {
+                          parsing::ReportStatisticsMode{false})) {
       info.ast_value_factory()->Internalize(isolate);
       CallPrinter printer(isolate, location.shared()->IsUserJavaScript(),
                           CallPrinter::SpreadErrorInArgsHint::kErrorInArgs);
@@ -978,8 +931,12 @@ Tagged<Object> ErrorUtils::ThrowSpreadArgError(Isolate* isolate,
     }
   }
 
-  isolate->ThrowAt(isolate->factory()->NewTypeError(id, callsite, object),
-                   &location);
+  if (id == MessageTemplate::kSpreadIteratorSymbolNonCallable) {
+    isolate->ThrowAt(isolate->factory()->NewTypeError(id), &location);
+  } else {
+    isolate->ThrowAt(isolate->factory()->NewTypeError(id, callsite, object),
+                     &location);
+  }
   return ReadOnlyRoots(isolate).exception();
 }
 
@@ -1039,7 +996,7 @@ Tagged<Object> ErrorUtils::ThrowLoadFromNullOrUndefined(
     ReusableUnoptimizedCompileState reusable_state(isolate);
     ParseInfo info(isolate, flags, &compile_state, &reusable_state);
     if (parsing::ParseAny(&info, location.shared(), isolate,
-                          parsing::ReportStatisticsMode::kNo)) {
+                          parsing::ReportStatisticsMode{false})) {
       info.ast_value_factory()->Internalize(isolate);
       CallPrinter printer(isolate, location.shared()->IsUserJavaScript());
       DirectHandle<String> str =
@@ -1132,9 +1089,9 @@ bool ErrorUtils::HasErrorStackSymbolOwnProperty(Isolate* isolate,
 // static
 ErrorUtils::StackPropertyLookupResult ErrorUtils::GetErrorStackProperty(
     Isolate* isolate, DirectHandle<JSReceiver> maybe_error_object) {
-  LookupIterator it(isolate, LookupIterator::PROTOTYPE_CHAIN_SKIP_INTERCEPTOR,
-                    maybe_error_object,
-                    isolate->factory()->error_stack_symbol());
+  LookupIterator it(isolate, maybe_error_object,
+                    isolate->factory()->error_stack_symbol(),
+                    LookupIterator::OWN_SKIP_INTERCEPTOR);
   Handle<Object> result = JSReceiver::GetDataProperty(&it);
 
   if (!it.IsFound()) {
@@ -1147,7 +1104,15 @@ ErrorUtils::StackPropertyLookupResult ErrorUtils::GetErrorStackProperty(
 // static
 MaybeDirectHandle<Object> ErrorUtils::GetFormattedStack(
     Isolate* isolate, DirectHandle<JSObject> maybe_error_object) {
-  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.stack_trace"), __func__);
+  TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("v8.stack_trace"),
+              perfetto::StaticString(__func__));
+
+  if (IsAccessCheckNeeded(*maybe_error_object) &&
+      !isolate->MayAccess(isolate->native_context(), maybe_error_object)) {
+    RETURN_ON_EXCEPTION(isolate,
+                        isolate->ReportFailedAccessCheck(maybe_error_object));
+    UNREACHABLE();
+  }
 
   ErrorUtils::StackPropertyLookupResult lookup =
       ErrorUtils::GetErrorStackProperty(isolate, maybe_error_object);
@@ -1160,24 +1125,26 @@ MaybeDirectHandle<Object> ErrorUtils::GetFormattedStack(
 
     DirectHandle<JSObject> error_object =
         lookup.error_stack_symbol_holder.ToHandleChecked();
+    Handle<FixedArray> expanded = CallSiteInfo::ExpandDeferredFrames(
+        isolate,
+        handle(error_stack_data->raw_data_for_call_site_infos(), isolate));
     DirectHandle<Object> formatted_stack;
     ASSIGN_RETURN_ON_EXCEPTION(
         isolate, formatted_stack,
-        FormatStackTrace(
-            isolate, error_object,
-            direct_handle(error_stack_data->call_site_infos(), isolate)));
-    error_stack_data->set_formatted_stack(*formatted_stack);
+        FormatStackTrace(isolate, error_object, expanded));
+    error_stack_data->set_formatted_stack(Cast<JSAny>(*formatted_stack));
     return formatted_stack;
   }
 
   if (IsFixedArray(*lookup.error_stack)) {
     DirectHandle<JSObject> error_object =
         lookup.error_stack_symbol_holder.ToHandleChecked();
+    Handle<FixedArray> expanded = CallSiteInfo::ExpandDeferredFrames(
+        isolate, handle(Cast<FixedArray>(*lookup.error_stack), isolate));
     DirectHandle<Object> formatted_stack;
     ASSIGN_RETURN_ON_EXCEPTION(
         isolate, formatted_stack,
-        FormatStackTrace(isolate, error_object,
-                         Cast<FixedArray>(lookup.error_stack)));
+        FormatStackTrace(isolate, error_object, expanded));
     RETURN_ON_EXCEPTION(
         isolate, Object::SetProperty(isolate, error_object,
                                      isolate->factory()->error_stack_symbol(),
@@ -1192,7 +1159,13 @@ MaybeDirectHandle<Object> ErrorUtils::GetFormattedStack(
 // static
 void ErrorUtils::SetFormattedStack(Isolate* isolate,
                                    DirectHandle<JSObject> maybe_error_object,
-                                   DirectHandle<Object> formatted_stack) {
+                                   DirectHandle<JSAny> formatted_stack) {
+  if (IsAccessCheckNeeded(*maybe_error_object) &&
+      !isolate->MayAccess(isolate->native_context(), maybe_error_object)) {
+    USE(isolate->ReportFailedAccessCheck(maybe_error_object));
+    return;
+  }
+
   ErrorUtils::StackPropertyLookupResult lookup =
       ErrorUtils::GetErrorStackProperty(isolate, maybe_error_object);
 

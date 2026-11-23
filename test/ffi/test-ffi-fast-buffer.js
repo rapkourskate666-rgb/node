@@ -1,4 +1,4 @@
-// Flags: --experimental-ffi --expose-internals
+// Flags: --expose-internals --allow-natives-syntax
 'use strict';
 
 const common = require('../common');
@@ -6,6 +6,7 @@ common.skipIfFFIMissing();
 
 const assert = require('node:assert');
 const { test } = require('node:test');
+const { queryObjects } = require('node:v8');
 const { internalBinding } = require('internal/test/binding');
 const {
   kSbSharedBuffer,
@@ -70,6 +71,66 @@ test('fast FFI buffer arguments reject invalid values', () => {
   }
 });
 
+test('optimized pointer arguments reject direct SharedArrayBuffers', () => {
+  const lib = new ffi.DynamicLibrary(libraryPath);
+  const firstByte = lib.getFunction('first_byte', {
+    arguments: ['pointer'],
+    return: 'u8',
+  });
+  const regular = new ArrayBuffer(1);
+  const shared = new SharedArrayBuffer(1);
+  const expected = { code: 'ERR_INVALID_ARG_VALUE' };
+
+  function callFirstByte(value) {
+    return firstByte(value);
+  }
+
+  try {
+    assert.throws(() => callFirstByte(shared), expected);
+
+    eval('%PrepareFunctionForOptimization(callFirstByte)');
+    callFirstByte(regular);
+    callFirstByte(regular);
+    eval('%OptimizeFunctionOnNextCall(callFirstByte)');
+    callFirstByte(regular);
+
+    assert.throws(() => callFirstByte(shared), expected);
+  } finally {
+    eval('%WaitForBackgroundOptimization()');
+    lib.close();
+  }
+});
+
+test('optimized buffer calls do not retain handles', () => {
+  const { lib, functions } = ffi.dlopen(libraryPath, {
+    first_byte: { arguments: ['buffer'], return: 'u8' },
+  });
+  // A leaked handle to the backing store keeps it alive until the current
+  // synchronous run ends, so count live backing stores after the calls.
+  class TrackedArrayBuffer extends ArrayBuffer {}
+
+  function callFirstByte(view) {
+    return functions.first_byte(view);
+  }
+
+  try {
+    const warm = new Uint8Array(1);
+    eval('%PrepareFunctionForOptimization(callFirstByte)');
+    for (let i = 0; i < 1000; i++) callFirstByte(warm);
+    eval('%OptimizeFunctionOnNextCall(callFirstByte)');
+    callFirstByte(warm);
+
+    for (let i = 0; i < 100; i++) {
+      callFirstByte(new Uint8Array(new TrackedArrayBuffer(1)));
+    }
+    assert.strictEqual(
+      queryObjects(TrackedArrayBuffer, { format: 'count' }), 0);
+  } finally {
+    eval('%WaitForBackgroundOptimization()');
+    lib.close();
+  }
+});
+
 test('fast FFI string buffers survive reentrant callbacks', {
   // Bundled libffi callbacks crash on SmartOS.
   skip: common.isSunOS,
@@ -96,8 +157,30 @@ test('fast FFI string buffers survive reentrant callbacks', {
   }
 });
 
+test('fast FFI refreshes cached temporary string buffers', () => {
+  const lib = new ffi.DynamicLibrary(libraryPath);
+  const overwriteString = lib.getFunction('overwrite_string', {
+    arguments: ['string', 'i32', 'u64'],
+    return: 'u8',
+  });
+
+  try {
+    const mutated = overwriteString('hello', 0x79, 1n);
+    assert.strictEqual(mutated, 0x79);
+
+    const refreshed = overwriteString('hello', 0x79, 0n);
+    assert.strictEqual(refreshed, 0x68);
+  } finally {
+    lib.close();
+  }
+});
+
 test('optimized buffer signatures preserve pointer-like conversions', () => {
   const lib = new ffi.DynamicLibrary(libraryPath);
+  const asPointer = lib.getFunction('pointer_to_usize', {
+    arguments: ['pointer'],
+    return: 'u64',
+  });
   const asBuffer = lib.getFunction('pointer_to_usize', {
     arguments: ['buffer'],
     return: 'u64',
@@ -106,6 +189,10 @@ test('optimized buffer signatures preserve pointer-like conversions', () => {
     arguments: ['arraybuffer'],
     return: 'u64',
   });
+
+  function callPointer(value) {
+    return asPointer(value);
+  }
 
   function callBuffer(value) {
     return asBuffer(value);
@@ -117,19 +204,37 @@ test('optimized buffer signatures preserve pointer-like conversions', () => {
 
   try {
     for (let i = 0; i < 100_000; i++) {
+      assert.strictEqual(callPointer(0n), 0n);
       assert.strictEqual(callBuffer(0n), 0n);
       assert.strictEqual(callArrayBuffer(0n), 0n);
     }
 
-    for (const call of [callBuffer, callArrayBuffer]) {
+    for (const call of [callPointer, callBuffer, callArrayBuffer]) {
       assert.strictEqual(call(null), 0n);
       assert.strictEqual(call(undefined), 0n);
       assert.notStrictEqual(call('ffi'), 0n);
 
       const bytes = Buffer.alloc(1);
       assert.strictEqual(call(bytes), ffi.getRawPointer(bytes));
+
+      const arrayBuffer = new ArrayBuffer(8);
+      const typedArray = new Uint8Array(arrayBuffer);
+      const dataView = new DataView(arrayBuffer);
+      arrayBuffer.transfer();
+
+      assert.throws(() => call(arrayBuffer), {
+        code: 'ERR_INVALID_ARG_VALUE',
+        message: 'Argument 0 is a detached ArrayBuffer',
+      });
+      for (const view of [typedArray, dataView]) {
+        assert.throws(() => call(view), {
+          code: 'ERR_INVALID_ARG_VALUE',
+          message: 'Argument 0 is an ArrayBufferView backed by a detached ArrayBuffer',
+        });
+      }
     }
   } finally {
+    eval('%WaitForBackgroundOptimization()');
     lib.close();
   }
 });
@@ -163,6 +268,7 @@ test('multi-argument buffer signatures accept pointer BigInts', () => {
       assert.strictEqual(functions.sum_buffer(pointer, length), 28n);
     }
   } finally {
+    eval('%WaitForBackgroundOptimization()');
     lib.close();
   }
 });

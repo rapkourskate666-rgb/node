@@ -8,12 +8,15 @@
 #include "src/builtins/builtins-iterator.h"
 
 #include "src/base/float16.h"
+#include "src/base/memory.h"
+#include "src/base/numerics/safe_conversions.h"
 #include "src/execution/execution.h"
 #include "src/execution/protectors-inl.h"
 #include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/js-array-inl.h"
 #include "src/objects/js-collection-inl.h"
 #include "src/objects/js-objects-inl.h"
+#include "src/objects/object-conversions-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/ordered-hash-table-inl.h"
 
@@ -73,67 +76,76 @@ inline MaybeDirectHandle<JSReceiver> IteratorStep(
 // https://tc39.es/ecma262/#sec-iteratorclose
 inline void IteratorClose(Isolate* isolate, DirectHandle<JSReceiver> iterator) {
   DirectHandle<Object> completion_exception;
+  DirectHandle<Object> completion_message;
+
   bool has_completion_exception = isolate->has_exception();
   if (has_completion_exception) {
+    if (isolate->is_execution_terminating()) {
+      // Don't swallow the termination exception.
+      return;
+    }
     completion_exception = handle(isolate->exception(), isolate);
+    completion_message = handle(isolate->pending_message(), isolate);
     isolate->clear_exception();
+    isolate->clear_pending_message();
   }
 
   // 3. Let innerResult be GetMethod(iterator, "return").
   DirectHandle<Object> return_method;
-  DirectHandle<Object> inner_exception;
-  bool has_inner_exception = false;
-
-  if (!Object::GetProperty(isolate, iterator,
-                           isolate->factory()->return_string())
-           .ToHandle(&return_method)) {
-    has_inner_exception = true;
-    inner_exception = handle(isolate->exception(), isolate);
-    isolate->clear_exception();
-  } else if (!IsNullOrUndefined(*return_method, isolate)) {
+  if (Object::GetProperty(isolate, iterator,
+                          isolate->factory()->return_string())
+          .ToHandle(&return_method) &&
+      !IsNullOrUndefined(*return_method)) {
     // 4. If innerResult.[[Type]] is normal, then
     //   a. Let return be innerResult.[[Value]].
     //   b. If return is undefined, return Completion(completion).
     //   c. Set innerResult to Call(return, iterator).
     DirectHandle<Object> inner_result;
-    if (!Execution::Call(isolate, return_method, iterator,
-                         base::Vector<const DirectHandle<Object>>())
-             .ToHandle(&inner_result)) {
-      has_inner_exception = true;
-      inner_exception = handle(isolate->exception(), isolate);
-      isolate->clear_exception();
-    } else {
+    if (Execution::Call(isolate, return_method, iterator,
+                        base::Vector<const DirectHandle<Object>>())
+            .ToHandle(&inner_result)) {
       // 7. If innerResult.[[Value]] is not an Object, throw a TypeError
       // exception.
       if (!has_completion_exception && !IsJSReceiver(*inner_result)) {
-        has_inner_exception = true;
-        inner_exception = isolate->factory()->NewTypeError(
+        isolate->Throw(*isolate->factory()->NewTypeError(
             MessageTemplate::kCalledOnNonObject,
-            isolate->factory()->return_string());
+            isolate->factory()->return_string()));
       }
     }
   }
 
   // 5. If completion is a throw completion, return ? completion.
-  if (has_completion_exception) {
+  // 6. If innerResult is a throw completion, return ? innerResult.
+  if (has_completion_exception && !isolate->is_execution_terminating()) {
     isolate->set_exception(*completion_exception);
-  } else if (has_inner_exception) {
-    // 6. If innerResult is a throw completion, return ? innerResult.
-    isolate->set_exception(*inner_exception);
+    isolate->set_pending_message(*completion_message);
   }
 }
 
-// Helper for iterating over an iterable, with fast paths for Arrays and Sets.
-template <typename IntVisitor, typename DoubleVisitor, typename GenericVisitor>
-MaybeDirectHandle<Object> IterableForEach(Isolate* isolate,
-                                          DirectHandle<Object> items,
-                                          IntVisitor int_visitor,
-                                          DoubleVisitor double_visitor,
-                                          GenericVisitor generic_visitor,
-                                          std::optional<uint64_t> max_count) {
+inline void CloseFreshArrayIterator(Isolate* isolate,
+                                    DirectHandle<JSReceiver> iterated_object,
+                                    double next_index) {
+  DirectHandle<Map> map(isolate->native_context()->initial_array_iterator_map(),
+                        isolate);
+  DirectHandle<Number> next_index_obj =
+      isolate->factory()->NewNumber(next_index);
+  DirectHandle<JSArrayIterator> iterator =
+      Cast<JSArrayIterator>(isolate->factory()->NewJSObjectFromMap(map));
+  iterator->set_iterated_object(*iterated_object);
+  iterator->set_next_index(*next_index_obj);
+  iterator->set_kind(IterationKind::kValues);
+  IteratorClose(isolate, iterator);
+}
+
+template <bool kAllowJSExecution, typename IntVisitor, typename DoubleVisitor,
+          typename GenericVisitor>
+MaybeDirectHandle<Object> IterableForEach(
+    Isolate* isolate, DirectHandle<Object> items, IntVisitor int_visitor,
+    DoubleVisitor double_visitor, GenericVisitor generic_visitor,
+    uint64_t* max_count_out, std::optional<uint64_t> max_count) {
   auto dispatch = [&](DirectHandle<Object> obj) -> bool {
     if (IsSmi(*obj)) {
-      return int_visitor(Smi::ToInt(*obj));
+      return double_visitor(static_cast<double>(Smi::ToInt(*obj)));
     } else if (IsHeapNumber(*obj)) {
       return double_visitor(Object::NumberValue(Cast<HeapNumber>(*obj)));
     } else {
@@ -141,76 +153,104 @@ MaybeDirectHandle<Object> IterableForEach(Isolate* isolate,
     }
   };
 
+  // TODO(olivf): Support a smaller limit. Needs additional counting in the case
+  // of holey arrays and deleted set elements.
+  DCHECK_IMPLIES(max_count, std::numeric_limits<uint32_t>::max() <= *max_count);
+
   // Fast path for JSArray.
   // This corresponds to an optimized version of
   // CreateListIteratorRecord/IteratorNext for arrays where we know the length
   // and elements layout.
-  if (IsJSArray(*items) &&
+  // This is only used if the callback does not allow JS execution as it does
+  // not handle resizing.
+  if (!kAllowJSExecution && IsJSArray(*items) &&
       Protectors::IsArrayIteratorLookupChainIntact(isolate)) {
     DirectHandle<JSArray> array = Cast<JSArray>(items);
     ElementsKind kind = array->GetElementsKind();
     // TODO(olivf): Move this as a helper into ElementsAccessor.
-    if (IsFastElementsKind(kind)) {
+    // Holey arrays are only supported if there are no properties on the lookup
+    // chain. This is approximated by checking for the array prototype and
+    // ensuring it has not elements.
+    if (IsFastElementsKind(kind) && array->HasArrayPrototype(isolate) &&
+        (!IsHoleyElementsKind(kind) ||
+         Protectors::IsNoElementsIntact(isolate))) {
       DirectHandle<FixedArrayBase> elements(array->elements(), isolate);
       uint32_t len;
       if (Object::ToUint32(array->length(), &len)) {
+        DCHECK_IMPLIES(max_count, len < *max_count);
+        if (max_count_out) {
+          *max_count_out = len;
+        }
         if (len == 0) {
           return isolate->root_handle(RootIndex::kUndefinedValue);
         }
-        const MaybeDirectHandle<Object> abort;
-        if (kind == PACKED_SMI_ELEMENTS) {
-          DirectHandle<FixedArray> smi_elements = Cast<FixedArray>(elements);
-          for (uint32_t i = 0; i < len; ++i) {
-            Tagged<Object> obj = smi_elements->get(i);
-            if (!int_visitor(Smi::ToInt(obj))) return abort;
-          }
-        } else if (kind == HOLEY_SMI_ELEMENTS) {
-          DirectHandle<FixedArray> smi_elements = Cast<FixedArray>(elements);
-          for (uint32_t i = 0; i < len; ++i) {
-            Tagged<Object> obj = smi_elements->get(i);
-            if (IsTheHole(obj, isolate)) {
-              if (!generic_visitor(
-                      isolate->root_handle(RootIndex::kUndefinedValue))) {
-                return abort;
+        uint32_t i = 0;
+        {
+          DisallowJavascriptExecution no_js;
+          if (kind == PACKED_SMI_ELEMENTS) {
+            DirectHandle<FixedArray> smi_elements = Cast<FixedArray>(elements);
+            for (; i < len; ++i) {
+              Tagged<Object> obj = smi_elements->get(i);
+              if (!int_visitor(Smi::ToInt(obj))) break;
+            }
+          } else if (kind == HOLEY_SMI_ELEMENTS) {
+            DirectHandle<FixedArray> smi_elements = Cast<FixedArray>(elements);
+            for (; i < len; ++i) {
+              Tagged<Object> obj = smi_elements->get(i);
+              if (IsTheHole(obj)) {
+                if (!generic_visitor(
+                        isolate->root_handle(RootIndex::kUndefinedValue))) {
+                  break;
+                }
+              } else {
+                if (!int_visitor(Smi::ToInt(obj))) break;
               }
-            } else {
-              if (!int_visitor(Smi::ToInt(obj))) return abort;
+            }
+          } else if (kind == PACKED_DOUBLE_ELEMENTS) {
+            DirectHandle<FixedDoubleArray> double_elements =
+                Cast<FixedDoubleArray>(elements);
+            for (; i < len; ++i) {
+              if (!double_visitor(double_elements->get_scalar(i))) break;
+            }
+          } else if (kind == HOLEY_DOUBLE_ELEMENTS) {
+            DirectHandle<FixedDoubleArray> double_elements =
+                Cast<FixedDoubleArray>(elements);
+            for (; i < len; ++i) {
+              if (double_elements->is_the_hole(i) ||
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
+                  double_elements->is_undefined(i)
+#else
+                  false
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
+              ) {
+                if (!generic_visitor(
+                        isolate->root_handle(RootIndex::kUndefinedValue))) {
+                  break;
+                }
+              } else {
+                if (!double_visitor(double_elements->get_scalar(i))) break;
+              }
+            }
+          } else {
+            DirectHandle<FixedArray> fast_elements = Cast<FixedArray>(elements);
+            DirectHandle<Object> obj_handle(Smi::zero(), isolate);
+            for (; i < len; ++i) {
+              Tagged<Object> obj = fast_elements->get(i);
+              if (IsTheHole(obj)) {
+                if (!generic_visitor(
+                        isolate->root_handle(RootIndex::kUndefinedValue))) {
+                  break;
+                }
+              } else {
+                obj_handle.SetValue(obj);
+                if (!dispatch(obj_handle)) break;
+              }
             }
           }
-        } else if (kind == PACKED_DOUBLE_ELEMENTS) {
-          DirectHandle<FixedDoubleArray> double_elements =
-              Cast<FixedDoubleArray>(elements);
-          for (uint32_t i = 0; i < len; ++i) {
-            if (!double_visitor(double_elements->get_scalar(i))) return abort;
-          }
-        } else if (kind == HOLEY_DOUBLE_ELEMENTS) {
-          DirectHandle<FixedDoubleArray> double_elements =
-              Cast<FixedDoubleArray>(elements);
-          for (uint32_t i = 0; i < len; ++i) {
-            if (double_elements->is_the_hole(i)) {
-              if (!generic_visitor(
-                      isolate->root_handle(RootIndex::kUndefinedValue))) {
-                return abort;
-              }
-            } else {
-              if (!double_visitor(double_elements->get_scalar(i))) return abort;
-            }
-          }
-        } else {
-          DirectHandle<FixedArray> fast_elements = Cast<FixedArray>(elements);
-          DirectHandle<Object> obj_handle(Smi::zero(), isolate);
-          for (uint32_t i = 0; i < len; ++i) {
-            Tagged<Object> obj = fast_elements->get(i);
-            if (IsTheHole(obj, isolate)) {
-              if (!generic_visitor(
-                      isolate->root_handle(RootIndex::kUndefinedValue))) {
-                return abort;
-              }
-            } else {
-              obj_handle.SetValue(obj);
-              if (!dispatch(obj_handle)) return abort;
-            }
-          }
+        }
+        if (i < len) {
+          CloseFreshArrayIterator(isolate, array, i + 1);
+          return MaybeDirectHandle<Object>();
         }
         return isolate->root_handle(RootIndex::kUndefinedValue);
       }
@@ -230,70 +270,84 @@ MaybeDirectHandle<Object> IterableForEach(Isolate* isolate,
                         isolate->factory()->iterator_symbol()));
 
   // Fast path for JSTypedArray.
+  // This can be used even if the callback executes JS since it can handle
+  // resizing and detaching as typed arrays are not sparse.
   if (IsJSTypedArray(*receiver) &&
       Protectors::IsArrayIteratorLookupChainIntact(isolate) &&
       IsJSFunction(*iterator_fn)) {
     if (DirectHandle<JSFunction> func = Cast<JSFunction>(iterator_fn);
-        func->code(isolate) ==
-        *isolate->builtins()->code(Builtin::kTypedArrayPrototypeValues)) {
+        func->native_context() == *isolate->native_context() &&
+        isolate->builtins()
+            ->code(Builtin::kTypedArrayPrototypeValues)
+            .SafeEquals(func->code(isolate))) {
       DirectHandle<JSTypedArray> typed_array = Cast<JSTypedArray>(receiver);
       ElementsKind kind = typed_array->GetElementsKind();
-      if (!IsBigIntTypedArrayElementsKind(kind)) {
-        bool out_of_bounds = false;
-        size_t len = typed_array->GetLengthOrOutOfBounds(out_of_bounds);
-        if (out_of_bounds || typed_array->WasDetached()) {
-          isolate->Throw(*isolate->factory()->NewTypeError(
-              MessageTemplate::kTypedArrayDetachedErrorOperation,
-              isolate->factory()->NewStringFromAsciiChecked("iteration")));
-          return MaybeDirectHandle<Object>();
-        }
-        switch (kind) {
-#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype)                           \
-  case TYPE##_ELEMENTS:                                                     \
-  case RAB_GSAB_##TYPE##_ELEMENTS: {                                        \
-    if constexpr (!(std::is_same_v<ctype, uint64_t> ||                      \
-                    (!std::is_same_v<int, int64_t> &&                       \
-                     (std::is_same_v<ctype, int64_t> ||                     \
-                      std::is_same_v<ctype, uint32_t>)))) {                 \
-      for (size_t i = 0; i < len; ++i) {                                    \
-        if (typed_array->WasDetached()) {                                   \
-          isolate->Throw(*isolate->factory()->NewTypeError(                 \
-              MessageTemplate::kTypedArrayDetachedErrorOperation,           \
-              isolate->factory()->NewStringFromAsciiChecked("iteration"))); \
-          return MaybeDirectHandle<Object>();                               \
-        }                                                                   \
-        ctype val = static_cast<ctype*>(typed_array->DataPtr())[i];         \
-        if constexpr (ElementsKind::TYPE##_ELEMENTS == FLOAT16_ELEMENTS) {  \
-          if (!double_visitor(fp16_ieee_to_fp32_value(val))) {              \
-            return MaybeDirectHandle<Object>();                             \
-          }                                                                 \
-        } else if constexpr (std::is_floating_point_v<ctype>) {             \
-          if (!double_visitor(val)) {                                       \
-            return MaybeDirectHandle<Object>();                             \
-          }                                                                 \
-        } else {                                                            \
-          static_assert(std::numeric_limits<ctype>::max() <=                \
-                        std::numeric_limits<int>::max());                   \
-          static_assert(std::numeric_limits<ctype>::min() >=                \
-                        std::numeric_limits<int>::min());                   \
-          if (!int_visitor(static_cast<int>(val))) {                        \
-            return MaybeDirectHandle<Object>();                             \
-          }                                                                 \
-        }                                                                   \
-      }                                                                     \
-      return isolate->root_handle(RootIndex::kUndefinedValue);              \
-    }                                                                       \
-    break;                                                                  \
+      bool out_of_bounds = false;
+      size_t len = typed_array->GetLengthOrOutOfBounds(out_of_bounds);
+      if (out_of_bounds || typed_array->WasDetached()) {
+        isolate->Throw(*isolate->factory()->NewTypeError(
+            MessageTemplate::kTypedArrayDetachedErrorOperation,
+            isolate->factory()->NewStringFromAsciiChecked("iteration")));
+        return MaybeDirectHandle<Object>();
+      }
+      if (max_count_out) *max_count_out = len;
+      bool is_resizable = kAllowJSExecution && typed_array->IsVariableLength();
+
+      switch (kind) {
+#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype)                              \
+  case TYPE##_ELEMENTS:                                                        \
+  case RAB_GSAB_##TYPE##_ELEMENTS: {                                           \
+    /* Skip BigInt's here as they often need to be handled differently. */     \
+    if constexpr (!std::is_same_v<int64_t, ctype> &&                           \
+                  !std::is_same_v<uint64_t, ctype>) {                          \
+      CHECK(!IsBigIntTypedArrayElementsKind(kind));                            \
+      for (size_t i = 0; i < len && (!max_count || i < *max_count); ++i) {     \
+        ctype val = base::ReadUnalignedValue<ctype>(                           \
+            reinterpret_cast<Address>(typed_array->DataPtr()) +                \
+            i * sizeof(ctype));                                                \
+        if constexpr (ElementsKind::TYPE##_ELEMENTS == FLOAT16_ELEMENTS) {     \
+          if (!double_visitor(fp16_ieee_to_fp32_value(val))) {                 \
+            CloseFreshArrayIterator(isolate, typed_array, i + 1);              \
+            return MaybeDirectHandle<Object>();                                \
+          }                                                                    \
+        } else if constexpr (std::is_integral_v<ctype> &&                      \
+                             base::kIsTypeInRangeForNumericType<int, ctype>) { \
+          auto cast = [](auto v) { return base::strict_cast<int>(v); };        \
+          if (!int_visitor(cast(val))) {                                       \
+            CloseFreshArrayIterator(isolate, typed_array, i + 1);              \
+            return MaybeDirectHandle<Object>();                                \
+          }                                                                    \
+        } else {                                                               \
+          static_assert(base::kIsTypeInRangeForNumericType<double, ctype>);    \
+          auto cast = [](auto v) { return base::strict_cast<double>(v); };     \
+          if (!double_visitor(cast(val))) {                                    \
+            CloseFreshArrayIterator(isolate, typed_array, i + 1);              \
+            return MaybeDirectHandle<Object>();                                \
+          }                                                                    \
+        }                                                                      \
+        len = is_resizable                                                     \
+                  ? typed_array->GetLengthOrOutOfBounds(out_of_bounds)         \
+                  : len;                                                       \
+        if (kAllowJSExecution &&                                               \
+            (out_of_bounds || typed_array->WasDetached())) {                   \
+          isolate->Throw(*isolate->factory()->NewTypeError(                    \
+              MessageTemplate::kTypedArrayDetachedErrorOperation,              \
+              isolate->factory()->NewStringFromAsciiChecked("iteration")));    \
+          return MaybeDirectHandle<Object>();                                  \
+        }                                                                      \
+      }                                                                        \
+      return isolate->root_handle(RootIndex::kUndefinedValue);                 \
+    }                                                                          \
+    break;                                                                     \
   }
-          TYPED_ARRAYS(TYPED_ARRAY_CASE)
+        TYPED_ARRAYS(TYPED_ARRAY_CASE)
 #undef TYPED_ARRAY_CASE
-          default:
-            break;
-        }
+        default:
+          break;
       }
     }
   }
-  if (IsUndefined(*iterator_fn, isolate)) {
+  if (IsUndefined(*iterator_fn)) {
     THROW_NEW_ERROR(isolate,
                     NewTypeError(MessageTemplate::kNotIterable, receiver));
   }
@@ -312,7 +366,10 @@ MaybeDirectHandle<Object> IterableForEach(Isolate* isolate,
 
   // Medium fast path for JSArrayIterator.
   if (IsJSArrayIterator(*iterator) &&
-      Protectors::IsArrayIteratorLookupChainIntact(isolate)) {
+      iterator->map()->prototype() ==
+          isolate->native_context()->initial_array_iterator_prototype() &&
+      Protectors::IsArrayIteratorLookupChainIntact(isolate) &&
+      Protectors::IsNoElementsIntact(isolate)) {
     DirectHandle<JSArrayIterator> array_iterator =
         Cast<JSArrayIterator>(iterator);
     if (array_iterator->kind() == IterationKind::kValues) {
@@ -321,114 +378,179 @@ MaybeDirectHandle<Object> IterableForEach(Isolate* isolate,
       if (IsJSArray(*iterated_object)) {
         DirectHandle<JSArray> array = Cast<JSArray>(iterated_object);
         ElementsKind kind = array->GetElementsKind();
-        if (IsFastElementsKind(kind)) {
+        // Holey arrays are only supported if there are no properties on the
+        // lookup chain.
+        if (IsFastElementsKind(kind) &&
+            (!IsHoleyElementsKind(kind) || array->HasArrayPrototype(isolate))) {
           DirectHandle<FixedArrayBase> elements =
               handle(array->elements(), isolate);
           uint32_t len;
           uint32_t current_index;
+          bool switch_to_protocol = false;
           if (Object::ToUint32(array->length(), &len) &&
               Object::ToUint32(array_iterator->next_index(), &current_index)) {
-            if (len == 0) {
-              return isolate->root_handle(RootIndex::kUndefinedValue);
-            }
+            DCHECK_IMPLIES(max_count, len < *max_count);
+            if (max_count_out) *max_count_out = len;
             DirectHandle<Object> obj_handle(Smi::zero(), isolate);
-            for (; current_index < len; ++current_index) {
-              if (kind == PACKED_SMI_ELEMENTS) {
-                DirectHandle<FixedArray> smi_elements =
-                    Cast<FixedArray>(elements);
-                Tagged<Object> obj = smi_elements->get(current_index);
-                if (!int_visitor(Smi::ToInt(obj))) break;
-              } else if (kind == HOLEY_SMI_ELEMENTS) {
-                DirectHandle<FixedArray> smi_elements =
-                    Cast<FixedArray>(elements);
-                Tagged<Object> obj = smi_elements->get(current_index);
-                if (IsTheHole(obj, isolate)) {
-                  if (!generic_visitor(
-                          isolate->root_handle(RootIndex::kUndefinedValue))) {
-                    break;
-                  }
-                } else {
+            {
+              std::optional<DisallowJavascriptExecution> no_js;
+              if constexpr (!kAllowJSExecution) no_js.emplace();
+              for (; current_index < len; ++current_index) {
+                // Synchronize the iterator from our state.
+                if constexpr (kAllowJSExecution) {
+                  uint32_t next_index = current_index + 1;
+                  auto num = isolate->factory()->NewNumberFromUint(next_index);
+                  array_iterator->set_next_index(*num);
+                }
+                if (kind == PACKED_SMI_ELEMENTS) {
+                  DirectHandle<FixedArray> smi_elements =
+                      Cast<FixedArray>(elements);
+                  Tagged<Object> obj = smi_elements->get(current_index);
                   if (!int_visitor(Smi::ToInt(obj))) break;
-                }
-              } else if (kind == PACKED_DOUBLE_ELEMENTS) {
-                DirectHandle<FixedDoubleArray> double_elements =
-                    Cast<FixedDoubleArray>(elements);
-                if (!double_visitor(
-                        double_elements->get_scalar(current_index))) {
-                  break;
-                }
-              } else if (kind == HOLEY_DOUBLE_ELEMENTS) {
-                DirectHandle<FixedDoubleArray> double_elements =
-                    Cast<FixedDoubleArray>(elements);
-                if (double_elements->is_the_hole(current_index)) {
-                  if (!generic_visitor(
-                          isolate->root_handle(RootIndex::kUndefinedValue))) {
-                    break;
+                } else if (kind == HOLEY_SMI_ELEMENTS) {
+                  DirectHandle<FixedArray> smi_elements =
+                      Cast<FixedArray>(elements);
+                  Tagged<Object> obj = smi_elements->get(current_index);
+                  if (IsTheHole(obj)) {
+                    if (!generic_visitor(
+                            isolate->root_handle(RootIndex::kUndefinedValue))) {
+                      break;
+                    }
+                  } else {
+                    if (!int_visitor(Smi::ToInt(obj))) break;
                   }
-                } else {
+                } else if (kind == PACKED_DOUBLE_ELEMENTS) {
+                  DirectHandle<FixedDoubleArray> double_elements =
+                      Cast<FixedDoubleArray>(elements);
                   if (!double_visitor(
                           double_elements->get_scalar(current_index))) {
                     break;
                   }
-                }
-              } else {
-                DirectHandle<FixedArray> fast_elements =
-                    Cast<FixedArray>(elements);
-                Tagged<Object> obj = fast_elements->get(current_index);
-                if (IsTheHole(obj, isolate)) {
-                  if (!generic_visitor(
-                          isolate->root_handle(RootIndex::kUndefinedValue))) {
-                    break;
+                } else if (kind == HOLEY_DOUBLE_ELEMENTS) {
+                  DirectHandle<FixedDoubleArray> double_elements =
+                      Cast<FixedDoubleArray>(elements);
+                  if (double_elements->is_the_hole(current_index) ||
+#ifdef V8_ENABLE_UNDEFINED_DOUBLE
+                      double_elements->is_undefined(current_index)
+#else
+                      false
+#endif  // V8_ENABLE_UNDEFINED_DOUBLE
+                  ) {
+                    if (!generic_visitor(
+                            isolate->root_handle(RootIndex::kUndefinedValue))) {
+                      break;
+                    }
+                  } else {
+                    if (!double_visitor(
+                            double_elements->get_scalar(current_index))) {
+                      break;
+                    }
                   }
                 } else {
-                  obj_handle.SetValue(obj);
-                  if (!dispatch(obj_handle)) break;
+                  DirectHandle<FixedArray> fast_elements =
+                      Cast<FixedArray>(elements);
+                  Tagged<Object> obj = fast_elements->get(current_index);
+                  if (IsTheHole(obj)) {
+                    if (!generic_visitor(
+                            isolate->root_handle(RootIndex::kUndefinedValue))) {
+                      break;
+                    }
+                  } else {
+                    obj_handle.SetValue(obj);
+                    if (!dispatch(obj_handle)) break;
+                  }
+                }
+                if constexpr (kAllowJSExecution) {
+                  uint32_t actual_next_index;
+                  // Synchronize back our state from the iterator.
+                  if (Object::ToUint32(array_iterator->next_index(),
+                                       &actual_next_index)) {
+                    current_index = actual_next_index - 1;
+                  } else {
+                    switch_to_protocol = true;
+                    break;
+                  }
+                  if (!Object::ToUint32(array->length(), &len)) {
+                    switch_to_protocol = true;
+                    break;
+                  }
+                  // Check if all the required invariants still hold.
+                  if (!IsJSArrayIterator(*iterator) ||
+                      iterator->map()->prototype() !=
+                          isolate->native_context()
+                              ->initial_array_iterator_prototype() ||
+                      !Protectors::IsArrayIteratorLookupChainIntact(isolate) ||
+                      !Protectors::IsNoElementsIntact(isolate) ||
+                      !IsJSArray(*iterated_object) ||
+                      (IsHoleyElementsKind(kind) &&
+                       !array->HasArrayPrototype(isolate)) ||
+                      kind != array->GetElementsKind() ||
+                      array->elements() != *elements) {
+                    switch_to_protocol = true;
+                    break;
+                  }
                 }
               }
             }
-            if (current_index < len) {
-              auto num =
-                  isolate->factory()->NewNumberFromUint(current_index + 1);
+            if (switch_to_protocol || current_index < len) {
+              if (!switch_to_protocol) {
+                if constexpr (!kAllowJSExecution) {
+                  auto num =
+                      isolate->factory()->NewNumberFromUint(current_index + 1);
+                  array_iterator->set_next_index(*num);
+                }
+                IteratorClose(isolate, iterator);
+                return MaybeDirectHandle<Object>();
+              }
+              // We had to abandon optimized iteration. Fall through and
+              // continue normal iteration.
+            } else {
+              auto num = isolate->factory()->NewNumberFromUint(kMaxUInt32);
               array_iterator->set_next_index(*num);
-              IteratorClose(isolate, iterator);
-              return MaybeDirectHandle<Object>();
+              return isolate->root_handle(RootIndex::kUndefinedValue);
             }
-            auto num = isolate->factory()->NewNumberFromUint(len);
-            array_iterator->set_next_index(*num);
-            return isolate->root_handle(RootIndex::kUndefinedValue);
           }
         }
       }
     }
   }
 
-  // Medium fast path for JSSetIterator.
-  if (IsJSSetIterator(*iterator) &&
+  // Medium fast path for JSSetValueIterator.
+  if (!kAllowJSExecution && IsJSSetValueIterator(*iterator) &&
+      iterator->map()->prototype() ==
+          isolate->native_context()->initial_set_iterator_prototype() &&
       Protectors::IsSetIteratorLookupChainIntact(isolate)) {
     DirectHandle<JSSetIterator> set_iterator = Cast<JSSetIterator>(iterator);
     DirectHandle<Object> table_obj(set_iterator->table(), isolate);
     if (IsOrderedHashSet(*table_obj)) {
       DirectHandle<OrderedHashSet> table = Cast<OrderedHashSet>(table_obj);
-      int capacity = table->UsedCapacity();
-      int current_index = Smi::ToInt(set_iterator->index());
-      DirectHandle<Object> key_handle(Smi::zero(), isolate);
-      for (; current_index < capacity; ++current_index) {
-        InternalIndex entry(current_index);
-        Tagged<Object> key = table->KeyAt(entry);
-        if (!IsTheHole(key, isolate)) {
-          key_handle.SetValue(key);
-          if (!dispatch(key_handle)) break;
+      if (!table->IsObsolete()) {
+        int capacity = table->UsedCapacity();
+        DCHECK_IMPLIES(max_count,
+                       static_cast<unsigned int>(capacity) < *max_count);
+        if (max_count_out) *max_count_out = capacity;
+        int current_index = Smi::ToInt(set_iterator->index());
+        DirectHandle<Object> key_handle(Smi::zero(), isolate);
+        {
+          DisallowJavascriptExecution no_js;
+          for (; current_index < capacity; ++current_index) {
+            InternalIndex entry(current_index);
+            Tagged<Object> key = table->KeyAt(entry);
+            if (!IsHashTableHole(key)) {
+              key_handle.SetValue(key);
+              if (!dispatch(key_handle)) break;
+            }
+          }
         }
+        if (current_index < capacity) {
+          set_iterator->set_index(Smi::FromInt(current_index + 1));
+          IteratorClose(isolate, iterator);
+          return MaybeDirectHandle<Object>();
+        }
+        set_iterator->set_table(
+            ReadOnlyRoots(isolate).empty_ordered_hash_set());
+        return isolate->root_handle(RootIndex::kUndefinedValue);
       }
-      if (current_index < capacity) {
-        auto num = isolate->factory()->NewNumberFromUint(current_index + 1);
-        set_iterator->set_index(*num);
-        IteratorClose(isolate, iterator);
-        return MaybeDirectHandle<Object>();
-      }
-      auto num = isolate->factory()->NewNumberFromUint(capacity);
-      set_iterator->set_index(*num);
-      return isolate->root_handle(RootIndex::kUndefinedValue);
     }
   }
 
@@ -472,6 +594,7 @@ MaybeDirectHandle<Object> IterableForEach(Isolate* isolate,
 
     if (max_count.has_value()) {
       if (++count > *max_count) {
+        if (max_count_out) *max_count_out = count;
         isolate->Throw(*isolate->factory()->NewRangeError(
             MessageTemplate::kStackOverflow));
         IteratorClose(isolate, iterator);
@@ -486,6 +609,7 @@ MaybeDirectHandle<Object> IterableForEach(Isolate* isolate,
       return MaybeDirectHandle<Object>();
     }
   }
+  if (max_count_out) *max_count_out = count;
 
   return isolate->root_handle(RootIndex::kUndefinedValue);
 }

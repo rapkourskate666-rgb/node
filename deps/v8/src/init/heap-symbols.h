@@ -583,8 +583,6 @@
   V(_, as_string, "as")                                                       \
   V(_, assert_string, "assert")                                               \
   V(_, async_string, "async")                                                 \
-  V(_, AtomicsCondition_string, "Atomics.Condition")                          \
-  V(_, AtomicsMutex_string, "Atomics.Mutex")                                  \
   V(_, auto_string, "auto")                                                   \
   V(_, BigInt64Array_string, "BigInt64Array")                                 \
   V(_, BigInt_string, "BigInt")                                               \
@@ -921,16 +919,13 @@
   V(_, promise_forwarding_handler_symbol)                 \
   V(_, promise_handled_by_symbol)                         \
   V(_, promise_awaited_by_symbol)                         \
-  V(_, regexp_result_names_symbol)                        \
   V(_, regexp_result_regexp_input_symbol)                 \
   V(_, regexp_result_regexp_last_index_symbol)            \
   V(_, sealed_symbol)                                     \
   V(_, shared_struct_map_elements_template_symbol)        \
   V(_, shared_struct_map_registry_key_symbol)             \
-  V(_, strict_function_transition_symbol)                 \
   V(_, template_literal_function_literal_id_symbol)       \
   V(_, template_literal_slot_id_symbol)                   \
-  V(_, wasm_asm_single_function_symbol)                   \
   V(_, wasm_cross_instance_call_symbol)                   \
   V(_, wasm_exception_tag_symbol)                         \
   V(_, wasm_exception_values_symbol)                      \

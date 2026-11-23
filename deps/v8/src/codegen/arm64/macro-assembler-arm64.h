@@ -66,6 +66,17 @@ class JumpTableAssembler;
   V(Stlrh, stlrh)             \
   V(Stlr, stlr)
 
+#define LDA_STL_UNSCALED_MACRO_LIST(V) \
+  V(Ldapurb, ldapurb)                  \
+  V(Ldapursb, ldapursb)                \
+  V(Ldapurh, ldapurh)                  \
+  V(Ldapursh, ldapursh)                \
+  V(Ldapur, ldapur)                    \
+  V(Ldapursw, ldapursw)                \
+  V(Stlurb, stlurb)                    \
+  V(Stlurh, stlurh)                    \
+  V(Stlur, stlur)
+
 #define STLX_MACRO_LIST(V) \
   V(Stlxrb, stlxrb)        \
   V(Stlxrh, stlxrh)        \
@@ -562,9 +573,25 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
     eor3(vd, vn, vm, va);
   }
 
+  void Xar(const VRegister& vd, const VRegister& vn, const VRegister& vm,
+           unsigned imm) {
+    DCHECK(allow_macro_instructions());
+    xar(vd, vn, vm, imm);
+  }
+
   void Bic(const VRegister& vd, const int imm8, const int left_shift = 0) {
     DCHECK(allow_macro_instructions());
     bic(vd, imm8, left_shift);
+  }
+
+  void Bext(const ZRegister& zd, const ZRegister& zn, const ZRegister& zm) {
+    DCHECK(allow_macro_instructions());
+    bext(zd, zn, zm);
+  }
+
+  void Mul(const ZRegister& zd, const ZRegister& zn, const ZRegister& zm) {
+    DCHECK(allow_macro_instructions());
+    mul(zd, zn, zm);
   }
 
   // This is required for compatibility in architecture independent code.
@@ -635,6 +662,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   inline void SmiUntag(Register dst, const MemOperand& src);
   inline void SmiUntag(Register smi);
 
+  inline void SmiUntagUnsigned(Register dst, Register src);
+  inline void SmiUntagUnsigned(Register dst, const MemOperand& src);
+  inline void SmiUntagUnsigned(Register smi);
+
   inline void SmiTag(Register dst, Register src);
   inline void SmiTag(Register smi);
 
@@ -682,33 +713,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   // Print a message to stderr and abort execution.
   void Abort(AbortReason reason);
-
-  // Like printf, but print at run-time from generated code.
-  //
-  // The caller must ensure that arguments for floating-point placeholders
-  // (such as %e, %f or %g) are VRegisters, and that arguments for integer
-  // placeholders are Registers.
-  //
-  // Format placeholders that refer to more than one argument, or to a specific
-  // argument, are not supported. This includes formats like "%1$d" or "%.*d".
-  //
-  // This function automatically preserves caller-saved registers so that
-  // calling code can use Printf at any point without having to worry about
-  // corruption. The preservation mechanism generates a lot of code. If this is
-  // a problem, preserve the important registers manually and then call
-  // PrintfNoPreserve. Callee-saved registers are not used by Printf, and are
-  // implicitly preserved.
-  void Printf(const char* format, CPURegister arg0 = NoCPUReg,
-              CPURegister arg1 = NoCPUReg, CPURegister arg2 = NoCPUReg,
-              CPURegister arg3 = NoCPUReg);
-
-  // Like Printf, but don't preserve any caller-saved registers, not even 'lr'.
-  //
-  // The return code from the system printf call will be returned in x0.
-  void PrintfNoPreserve(const char* format, const CPURegister& arg0 = NoCPUReg,
-                        const CPURegister& arg1 = NoCPUReg,
-                        const CPURegister& arg2 = NoCPUReg,
-                        const CPURegister& arg3 = NoCPUReg);
 
   // Remaining instructions are simple pass-through calls to the assembler.
   inline void Asr(const Register& rd, const Register& rn, unsigned shift);
@@ -945,9 +949,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void CallEphemeronKeyBarrier(Register object, Operand offset,
                                SaveFPRegsMode fp_mode);
 
-  void CallIndirectPointerBarrier(Register object, Operand offset,
-                                  SaveFPRegsMode fp_mode,
-                                  IndirectPointerTag tag);
+  void CallTrustedPointerBarrier(Register object, Operand offset,
+                                 SaveFPRegsMode fp_mode, TrustedPointerTag tag);
 
   void CallRecordWriteStubSaveRegisters(
       Register object, Operand offset, SaveFPRegsMode fp_mode,
@@ -961,10 +964,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
                                                       SaveFPRegsMode fp_mode);
   void CallVerifySkippedWriteBarrierStub(Register object, Register value);
 
-  void CallVerifySkippedIndirectWriteBarrierStubSaveRegisters(
+  void CallVerifySkippedTrustedWriteBarrierStubSaveRegisters(
       Register object, Register value, SaveFPRegsMode fp_mode);
-  void CallVerifySkippedIndirectWriteBarrierStub(Register object,
-                                                 Register value);
+  void CallVerifySkippedTrustedWriteBarrierStub(Register object,
+                                                Register value);
 
   // For a given |object| and |offset|:
   //   - Move |object| to |dst_object|.
@@ -1055,6 +1058,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void LoadFeedbackVector(Register dst, Register closure, Register scratch,
                           Label* fbv_undef);
 
+  void LoadFeedbackCell(Register dst, Register closure);
+  void LoadFeedbackVectorFromCell(Register dst, Register feedback_cell,
+                                  Register scratch, Label* fbv_undef);
+
   void LoadInterpreterDataBytecodeArray(Register destination,
                                         Register interpreter_data);
   void LoadInterpreterDataInterpreterTrampoline(Register destination,
@@ -1139,7 +1146,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   // validate the parameter count at runtime. Instead, we should replace them
   // with CallJSDispatchEntry that generates a call to a given (compile-time
   // constant) JSDispatchHandle.
-  void CallJSFunction(Register function_object, uint16_t argument_count);
+  void CallJSFunction(Register function_object,
+                      uint16_t expected_parameter_count);
   void JumpJSFunction(Register function_object,
                       JumpMode jump_mode = JumpMode::kJump);
   void CallJSDispatchEntry(JSDispatchHandle dispatch_handle,
@@ -1187,6 +1195,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void TruncateDoubleToI(Isolate* isolate, Zone* zone, Register result,
                          DoubleRegister double_input, StubCallMode stub_mode,
                          LinkRegisterStatus lr_status);
+
+  void Float64Mod(VRegister out, VRegister left, VRegister right);
 
   inline void Mul(const Register& rd, const Register& rn, const Register& rm);
 
@@ -1488,6 +1498,22 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 #undef DECLARE_FUNCTION
 
 #define DECLARE_FUNCTION(FN, OP) \
+  inline void FN(const Register& rt, const MemOperand& addr);
+  LDA_STL_UNSCALED_MACRO_LIST(DECLARE_FUNCTION)
+#undef DECLARE_FUNCTION
+
+  // Load-acquire/store-release macros with general MemOperand addressing.
+  // Because non-zero/non-LRCPC2 offsets emit address-calculation instructions
+  // before the memory access, these return the pc_offset() of the underlying
+  // load/store instruction itself for Wasm trap-handler registration.
+  int Ldarb(const Register& rt, const MemOperand& src);
+  int Ldarh(const Register& rt, const MemOperand& src);
+  int Ldar(const Register& rt, const MemOperand& src);
+  int Stlrb(const Register& rt, const MemOperand& dst);
+  int Stlrh(const Register& rt, const MemOperand& dst);
+  int Stlr(const Register& rt, const MemOperand& dst);
+
+#define DECLARE_FUNCTION(FN, OP) \
   inline void FN(const Register& rs, const Register& rt, const MemOperand& src);
   CAS_SINGLE_MACRO_LIST(DECLARE_FUNCTION)
 #undef DECLARE_FUNCTION
@@ -1520,6 +1546,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   // Load an object from the root table.
   void LoadRoot(Register destination, RootIndex index) final;
   void LoadTaggedRoot(Register destination, RootIndex index);
+  void StoreTaggedRoot(const MemOperand& destination, RootIndex index);
   void PushRoot(RootIndex index);
 
   inline void Ret(const Register& xn = lr);
@@ -1609,6 +1636,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   // Loads a field containing smi value and untags it.
   void SmiUntagField(Register dst, const MemOperand& src);
+  void SmiUntagFieldUnsigned(Register dst, const MemOperand& src);
 
   // Compresses and stores tagged value to given on-heap location.
   void StoreTaggedField(const Register& value,
@@ -1622,8 +1650,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
     StoreTaggedField(value, dst_field_operand);
   }
 
-  void AtomicStoreTaggedField(const Register& value, const Register& dst_base,
-                              const Register& dst_index, const Register& temp);
+  // Returns the pc_offset() of the underlying atomic store instruction (after
+  // any address-calculation instructions) for Wasm trap-handler registration.
+  int AtomicStoreTaggedField(const Register& value,
+                             const MemOperand& dst_field_operand);
 
   void DecompressTaggedSigned(const Register& destination,
                               const MemOperand& field_operand);
@@ -1634,12 +1664,12 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void DecompressProtected(const Register& destination,
                            const MemOperand& field_operand);
 
-  void AtomicDecompressTaggedSigned(const Register& destination,
-                                    const Register& base, const Register& index,
-                                    const Register& temp);
-  // Returns the pc offset of the atomic load instruction.
-  int AtomicDecompressTagged(const Register& destination, const Register& base,
-                             const Register& index, const Register& temp);
+  // Return the pc_offset() of the underlying atomic load instruction (after
+  // any address-calculation instructions) for Wasm trap-handler registration.
+  int AtomicDecompressTaggedSigned(const Register& destination,
+                                   const MemOperand& field_operand);
+  int AtomicDecompressTagged(const Register& destination,
+                             const MemOperand& field_operand);
 
   // Restore FP and LR from the values stored in the current frame. This will
   // authenticate the LR when pointer authentication is enabled.
@@ -1665,7 +1695,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   // Transform a SandboxedPointer from/to its encoded form, which is used when
   // the pointer is stored on the heap and ensures that the pointer will always
   // point into the sandbox.
-  void DecodeSandboxedPointer(Register value);
   void LoadSandboxedPointerField(Register destination,
                                  MemOperand field_operand);
   void StoreSandboxedPointerField(Register value, MemOperand dst_field_operand);
@@ -1680,65 +1709,38 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   // When the sandbox is enabled, these are indirect pointers using the trusted
   // pointer table. Otherwise they are regular tagged fields.
   void LoadTrustedPointerField(Register destination, MemOperand field_operand,
-                               IndirectPointerTag tag);
-  // As above, but for kUnknownIndirectPointerTag. The type of the loaded object
+                               TrustedPointerTagRange tag_range);
+  // As above, but for kUnknownTrustedPointerTag. The type of the loaded object
   // is unknown, so this helper will check for a series of expected types and
   // jump to the given labels if the loaded object has a matching type. If the
-  // object has none of the expected types, the destination register will be
-  // zeroed and execution continues as fall-through.
+  // field is null (with enabled sandbox) or a Smi (with disabled sandbox) and
+  // the provided is_unavailable label is not a nullptr, then the helper will
+  // jump there. If the field is valid and the object has one of the expected
+  // types, then the helper will jump to the corresponding label. In all other
+  // cases, the destination register will be zeroed and execution continues as
+  // fall-through.
   void LoadTrustedUnknownPointerField(
       Register destination, MemOperand field_operand, Register scratch,
-      const std::initializer_list<std::tuple<InstanceType, Label*>>& cases);
+      const std::initializer_list<std::tuple<InstanceType, Label*>>& cases,
+      Label* is_unavailable = nullptr);
   // Store a trusted pointer field.
   void StoreTrustedPointerField(Register value, MemOperand dst_field_operand);
 
   // Load a code pointer field.
   // These are special versions of trusted pointers that, when the sandbox is
-  // enabled, reference code objects through the code pointer table.
+  // enabled, reference code objects through the trusted pointer table.
   void LoadCodePointerField(Register destination, MemOperand field_operand) {
-    LoadTrustedPointerField(destination, field_operand,
-                            kCodeIndirectPointerTag);
+    LoadTrustedPointerField(destination, field_operand, kCodeTrustedPointerTag);
   }
   // Store a code pointer field.
   void StoreCodePointerField(Register value, MemOperand dst_field_operand) {
     StoreTrustedPointerField(value, dst_field_operand);
   }
 
-  // Load an indirect pointer field.
-  // Only available when the sandbox is enabled, but always visible to avoid
-  // having to place the #ifdefs into the caller.
-  void LoadIndirectPointerField(Register destination, MemOperand field_operand,
-                                IndirectPointerTagRange tag_range);
-
-  // Store an indirect pointer field.
-  // Only available when the sandbox is enabled, but always visible to avoid
-  // having to place the #ifdefs into the caller.
-  void StoreIndirectPointerField(Register value, MemOperand dst_field_operand);
-
 #ifdef V8_ENABLE_SANDBOX
-  // Retrieve the heap object referenced by the given indirect pointer handle,
-  // which can either be a trusted pointer handle or a code pointer handle.
-  void ResolveIndirectPointerHandle(Register destination, Register handle,
-                                    IndirectPointerTagRange tag_range);
-
   // Retrieve the heap object referenced by the given trusted pointer handle.
   void ResolveTrustedPointerHandle(Register destination, Register handle,
-                                   IndirectPointerTagRange tag_range);
-
-  // Retrieve the Code object referenced by the given code pointer handle.
-  void ResolveCodePointerHandle(Register destination, Register handle);
-
-  // Load the pointer to a Code's entrypoint via a code pointer.
-  // Only available when the sandbox is enabled as it requires the code pointer
-  // table.
-  void LoadCodeEntrypointViaCodePointer(Register destination,
-                                        MemOperand field_operand,
-                                        CodeEntrypointTag tag);
-
-  // Load the value of Code pointer table corresponding to
-  // IsolateGroup::current()->code_pointer_table_.
-  // Only available when the sandbox is enabled.
-  void LoadCodePointerTableBase(Register destination);
+                                   TrustedPointerTagRange tag_range);
 #endif
 
   void LoadEntrypointFromJSDispatchTable(Register destination,
@@ -1750,6 +1752,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void LoadEntrypointAndParameterCountFromJSDispatchTable(
       Register entrypoint, Register parameter_count, Register dispatch_handle,
       Register scratch);
+  void PushDispatchHandle(Register dispatch_handle, Register other,
+                          Register scratch1, Register scratch2);
+  void PopDispatchHandle(Register dispatch_handle, Register other,
+                         Register scratch1, Register scratch2);
 
   // Load a protected pointer field.
   void LoadProtectedPointerField(Register destination,
@@ -2008,19 +2014,29 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   inline void PushAll(DoubleRegList registers,
                       int stack_slot_size = kDoubleSize) {
-    if (registers.Count() % 2 != 0) {
-      DCHECK(!registers.has(fp_zero));
-      registers.set(fp_zero);
+    if (stack_slot_size == kSimd128Size) {
+      PushQRegList(registers);
+    } else {
+      DCHECK_EQ(stack_slot_size, kDoubleSize);
+      if (registers.Count() % 2 != 0) {
+        DCHECK(!registers.has(fp_zero));
+        registers.set(fp_zero);
+      }
+      PushDRegList(registers);
     }
-    PushDRegList(registers);
   }
   inline void PopAll(DoubleRegList registers,
                      int stack_slot_size = kDoubleSize) {
-    if (registers.Count() % 2 != 0) {
-      DCHECK(!registers.has(fp_zero));
-      registers.set(fp_zero);
+    if (stack_slot_size == kSimd128Size) {
+      PopQRegList(registers);
+    } else {
+      DCHECK_EQ(stack_slot_size, kDoubleSize);
+      if (registers.Count() % 2 != 0) {
+        DCHECK(!registers.has(fp_zero));
+        registers.set(fp_zero);
+      }
+      PopDRegList(registers);
     }
-    PopDRegList(registers);
   }
 
   // Push the specified register 'count' times.
@@ -2070,9 +2086,20 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   template <typename Field>
   void DecodeField(Register dst, Register src) {
-    static const int shift = Field::kShift;
-    static const int setbits = CountSetBits(Field::kMask, 32);
-    Ubfx(dst, src, shift, setbits);
+    static constexpr int shift = Field::kShift;
+    static constexpr uint64_t mask =
+        static_cast<uint64_t>(Field::kMask) >> shift;
+    if constexpr ((mask & (mask + 1)) == 0) {
+      static const int setbits = CountSetBits(Field::kMask, 32);
+      Ubfx(dst, src, shift, setbits);
+    } else {
+      if constexpr (shift != 0) {
+        Lsr(dst, src, shift);
+        And(dst, dst, mask);
+      } else {
+        And(dst, src, mask);
+      }
+    }
   }
 
   template <typename Field>
@@ -2404,16 +2431,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
                             const Operand& operand, FlagsUpdate S,
                             AddSubWithCarryOp op);
 
-  // Call Printf. On a native build, a simple call will be generated, but if the
-  // simulator is being used then a suitable pseudo-instruction is used. The
-  // arguments and stack must be prepared by the caller as for a normal AAPCS64
-  // call to 'printf'.
-  //
-  // The 'args' argument should point to an array of variable arguments in their
-  // proper PCS registers (and in calling order). The argument registers can
-  // have mixed types. The format string (x0) should not be included.
-  void CallPrintf(int arg_count = 0, const CPURegister* args = nullptr);
-
  private:
 #if DEBUG
   // Tell whether any of the macro instruction can be used. When false the
@@ -2564,6 +2581,7 @@ class V8_NODISCARD UseScratchRegisterScope {
   // automatically when the scope ends.
   Register AcquireW() { return AcquireNextAvailable(available_).W(); }
   Register AcquireX() { return AcquireNextAvailable(available_).X(); }
+  VRegister AcquireH() { return AcquireNextAvailable(availablefp_).H(); }
   VRegister AcquireS() { return AcquireNextAvailable(availablefp_).S(); }
   VRegister AcquireD() { return AcquireNextAvailable(availablefp_).D(); }
   VRegister AcquireQ() { return AcquireNextAvailable(availablefp_).Q(); }

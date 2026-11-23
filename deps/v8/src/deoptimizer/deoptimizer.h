@@ -15,9 +15,9 @@
 #include "src/deoptimizer/translated-state.h"
 #include "src/diagnostics/code-tracer.h"
 #include "src/objects/js-function.h"
+#include "src/sandbox/hardware-support.h"
 
 #if V8_ENABLE_WEBASSEMBLY
-#include "src/sandbox/hardware-support.h"
 #include "src/wasm/value-type.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -109,7 +109,7 @@ class Deoptimizer : public Malloced {
   // instead of the function code (e.g. OSR code not installed on function).
   static void DeoptimizeFunction(Tagged<JSFunction> function,
                                  LazyDeoptimizeReason reason,
-                                 Tagged<Code> code = {});
+                                 Tagged<Code> code);
 
   // Deoptimize all code in the given isolate.
   V8_EXPORT_PRIVATE static void DeoptimizeAll(Isolate* isolate);

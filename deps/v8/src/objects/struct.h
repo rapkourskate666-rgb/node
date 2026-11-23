@@ -16,32 +16,30 @@ namespace internal {
 
 class StructBodyDescriptor;
 
-#include "torque-generated/src/objects/struct-tq.inc"
-
 // An abstract superclass, a marker class really, for simple structure classes.
 // It doesn't carry any functionality but allows struct classes to be
 // identified in the type system.
-class Struct : public TorqueGeneratedStruct<Struct, HeapObject> {
+V8_OBJECT class Struct : public HeapObject {
+  V8_IT_ABSTRACT;
+
  public:
+  inline explicit Struct(Tagged<ReadOnly<Map>> map);
+
   void BriefPrintDetails(std::ostream& os);
-  static_assert(kHeaderSize == HeapObject::kHeaderSize);
-
-  TQ_OBJECT_CONSTRUCTORS(Struct)
-};
-
-// Temporary mirror of Struct for subtypes with the new layout.
-V8_OBJECT class StructLayout : public HeapObjectLayout {
- public:
-  void BriefPrintDetails(std::ostream& os);
-
-  DECL_VERIFIER(Struct)
 
   using BodyDescriptor = StructBodyDescriptor;
 } V8_OBJECT_END;
-static_assert(sizeof(StructLayout) == sizeof(HeapObjectLayout));
+static_assert(sizeof(Struct) == sizeof(HeapObject));
 
-V8_OBJECT class Tuple2 : public StructLayout {
+V8_OBJECT class Tuple2 : public Struct {
+  V8_IT_NO_AUTO_DISPATCH;
+
  public:
+  inline Tuple2(const AllocationWitness& witness, Tagged<Object> value1,
+                Tagged<Object> value2);
+  inline Tuple2(const AllocationWitness& witness, Tagged<Object> value1,
+                Tagged<Object> value2, RelaxedStoreTag tag);
+
   void BriefPrintDetails(std::ostream& os);
 
   inline Tagged<Object> value1() const;
@@ -49,6 +47,9 @@ V8_OBJECT class Tuple2 : public StructLayout {
                          WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
   inline Tagged<Object> value1(RelaxedLoadTag) const;
   inline void set_value1(Tagged<Object> value, RelaxedStoreTag,
+                         WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+  inline Tagged<Object> value1(AcquireLoadTag) const;
+  inline void set_value1(Tagged<Object> value, ReleaseStoreTag,
                          WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   inline Tagged<Object> value2() const;
@@ -62,6 +63,7 @@ V8_OBJECT class Tuple2 : public StructLayout {
   DECL_PRINTER(Tuple2)
 
  private:
+  friend class CodeStubAssembler;
   friend class TorqueGeneratedTuple2Asserts;
   TaggedMember<Object> value1_;
   TaggedMember<Object> value2_;
@@ -73,8 +75,12 @@ V8_OBJECT class Tuple2 : public StructLayout {
 //   * a FunctionTemplateInfo: a real (lazy) accessor
 //   * undefined: considered an accessor by the spec, too, strangely enough
 //   * null: an accessor which has not been set
-V8_OBJECT class AccessorPair : public StructLayout {
+V8_OBJECT class AccessorPair : public Struct {
+  V8_IT_NO_AUTO_DISPATCH;
+
  public:
+  inline explicit AccessorPair(const AllocationWitness& witness);
+
   static DirectHandle<AccessorPair> Copy(Isolate* isolate,
                                          DirectHandle<AccessorPair> pair);
 
@@ -120,13 +126,14 @@ V8_OBJECT class AccessorPair : public StructLayout {
   TaggedMember<Object> setter_;
 } V8_OBJECT_END;
 
-V8_OBJECT class ClassPositions : public StructLayout {
- public:
-  inline int start() const;
-  inline void set_start(int value);
+V8_OBJECT class ClassPositions : public Struct {
+  V8_IT_NO_AUTO_DISPATCH;
 
+ public:
+  inline ClassPositions(const AllocationWitness& witness, int start, int end);
+
+  inline int start() const;
   inline int end() const;
-  inline void set_end(int value);
 
   // Dispatched behavior.
   void BriefPrintDetails(std::ostream& os);
@@ -137,9 +144,49 @@ V8_OBJECT class ClassPositions : public StructLayout {
  private:
   friend class TorqueGeneratedClassPositionsAsserts;
 
-  TaggedMember<Smi> start_;
-  TaggedMember<Smi> end_;
+  const TaggedMember<Smi> start_;
+  const TaggedMember<Smi> end_;
 } V8_OBJECT_END;
+
+V8_OBJECT class ForInEnumeratorHolder : public Struct {
+ public:
+  inline ForInEnumeratorHolder(const AllocationWitness& witness,
+                               Tagged<Map> enum_cache_map,
+                               Tagged<FixedArray> named_keys,
+                               Tagged<Smi> elements_length,
+                               Tagged<Smi> cache_length);
+
+  inline Tagged<Map> enum_cache_map() const;
+  inline Tagged<FixedArray> named_keys() const;
+  inline Tagged<Smi> elements_length() const;
+  inline Tagged<Smi> cache_length() const;
+
+  DECL_PRINTER(ForInEnumeratorHolder)
+  DECL_VERIFIER(ForInEnumeratorHolder)
+
+  using BodyDescriptor = StructBodyDescriptor;
+
+ private:
+  friend class TorqueGeneratedForInEnumeratorHolderAsserts;
+  friend struct ObjectTraits<ForInEnumeratorHolder>;
+
+  const TaggedMember<Map> enum_cache_map_;
+  const TaggedMember<FixedArray> named_keys_;
+  const TaggedMember<Smi> elements_length_;
+  const TaggedMember<Smi> cache_length_;
+} V8_OBJECT_END;
+
+template <>
+struct ObjectTraits<ForInEnumeratorHolder> {
+  static constexpr int kEnumCacheMapOffset =
+      offsetof(ForInEnumeratorHolder, enum_cache_map_);
+  static constexpr int kNamedKeysOffset =
+      offsetof(ForInEnumeratorHolder, named_keys_);
+  static constexpr int kElementsLengthOffset =
+      offsetof(ForInEnumeratorHolder, elements_length_);
+  static constexpr int kCacheLengthOffset =
+      offsetof(ForInEnumeratorHolder, cache_length_);
+};
 
 }  // namespace internal
 }  // namespace v8

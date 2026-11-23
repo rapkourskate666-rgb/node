@@ -1,4 +1,3 @@
-#if HAVE_OPENSSL && HAVE_QUIC
 #include "guard.h"
 #ifndef OPENSSL_NO_QUIC
 #include <env-inl.h>
@@ -8,9 +7,11 @@
 #include <openssl/ssl.h>
 #include <string_bytes.h>
 #include <v8.h>
+#include <algorithm>
 #include "bindingdata.h"
 #include "data.h"
 #include "defs.h"
+#include "simdutf.h"
 #include "util.h"
 
 namespace node {
@@ -33,6 +34,7 @@ using v8::Undefined;
 using v8::Value;
 
 namespace quic {
+// NOLINTNEXTLINE(runtime/thread_local)
 thread_local int DebugIndentScope::indent_ = 0;
 
 Path::Path(const SocketAddress& local, const SocketAddress& remote) {
@@ -218,6 +220,9 @@ void Store::MemoryInfo(MemoryTracker* tracker) const {
 // ============================================================================
 
 namespace {
+
+constexpr size_t kMaxConnectionCloseReasonLength = 256;
+
 constexpr std::string_view TypeName(QuicError::Type type) {
   switch (type) {
     case QuicError::Type::APPLICATION:
@@ -332,6 +337,18 @@ QuicError::operator const ngtcp2_ccerr*() const {
   return ptr_;
 }
 
+ngtcp2_ccerr QuicError::ToNgtcp2ConnectionCloseError() const {
+  ngtcp2_ccerr error = *ptr_;
+  error.reason = reason_c_str();
+
+  const size_t reasonlen =
+      std::min(reason_.size(), kMaxConnectionCloseReasonLength);
+
+  error.reasonlen = simdutf::trim_partial_utf8(reason_.data(), reasonlen);
+
+  return error;
+}
+
 std::string QuicError::reason_for_liberr(int liberr) {
   return ngtcp2_strerror(liberr);
 }
@@ -357,15 +374,20 @@ error_code QuicError::h3_liberr_to_code(int liberr) {
 }
 
 bool QuicError::is_crypto_error() const {
-  return code() & NGTCP2_CRYPTO_ERROR;
+  const auto error_code = code();
+  return type() == Type::TRANSPORT && error_code >= NGTCP2_CRYPTO_ERROR &&
+         error_code < NGTCP2_CRYPTO_ERROR + 0x100U;
 }
 
 std::optional<int> QuicError::get_crypto_error() const {
   if (!is_crypto_error()) return std::nullopt;
-  return code() & ~NGTCP2_CRYPTO_ERROR;
+  return static_cast<int>(code() - NGTCP2_CRYPTO_ERROR);
 }
 
 const char* QuicError::name() const {
+  // Application error codes are
+  // opaque to QUIC, so we only decode for transport.
+  if (type() != Type::TRANSPORT) return nullptr;
   // CRYPTO_ERROR carries a TLS alert in its low byte (RFC 9001 sec. 4.8).
   // OpenSSL's SSL_alert_desc_string_long owns a stable string for every
   // alert it knows about; we filter out the "unknown" placeholder so the
@@ -375,10 +397,8 @@ const char* QuicError::name() const {
     if (n != nullptr && std::string_view(n) != "unknown") return n;
     return nullptr;
   }
-  // Named transport-layer error codes from RFC 9000 sec. 20.1 (and the
-  // RFC 9368 version-negotiation extension). Application error codes are
-  // opaque to QUIC, so we only decode for transport.
-  if (type() != Type::TRANSPORT) return nullptr;
+  // Named transport-layer error codes from RFC 9000 sec. 20.1 and the
+  // RFC 9368 version-negotiation extension.
   switch (code()) {
     case NGTCP2_NO_ERROR:
       return "NO_ERROR";
@@ -422,17 +442,6 @@ const char* QuicError::name() const {
 }
 
 MaybeLocal<Value> QuicError::ToV8Value(Environment* env) const {
-  if ((type() == Type::TRANSPORT && code() == NGTCP2_NO_ERROR) ||
-      (type() == Type::APPLICATION &&
-       (code() == 0 || code() == NGHTTP3_H3_NO_ERROR)) ||
-      type() == Type::IDLE_CLOSE) {
-    // Application code 0 is the default no-error code for raw QUIC
-    // applications (DefaultApplication::GetNoErrorCode() returns 0).
-    // NGHTTP3_H3_NO_ERROR (0x100) is the HTTP/3 no-error code.
-    // Idle close is always clean — the session timed out normally.
-    return Undefined(env->isolate());
-  }
-
   Local<Value> type_str;
   if (!node::ToV8Value(env->context(), TypeName(type())).ToLocal(&type_str)) {
     return {};
@@ -447,7 +456,7 @@ MaybeLocal<Value> QuicError::ToV8Value(Environment* env) const {
 
   // Note that per the QUIC specification, the reason, if present, is
   // expected to be UTF-8 encoded. The spec uses the term "SHOULD" here,
-  // which means that is is entirely possible that some QUIC implementation
+  // which means that is entirely possible that some QUIC implementation
   // could choose a different encoding, in which case the conversion here
   // will produce garbage. That's ok though, we're going to use the default
   // assumption that the impl is following the guidelines.
@@ -554,4 +563,3 @@ const QuicError QuicError::INTERNAL_ERROR = ForNgtcp2Error(NGTCP2_ERR_INTERNAL);
 }  // namespace node
 
 #endif  // OPENSSL_NO_QUIC
-#endif  // HAVE_OPENSSL && HAVE_QUIC

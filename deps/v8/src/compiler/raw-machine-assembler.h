@@ -49,8 +49,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   RawMachineAssembler(
       Isolate* isolate, TFGraph* graph, CallDescriptor* call_descriptor,
       MachineRepresentation word = MachineType::PointerRepresentation(),
-      MachineOperatorBuilder::Flags flags =
-          MachineOperatorBuilder::Flag::kNoFlags,
+      MachineOperatorBuilder::Flags flags = MachineOperatorBuilder::kNoFlags,
       MachineOperatorBuilder::AlignmentRequirements alignment_requirements =
           MachineOperatorBuilder::AlignmentRequirements::
               FullUnalignedAccessSupport());
@@ -150,11 +149,11 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   }
   bool IsMapOffsetConstant(Node* node) {
     Int64Matcher m(node);
-    if (m.Is(HeapObject::kMapOffset)) return true;
+    if (m.Is(offsetof(HeapObject, map_))) return true;
     // Test if `node` is a `Phi(Int64Constant(0))`
     if (node->opcode() == IrOpcode::kPhi) {
       for (Node* input : node->inputs()) {
-        if (!Int64Matcher(input).Is(HeapObject::kMapOffset)) return false;
+        if (!Int64Matcher(input).Is(offsetof(HeapObject, map_))) return false;
       }
       return true;
     }
@@ -162,10 +161,11 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   }
   bool IsMapOffsetConstantMinusTag(Node* node) {
     Int64Matcher m(node);
-    return m.Is(HeapObject::kMapOffset - kHeapObjectTag);
+    return m.Is(static_cast<int>(offsetof(HeapObject, map_)) - kHeapObjectTag);
   }
   bool IsMapOffsetConstantMinusTag(int offset) {
-    return offset == HeapObject::kMapOffset - kHeapObjectTag;
+    return offset ==
+           static_cast<int>(offsetof(HeapObject, map_)) - kHeapObjectTag;
   }
   Node* LoadFromObject(MachineType type, Node* base, Node* offset) {
     DCHECK_IMPLIES(V8_MAP_PACKING_BOOL && IsMapOffsetConstantMinusTag(offset),
@@ -208,7 +208,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   void OptimizedStoreField(MachineRepresentation rep, Node* object, int offset,
                            Node* value, WriteBarrierKind write_barrier) {
     DCHECK(!IsMapOffsetConstantMinusTag(offset));
-    DCHECK_NE(rep, MachineRepresentation::kIndirectPointer);
+    DCHECK_NE(rep, MachineRepresentation::kTrustedPointer);
     AddNode(simplified()->StoreField(
                 FieldAccess(BaseTaggedness::kTaggedBase, offset,
                             MaybeHandle<Name>(), OptionalMapRef(), Type::Any(),
@@ -216,16 +216,16 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
                             write_barrier, "OptimizedStoreField")),
             object, value);
   }
-  void OptimizedStoreIndirectPointerField(Node* object, int offset,
-                                          IndirectPointerTag tag, Node* value,
-                                          WriteBarrierKind write_barrier) {
+  void OptimizedStoreTrustedPointerField(Node* object, int offset,
+                                         TrustedPointerTag tag, Node* value,
+                                         WriteBarrierKind write_barrier) {
     DCHECK(!IsMapOffsetConstantMinusTag(offset));
     DCHECK(write_barrier == WriteBarrierKind::kNoWriteBarrier ||
-           write_barrier == WriteBarrierKind::kIndirectPointerWriteBarrier);
+           write_barrier == WriteBarrierKind::kTrustedPointerWriteBarrier);
     FieldAccess access(BaseTaggedness::kTaggedBase, offset, MaybeHandle<Name>(),
                        OptionalMapRef(), Type::Any(),
-                       MachineType::IndirectPointer(), write_barrier,
-                       "OptimizedStoreIndirectPointerField",
+                       MachineType::TrustedPointer(), write_barrier,
+                       "OptimizedStoreTrustedPointerField",
                        ConstFieldInfo::None(), false, kExternalPointerNullTag,
                        tag, false, false);
     AddNode(simplified()->StoreField(access), object, value);
@@ -811,6 +811,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   }
   Node* ChangeFloat32ToFloat64(Node* a) {
     return AddNode(machine()->ChangeFloat32ToFloat64(), a);
+  }
+  Node* ChangeFloat16RawBitsToFloat64(Node* a) {
+    return AddNode(machine()->ChangeFloat16RawBitsToFloat64().placeholder(), a);
   }
   Node* ChangeInt32ToFloat64(Node* a) {
     return AddNode(machine()->ChangeInt32ToFloat64(), a);

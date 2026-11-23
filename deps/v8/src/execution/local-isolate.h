@@ -7,7 +7,6 @@
 
 #include <optional>
 
-#include "src/base/fpu.h"
 #include "src/base/macros.h"
 #include "src/execution/mutex-guard-if-off-thread.h"
 #include "src/execution/thread-id.h"
@@ -47,7 +46,11 @@ class V8_EXPORT_PRIVATE LocalIsolate final : private HiddenLocalFactory {
  public:
   using HandleScopeType = LocalHandleScope;
 
-  explicit LocalIsolate(Isolate* isolate, ThreadKind kind);
+  // The parameter `stack_start` is only used for stack-allocated instances,
+  // where `kind == ThreadKind::kBackground`.
+  explicit LocalIsolate(Isolate* isolate, ThreadKind kind,
+                        v8::base::Stack::StackSlot stack_start =
+                            v8::base::Stack::GetCurrentFrameAddress());
   ~LocalIsolate();
 
   // Kinda sketchy.
@@ -95,6 +98,8 @@ class V8_EXPORT_PRIVATE LocalIsolate final : private HiddenLocalFactory {
   bool is_precise_binary_code_coverage() const {
     return isolate_->is_precise_binary_code_coverage();
   }
+
+  inline bool is_short_builtin_calls_enabled() const;
 
   v8::internal::LocalFactory* factory() {
     // Upcast to the privately inherited base-class using c-style casts to avoid

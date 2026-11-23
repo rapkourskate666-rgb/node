@@ -5,6 +5,7 @@
 #ifndef V8_HANDLES_HANDLES_H_
 #define V8_HANDLES_HANDLES_H_
 
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -312,7 +313,7 @@ class V8_NODISCARD HandleScope {
   // Limit for number of handles with --check-handle-count. This is
   // large enough to compile natives and pass unit tests with some
   // slack for future changes to natives.
-  static const int kCheckHandleThreshold = 30 * 1024;
+  static const int kCheckHandleThreshold = 48 * 1024;
 
  private:
   Isolate* isolate_;
@@ -330,6 +331,11 @@ class V8_NODISCARD HandleScope {
   // Extend the handle scope making room for more handles.
   V8_EXPORT_PRIVATE V8_NOINLINE V8_PRESERVE_MOST static Address* Extend(
       Isolate* isolate);
+  V8_EXPORT_PRIVATE V8_NOINLINE V8_PRESERVE_MOST static Address*
+  ExtendAndCreateHandle(Isolate* isolate, Address value);
+  static V8_INLINE Address* CreateHandleUnchecked(HandleScopeData* data,
+                                                  Address* result,
+                                                  Address value);
 
 #if defined(ENABLE_GLOBAL_HANDLE_ZAPPING) || \
     defined(ENABLE_LOCAL_HANDLE_ZAPPING)
@@ -1026,8 +1032,7 @@ class DirectHandleSmallVector {
     backing_.insert(backing_.end(), init.begin(), init.end());
   }
   template <typename IsolateT>
-  explicit V8_INLINE DirectHandleSmallVector(
-      base::Vector<const value_type> init)
+  explicit V8_INLINE DirectHandleSmallVector(std::span<const value_type> init)
       : backing_() {
     if (init.size() == 0) return;
     backing_.reserve(init.size());

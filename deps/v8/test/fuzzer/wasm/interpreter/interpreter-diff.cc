@@ -11,9 +11,9 @@
 #include "include/v8-exception.h"
 #include "include/v8-isolate.h"
 #include "include/v8-local-handle.h"
+#include "src/base/unique-array.h"
 #include "src/execution/isolate-inl.h"
 #include "src/wasm/wasm-engine.h"
-#include "src/wasm/wasm-feature-flags.h"
 #include "src/wasm/wasm-module.h"
 #include "test/common/wasm/fuzzer-common.h"
 #include "test/common/wasm/wasm-module-runner.h"
@@ -69,7 +69,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
       GetWasmEngine()
           ->SyncCompile(i_isolate, enabled_features,
                         fuzzing::CompileTimeImportsForFuzzing(), &thrower,
-                        v8::base::OwnedCopyOf(wire_bytes.module_bytes()))
+                        v8::base::UniqueCopyOf(wire_bytes.module_bytes()))
           .ToHandle(&module_object);
 
   if (v8_flags.wasm_fuzzer_gen_test) {

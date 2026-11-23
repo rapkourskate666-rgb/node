@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --experimental-wasm-compilation-hints --trace-wasm-inlining
+// Flags: --wasm-compilation-hints --trace-wasm-inlining
 // Flags: --allow-natives-syntax --liftoff
 
 // TODO(manoskouk): Remove the busy-waits from this test.
@@ -59,7 +59,7 @@ d8.file.execute('test/mjsunit/mjsunit.js');
   builder.setCompilationPriority(caller.index, 0, 0)
 
   builder.setInstructionFrequencies(
-      intermediate.index, [{offset:10, frequency: 32}])
+      intermediate.index, [{offset:10, frequency: 32}]);
   builder.setCallTargets(
       intermediate.index, [{offset: 10, targets: [
           {function_index: add.index, frequency_percent: 99}]}]);

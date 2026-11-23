@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <array>
 #include <optional>
 
 #include "include/v8-function-callback.h"
 #include "include/v8-function.h"
+#include "src/api/api.h"
 #include "src/base/strings.h"
 #include "test/cctest/cctest.h"
 
@@ -47,7 +49,7 @@ void FunctionWithIncumbentCheck(
 
   IncumbentTestExpectations* expected =
       reinterpret_cast<IncumbentTestExpectations*>(
-          info.Data().As<External>()->Value(kIncumbentTestExpectationsTag));
+          info.DataV2().As<External>()->Value(kIncumbentTestExpectationsTag));
 
   expected->call_count++;
 
@@ -106,9 +108,9 @@ v8::LocalVector<Context> SetupCrossContextTest(
     {
       Context::Scope context_scope(context);
 
-      v8::base::ScopedVector<char> src(30);
+      std::array<char, 30> src;
       v8::base::SNPrintF(src, "Object.prototype.id = %d", i);
-      CompileRun(src.begin());
+      CompileRun(src.data());
     }
   }
 
@@ -124,17 +126,17 @@ v8::LocalVector<Context> SetupCrossContextTest(
     // Add "realmX" properties referencing contextX->global.
     for (int j = 0; j < n; j++) {
       Local<Context> another_context = contexts[j];
-      v8::base::ScopedVector<char> name(30);
+      std::array<char, 30> name;
       v8::base::SNPrintF(name, "realm%d", j);
 
       CHECK(context->Global()
-                ->Set(context, v8_str(name.begin()), another_context->Global())
+                ->Set(context, v8_str(name.data()), another_context->Global())
                 .FromJust());
 
       // Check that 'id' property matches the realm index.
-      v8::base::ScopedVector<char> src(30);
+      std::array<char, 30> src;
       v8::base::SNPrintF(src, "realm%d.id", j);
-      Local<Value> value = CompileRun(src.begin());
+      Local<Value> value = CompileRun(src.data());
       CHECK_EQ(j, value.As<Integer>()->Value());
     }
 
@@ -214,9 +216,9 @@ v8::LocalVector<Context> SetupCrossContextTest(
                                          expected_incumbent_context_ptr)
                                .ToLocalChecked();
 
-    v8::base::ScopedVector<char> name(30);
+    std::array<char, 30> name;
     v8::base::SNPrintF(name, "realm%d.f", static_cast<int>(i));
-    func->SetName(v8_str(name.begin()));
+    func->SetName(v8_str(name.data()));
 
     CHECK(context->Global()->Set(context, v8_str("f"), func).FromJust());
   }

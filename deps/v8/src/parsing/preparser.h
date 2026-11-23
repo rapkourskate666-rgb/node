@@ -90,7 +90,8 @@ class PreParserExpression {
   }
 
   static PreParserExpression Default() {
-    return PreParserExpression(TypeField::encode(kExpression));
+    return PreParserExpression(TypeField::encode(kExpression) |
+                               ExpressionTypeField::encode(kDefaultExpression));
   }
 
   static PreParserExpression FromIdentifier(const PreParserIdentifier& id) {
@@ -144,6 +145,12 @@ class PreParserExpression {
     return PreParserExpression(
         TypeField::encode(kExpression) |
         ExpressionTypeField::encode(kPrivateReferenceExpression));
+  }
+
+  static PreParserExpression OptionalChainPrivateReference() {
+    return PreParserExpression(
+        TypeField::encode(kExpression) |
+        ExpressionTypeField::encode(kOptionalChainPrivateReferenceExpression));
   }
 
   static PreParserExpression Call() {
@@ -221,7 +228,9 @@ class PreParserExpression {
     return TypeField::decode(code_) == kExpression &&
            (ExpressionTypeField::decode(code_) == kPrivateReferenceExpression ||
             ExpressionTypeField::decode(code_) ==
-                kThisPrivateReferenceExpression);
+                kThisPrivateReferenceExpression ||
+            ExpressionTypeField::decode(code_) ==
+                kOptionalChainPrivateReferenceExpression);
   }
 
   bool IsCall() const {
@@ -280,11 +289,13 @@ class PreParserExpression {
   };
 
   enum ExpressionType {
+    kDefaultExpression,
     kThisExpression,
     kThisPropertyExpression,
     kThisPrivateReferenceExpression,
     kPropertyExpression,
     kPrivateReferenceExpression,
+    kOptionalChainPrivateReferenceExpression,
     kCallExpression,
     kCallEvalExpression,
     kSuperCallReference,
@@ -521,7 +532,7 @@ class PreParserFactory {
   PreParserExpression NewOptionalChain(const PreParserExpression& expr) {
     // Needed to track `delete a?.#b` early errors
     if (expr.IsPrivateReference()) {
-      return PreParserExpression::PrivateReference();
+      return PreParserExpression::OptionalChainPrivateReference();
     }
     return PreParserExpression::Default();
   }
@@ -991,7 +1002,6 @@ class PreParser : public ParserBase<PreParser> {
   V8_INLINE void SetLanguageMode(Scope* scope, LanguageMode mode) {
     scope->SetLanguageMode(mode);
   }
-  V8_INLINE void SetAsmModule() {}
 
   V8_INLINE void PrepareGeneratorVariables() {}
 
@@ -1168,7 +1178,7 @@ class PreParser : public ParserBase<PreParser> {
         is_static ? IsStaticFlag::kStatic : IsStaticFlag::kNotStatic,
         &was_added);
     if (!was_added) {
-      Scanner::Location loc(property.position(), property.position() + 1);
+      Scanner::Location loc(position(), end_position());
       ReportMessageAt(loc, MessageTemplate::kVarRedeclaration,
                       property_name.string_);
     }
@@ -1199,7 +1209,7 @@ class PreParser : public ParserBase<PreParser> {
     bool has_default_constructor = !class_info->has_seen_constructor;
     // Account for the default constructor.
     if (has_default_constructor) {
-      bool has_extends = class_info->extends.IsNull();
+      bool has_extends = !class_info->extends.IsNull();
       FunctionKind kind = has_extends ? FunctionKind::kDefaultDerivedConstructor
                                       : FunctionKind::kDefaultBaseConstructor;
       AddSyntheticFunctionDeclaration(kind, pos);
@@ -1298,9 +1308,6 @@ class PreParser : public ParserBase<PreParser> {
       const PreParserExpression& expression) {}
   V8_INLINE static void InferFunctionName() {}
 
-  V8_INLINE static void CheckAssigningFunctionLiteralToProperty(
-      const PreParserExpression& left, const PreParserExpression& right) {}
-
   V8_INLINE bool ShortcutLiteralBinaryExpression(PreParserExpression* x,
                                                  const PreParserExpression& y,
                                                  Token::Value op, int pos) {
@@ -1357,15 +1364,16 @@ class PreParser : public ParserBase<PreParser> {
     return init_block;
   }
 
-  V8_INLINE StatementT DesugarLexicalBindingsInForStatement(
+  V8_INLINE StatementT DesugarLetBindingsInForStatement(
       PreParserStatement loop, PreParserStatement init,
       const PreParserExpression& cond, PreParserStatement next,
       PreParserStatement body, Scope* inner_scope, const ForInfo& for_info) {
-    // See Parser::DesugarLexicalBindingsInForStatement.
+    // See Parser::DesugarLetBindingsInForStatement.
+    DCHECK_GT(for_info.bound_names.length(), 0);
+    DCHECK_EQ(for_info.parsing_result.descriptor.mode, VariableMode::kLet);
     for (auto name : for_info.bound_names) {
       bool was_added;
-      DeclareVariableName(name, for_info.parsing_result.descriptor.mode,
-                          inner_scope, &was_added);
+      DeclareVariableName(name, VariableMode::kLet, inner_scope, &was_added);
     }
     return loop;
   }
@@ -1506,9 +1514,10 @@ class PreParser : public ParserBase<PreParser> {
     return PreParserExpression::FromIdentifier(name);
   }
 
-  PreParserExpression ExpressionFromIdentifier(
-      const PreParserIdentifier& name, int start_position,
-      InferName infer = InferName::kYes) {
+  PreParserExpression ExpressionFromIdentifier(const PreParserIdentifier& name,
+                                               int start_position,
+                                               InferName infer = InferName{
+                                                   true}) {
     expression_scope()->NewVariable(name.string_, start_position);
     return PreParserExpression::FromIdentifier(name);
   }
@@ -1547,11 +1556,11 @@ class PreParser : public ParserBase<PreParser> {
                                  class_info->autoaccessor_count++),
         VariableMode::kConst, scope, &was_added);
     DCHECK(was_added);
-    FunctionKind kind = is_static ? FunctionKind::kGetterFunction
-                                  : FunctionKind::kStaticGetterFunction;
+    FunctionKind kind = is_static ? FunctionKind::kStaticGetterFunction
+                                  : FunctionKind::kGetterFunction;
     AddSyntheticFunctionDeclaration(kind, pos + 1);
-    kind = is_static ? FunctionKind::kSetterFunction
-                     : FunctionKind::kStaticSetterFunction;
+    kind = is_static ? FunctionKind::kStaticSetterFunction
+                     : FunctionKind::kSetterFunction;
     AddSyntheticFunctionDeclaration(kind, pos + 2);
     return factory()->NewClassLiteralProperty(
         key, value, ClassLiteralProperty::Kind::AUTO_ACCESSOR, is_static,
@@ -1580,9 +1589,9 @@ class PreParser : public ParserBase<PreParser> {
   }
 
   V8_INLINE void ReindexArrowFunctionFormalParameters(
-      PreParserFormalParameters* parameters) {}
+      PreParserFormalParameters* parameters, const AllowReindexScope& scope) {}
   V8_INLINE void ReindexComputedMemberName(
-      const PreParserExpression& expression) {}
+      const PreParserExpression& expression, const AllowReindexScope& scope) {}
   V8_INLINE void DeclareFormalParameters(
       const PreParserFormalParameters* parameters) {
     if (!parameters->is_simple) parameters->scope->SetHasNonSimpleParameters();

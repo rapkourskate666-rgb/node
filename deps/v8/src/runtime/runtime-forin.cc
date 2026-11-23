@@ -14,10 +14,72 @@ namespace internal {
 
 namespace {
 
-// Returns either a FixedArray or, if the given {receiver} has an enum cache
-// that contains all enumerable properties of the {receiver} and its prototypes
-// have none, the map of the {receiver}. This is used to speed up the check for
-// deletions during a for-in.
+MaybeDirectHandle<ForInEnumeratorHolder> TryCreateEnumeratorHolder(
+    Isolate* isolate, DirectHandle<JSReceiver> receiver,
+    FastKeyAccumulator* accumulator) {
+  if (!v8_flags.forin_enumerator_holder) return {};
+  if (!IsJSObject(*receiver)) return {};
+  DirectHandle<JSObject> object = Cast<JSObject>(receiver);
+
+  if (!accumulator->has_empty_prototype()) return {};
+
+  ElementsKind elements_kind = object->GetElementsKind();
+  if (!IsFastPackedElementsKind(elements_kind)) return {};
+
+  uint32_t elem_len;
+  if (IsJSArray(*object)) {
+    Tagged<Object> length = Cast<JSArray>(*object)->length();
+    if (!IsSmi(length) || Smi::ToInt(length) <= 0) return {};
+    elem_len = static_cast<uint32_t>(Smi::ToInt(length));
+  } else {
+    elem_len = object->elements()->ulength().value();
+    if (elem_len == 0 || !Smi::IsValid(elem_len)) return {};
+  }
+
+  DirectHandle<Map> map(object->map(), isolate);
+  if (!map->OnlyHasSimpleProperties()) return {};
+  DCHECK(!map->is_dictionary_map());
+
+  int enum_length = map->EnumLength();
+  if (enum_length == kInvalidEnumCacheSentinel) {
+    enum_length = map->NumberOfEnumerableProperties();
+    if (enum_length > 0) {
+      DirectHandle<DescriptorArray> descriptors(map->instance_descriptors(),
+                                                isolate);
+      DirectHandle<FixedArray> keys(descriptors->enum_cache()->keys(), isolate);
+      if (static_cast<uint32_t>(enum_length) <= keys->ulength().value()) {
+        map->SetEnumLength(enum_length);
+      } else {
+        FastKeyAccumulator::InitializeFastPropertyEnumCache(isolate, map,
+                                                            enum_length);
+      }
+    } else {
+      map->SetEnumLength(0);
+    }
+  }
+
+  if (elem_len > static_cast<uint32_t>(FixedArray::kMaxLength - enum_length)) {
+    return {};
+  }
+
+  DirectHandle<FixedArray> named_keys =
+      enum_length > 0
+          ? direct_handle(map->instance_descriptors()->enum_cache()->keys(),
+                          isolate)
+          : isolate->factory()->empty_fixed_array();
+
+  int int_elem_len = static_cast<int>(elem_len);
+  return isolate->factory()->NewForInEnumeratorHolder(
+      map, named_keys, Smi::FromInt(int_elem_len),
+      Smi::FromInt(int_elem_len + enum_length));
+}
+
+// Returns either a FixedArray of keys, a ForInEnumeratorHolder (if {receiver}
+// has fast packed elements, simple properties, and an empty prototype chain),
+// or, if the given {receiver} has an enum cache that contains all enumerable
+// properties of the {receiver} and its prototypes have none, the map of the
+// {receiver}. This is used to speed up the check for deletions during a
+// for-in.
 MaybeDirectHandle<HeapObject> Enumerate(Isolate* isolate,
                                         DirectHandle<JSReceiver> receiver) {
   JSObject::MakePrototypesFast(receiver, kStartAtReceiver, isolate);
@@ -25,15 +87,28 @@ MaybeDirectHandle<HeapObject> Enumerate(Isolate* isolate,
                                  KeyCollectionMode::kIncludePrototypes,
                                  ENUMERABLE_STRINGS, true);
   // Test if we have an enum cache for {receiver}.
-  if (!accumulator.is_receiver_simple_enum()) {
-    DirectHandle<FixedArray> keys;
+  if (!accumulator.has_initialized_and_usable_enum_cache()) {
+    if (DirectHandle<ForInEnumeratorHolder> holder;
+        TryCreateEnumeratorHolder(isolate, receiver, &accumulator)
+            .ToHandle(&holder)) {
+      return holder;
+    }
+    Handle<FixedArray> keys;
+    bool is_from_enum_cache = false;
     ASSIGN_RETURN_ON_EXCEPTION(
         isolate, keys,
         accumulator.GetKeys(accumulator.may_have_elements()
                                 ? GetKeysConversion::kConvertToString
-                                : GetKeysConversion::kNoNumbers));
+                                : GetKeysConversion::kNoNumbers,
+                            is_from_enum_cache));
     // Test again, since cache may have been built by GetKeys() calls above.
-    if (!accumulator.is_receiver_simple_enum()) return keys;
+    if (!accumulator.has_initialized_and_usable_enum_cache()) {
+      if (is_from_enum_cache) {
+        // Don't leak the enum cache.
+        keys = isolate->factory()->CopyFixedArray(keys);
+      }
+      return keys;
+    }
   }
   DCHECK(!IsJSModuleNamespace(*receiver));
   return direct_handle(receiver->map(), isolate);
@@ -63,7 +138,7 @@ MaybeDirectHandle<Object> HasEnumerableProperty(
           DirectHandle<Object> prototype;
           ASSIGN_RETURN_ON_EXCEPTION(isolate, prototype,
                                      JSProxy::GetPrototype(proxy));
-          if (IsNull(*prototype, isolate)) {
+          if (IsNull(*prototype)) {
             return isolate->factory()->undefined_value();
           }
           // We already have a stack-check in JSProxy::GetPrototype.
@@ -76,12 +151,14 @@ MaybeDirectHandle<Object> HasEnumerableProperty(
         }
       }
       case LookupIterator::MODULE_NAMESPACE: {
-#ifdef DEBUG
-        DirectHandle<JSModuleNamespace> ns = it.GetHolder<JSModuleNamespace>();
-        if (IsJSDeferredModuleNamespace(*ns)) {
-          DCHECK_EQ(ns->module()->status(), Module::kEvaluated);
+        // It triggers evaluation, because this access is like calling
+        // [[GetOwnProperty]] on deferred namespace object.
+        if (JSDeferredModuleNamespace::TriggersEvaluation(&it)) {
+          DirectHandle<JSDeferredModuleNamespace> holder =
+              it.GetHolder<JSDeferredModuleNamespace>();
+          JSDeferredModuleNamespace::EvaluateModuleSync(isolate, holder);
+          RETURN_EXCEPTION_IF_EXCEPTION(isolate);
         }
-#endif
         continue;
       }
       case LookupIterator::STRING_LOOKUP_START_OBJECT:
@@ -138,7 +215,7 @@ RUNTIME_FUNCTION(Runtime_ForInHasProperty) {
   DirectHandle<Object> result;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, result, HasEnumerableProperty(isolate, receiver, key));
-  return ReadOnlyRoots(isolate).boolean_value(!IsUndefined(*result, isolate));
+  return ReadOnlyRoots(isolate).boolean_value(!IsUndefined(*result));
 }
 
 }  // namespace internal

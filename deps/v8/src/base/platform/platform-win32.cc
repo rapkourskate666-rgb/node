@@ -564,7 +564,7 @@ void OS::ExitProcess(int exit_code) {
 // for output. However, if the application is linked as a GUI application,
 // the process doesn't have a console, and therefore (debugging) output is lost.
 // This is the case if we are embedded in a windows program (like a browser).
-// In order to be able to get debug output in this case the the debugging
+// In order to be able to get debug output in this case the debugging
 // facility using OutputDebugString. This output goes to the active debugger
 // for the process (if any). Else the output can be monitored using DBMON.EXE.
 
@@ -610,7 +610,7 @@ static void VPrintHelper(FILE* stream, const char* format, va_list args) {
 }
 
 // Convert utf-8 encoded string to utf-16 encoded.
-static std::wstring ConvertUtf8StringToUtf16(const char* str) {
+std::wstring OS::ConvertUtf8StringToUtf16(const char* str) {
   // On Windows wchar_t must be a 16-bit value.
   static_assert(sizeof(wchar_t) == 2, "wrong wchar_t size");
   std::wstring utf16_str;
@@ -708,8 +708,7 @@ void OS::VPrintError(const char* format, va_list args) {
   VPrintHelper(stderr, format, args);
 }
 
-
-int OS::SNPrintF(char* str, int length, const char* format, ...) {
+int OS::SNPrintF(char* str, size_t length, const char* format, ...) {
   va_list args;
   va_start(args, format);
   int result = VSNPrintF(str, length, format, args);
@@ -717,12 +716,11 @@ int OS::SNPrintF(char* str, int length, const char* format, ...) {
   return result;
 }
 
-
-int OS::VSNPrintF(char* str, int length, const char* format, va_list args) {
+int OS::VSNPrintF(char* str, size_t length, const char* format, va_list args) {
   int n = _vsnprintf_s(str, length, _TRUNCATE, format, args);
   // Make sure to zero-terminate the string if the output was
   // truncated or if there was an error.
-  if (n < 0 || n >= length) {
+  if (n < 0 || static_cast<size_t>(n) >= length) {
     if (length > 0)
       str[length - 1] = '\0';
     return -1;
@@ -731,17 +729,14 @@ int OS::VSNPrintF(char* str, int length, const char* format, va_list args) {
   }
 }
 
-
-void OS::StrNCpy(char* dest, int length, const char* src, size_t n) {
+void OS::StrNCpy(char* dest, size_t length, const char* src, size_t n) {
   // Use _TRUNCATE or strncpy_s crashes (by design) if buffer is too small.
-  size_t buffer_size = static_cast<size_t>(length);
-  if (n + 1 > buffer_size)  // count for trailing '\0'
+  if (n + 1 > length)  // count for trailing '\0'
     n = _TRUNCATE;
   int result = strncpy_s(dest, length, src, n);
   USE(result);
   DCHECK(result == 0 || (n == _TRUNCATE && result == STRUNCATE));
 }
-
 
 #undef _TRUNCATE
 #undef STRUNCATE
@@ -1746,6 +1741,7 @@ static const HANDLE kNoThread = INVALID_HANDLE_VALUE;
 // object. It is important that this function has __stdcall calling
 // convention.
 static unsigned int __stdcall ThreadEntry(void* arg) {
+  Stack::SetCurrentThreadStackStart();
   Thread* thread = reinterpret_cast<Thread*>(arg);
   thread->NotifyStartedAndDispatch();
   return 0;
@@ -1880,6 +1876,57 @@ Stack::StackSlot Stack::ObtainCurrentThreadStackStart() {
   return reinterpret_cast<void*>(highLimit);
 #else
 #error Unsupported ObtainCurrentThreadStackStart.
+#endif
+}
+
+// static
+Stack::StackSlot Stack::GetCommittedStackLimit() {
+#if defined(V8_TARGET_ARCH_X64)
+  return reinterpret_cast<void*>(
+      reinterpret_cast<NT_TIB64*>(NtCurrentTeb())->StackLimit);
+#elif defined(V8_TARGET_ARCH_32_BIT)
+  return reinterpret_cast<void*>(
+      reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackLimit);
+#elif defined(V8_TARGET_ARCH_ARM64)
+  ULONG_PTR lowLimit, highLimit;
+  ::GetCurrentThreadStackLimits(&lowLimit, &highLimit);
+  return reinterpret_cast<void*>(lowLimit);
+#else
+#error Unsupported GetCommittedStackLimit.
+#endif
+}
+
+// static
+Stack::StackSlot Stack::ObtainCurrentThreadStackReservedLimit() {
+  // On Windows, "StackLimit" (see function above) is the limit of the stack
+  // pages committed so far and grows dynamically. The absolute limit of the
+  // reserved stack memory is called "DeallocationStack". It does not have an
+  // associated symbol in the struct, and its offset is not very well
+  // documented, but it has been stable for a long time.
+  // Sources for the offsets:
+  // https://en.wikipedia.org/wiki/Win32_Thread_Information_Block
+  // https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/api/pebteb/teb/index.htm
+#ifdef V8_TARGET_ARCH_64_BIT
+  constexpr unsigned kDeallocationStackOffset = 0x1478;
+#else
+  constexpr unsigned kDeallocationStackOffset = 0xe0c;
+#endif
+  return *reinterpret_cast<void**>(reinterpret_cast<char*>(NtCurrentTeb()) +
+                                   kDeallocationStackOffset);
+}
+
+// static
+void Stack::SetCurrentThreadStackBounds(uintptr_t limit, uintptr_t base) {
+#if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64)
+  reinterpret_cast<NT_TIB64*>(NtCurrentTeb())->StackBase = base;
+  reinterpret_cast<NT_TIB64*>(NtCurrentTeb())->StackLimit = limit;
+#elif defined(V8_TARGET_ARCH_32_BIT)
+  reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase =
+      reinterpret_cast<void*>(base);
+  reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackLimit =
+      reinterpret_cast<void*>(limit);
+#else
+#error Unsupported SetCurrentThreadStackBounds.
 #endif
 }
 

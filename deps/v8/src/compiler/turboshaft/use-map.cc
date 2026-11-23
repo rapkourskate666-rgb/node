@@ -24,6 +24,12 @@ UseMap::UseMap(const Graph& graph, Zone* zone, FunctionType filter)
     auto block_ops = graph.OperationIndices(block);
     for (OpIndex op_index : block_ops) {
       const Operation& op = graph.Get(op_index);
+      // MakeTupleOp is a synthetic meta-operation that cannot have uses and is
+      // excluded from saturated_use_count (see Graph::IncrementInputUses). Skip
+      // it completely so UseMap neither allocates table entries for it nor
+      // records its inputs as used.
+      if (op.Is<MakeTupleOp>()) continue;
+
       // When we see a definition, we allocate space in the {uses_}.
       DCHECK_EQ(table_[op_index].offset, 0);
       DCHECK_EQ(table_[op_index].count, 0);
@@ -35,7 +41,7 @@ UseMap::UseMap(const Graph& graph, Zone* zone, FunctionType filter)
         saturated_uses_.back().reserve(std::numeric_limits<uint8_t>::max());
       } else {
         table_[op_index].offset = offset;
-        offset += op.saturated_use_count.Get();
+        offset += op.saturated_use_count.GetUnsaturated();
         uses_.resize(offset);
       }
 
@@ -82,7 +88,8 @@ void UseMap::AddUse(const Graph* graph, OpIndex node, OpIndex use) {
   uint32_t& input_count = table_[node].count;
   DCHECK_NE(input_offset, 0);
   if (V8_LIKELY(input_offset > 0)) {
-    DCHECK_LT(input_count, graph->Get(node).saturated_use_count.Get());
+    DCHECK_LT(input_count,
+              graph->Get(node).saturated_use_count.GetMaybeSaturated());
     DCHECK(!uses_[input_offset + input_count].valid());
     uses_[input_offset + input_count] = use;
   } else {

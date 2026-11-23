@@ -29,12 +29,15 @@
 
 #include <stdlib.h>
 
+#include <array>
+
 #include "include/v8-function.h"
 #include "src/api/api-inl.h"
 #include "src/base/strings.h"
 #include "src/execution/frames.h"
 #include "src/execution/isolate.h"
 #include "src/execution/vm-state-inl.h"
+#include "src/objects/abstract-code-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/profiler/tick-sample.h"
 #include "test/cctest/cctest.h"
@@ -122,7 +125,7 @@ void CreateFramePointerGrabberConstructor(v8::Local<v8::Context> context,
 static void CreateTraceCallerFunction(v8::Local<v8::Context> context,
                                       const char* func_name,
                                       const char* trace_func_name) {
-  v8::base::EmbeddedVector<char, 256> trace_call_buf;
+  std::array<char, 256> trace_call_buf;
   v8::base::SNPrintF(trace_call_buf,
                      "function %s() {"
                      "  fp = new FPGrabber();"
@@ -135,7 +138,7 @@ static void CreateTraceCallerFunction(v8::Local<v8::Context> context,
   CreateFramePointerGrabberConstructor(context, "FPGrabber");
 
   // Compile the script.
-  CompileRun(trace_call_buf.begin());
+  CompileRun(trace_call_buf.data());
 }
 
 

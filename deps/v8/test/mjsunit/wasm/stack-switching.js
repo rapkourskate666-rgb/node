@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --experimental-wasm-wasmfx --expose-gc
+// Flags: --wasm-wasmfx --expose-gc
 
 d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
@@ -52,6 +52,11 @@ builder.addFunction("call_next", kSig_v_v)
         kExprCallFunction, get_next_index,
         kExprCallRef, sig_v_v,
     ]).exportFunc();
+builder.addFunction("suspend_jspi_twice", kSig_v_v)
+    .addBody([
+        kExprCallFunction, jspi_suspending_index,
+        kExprCallFunction, jspi_suspending_index,
+    ]).exportFunc();
 builder.addFunction("call_next_in_catch_all", kSig_v_v)
     .addBody([
       kExprTryTable, kWasmVoid, 1,
@@ -81,6 +86,18 @@ builder.addFunction("resume_next_handle_tag1", kSig_v_v)
         kExprEnd,
         kExprDrop,
         kExprUnreachable,
+    ]).exportFunc();
+builder.addFunction("resume_next_handle_switch0", kSig_v_v)
+    .addBody([
+        kExprBlock, kWasmRef, cont_index,
+          kExprCallFunction, get_next_index,
+          kExprContNew, cont_index,
+          kExprResume, cont_index, 2,
+            kOnSuspend, tag0_index, 0,
+            kOnSwitch, tag0_index,
+          kExprUnreachable,
+        kExprEnd,
+        kExprDrop,
     ]).exportFunc();
 builder.addFunction("resume_next_twice", kSig_v_v)
     .addBody([
@@ -352,6 +369,17 @@ instance = builder.instantiate( {m: {
   instance.exports.resume_next_handle_tag0();
 })();
 
+(function TestSwitch() {
+  print(arguments.callee.name);
+
+  // Check unaffected by switch tag
+  instance.exports.call_stack.value = [
+      instance.exports.resume_next_handle_tag1,
+      instance.exports.suspend_tag0
+  ];
+  instance.exports.resume_next_handle_switch0();
+})();
+
 (function TestSuspendError() {
   print(arguments.callee.name);
   // Throw if the top WasmFX stack contains JS frames:
@@ -361,7 +389,7 @@ instance = builder.instantiate( {m: {
       instance.exports.suspend_tag0,
   ];
   assertThrows(instance.exports.resume_next_handle_tag0,
-      WebAssembly.SuspendError, /WasmFX: unhandled suspend/);
+      WebAssembly.RuntimeError, /WasmFX: unhandled suspend/);
 
   // Throw if an intermediate stack contains JS frames.
   instance.exports.call_stack.value = [
@@ -371,12 +399,12 @@ instance = builder.instantiate( {m: {
       instance.exports.suspend_tag0,
   ];
   assertThrows(instance.exports.resume_next_handle_tag0,
-      WebAssembly.SuspendError, /WasmFX: unhandled suspend/);
+      WebAssembly.RuntimeError, /WasmFX: unhandled suspend/);
 
   instance.exports.call_stack.value = [
       instance.exports.suspend_tag1];
   assertThrows(instance.exports.resume_next_handle_tag0,
-      WebAssembly.SuspendError, /WasmFX: unhandled suspend/);
+      WebAssembly.RuntimeError, /WasmFX: unhandled suspend/);
 })();
 
 (function TestInvalidContinuation() {
@@ -401,4 +429,30 @@ instance = builder.instantiate( {m: {
 (function TestLoopHandler() {
   print(arguments.callee.name);
   assertEquals(2, instance.exports.handler_is_loop());
+})();
+
+(function TestJSPIAndWasmFXSuspendError() {
+  print(arguments.callee.name);
+  assertThrowsAsync(
+      WebAssembly.promising(instance.exports.suspend_tag0)(),
+      WebAssembly.RuntimeError);
+
+  instance.exports.call_stack.value = [instance.exports.suspend_tag0];
+  assertThrowsAsync(
+      WebAssembly.promising(instance.exports.call_next_as_cont)(),
+      WebAssembly.RuntimeError);
+})();
+
+(function TestJSPIInWasmFXSuspendTwice() {
+  print(arguments.callee.name);
+  let promise;
+  let call_promising = () => {
+    promise = WebAssembly.promising(instance.exports.suspend_jspi_twice)();
+  };
+  instance.exports.call_stack.value = [
+      instance.exports.call_next_from_js,
+      call_promising,
+  ];
+  instance.exports.call_next_as_cont();
+  assertPromiseResult(promise);
 })();

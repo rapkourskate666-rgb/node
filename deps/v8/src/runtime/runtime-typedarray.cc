@@ -4,6 +4,7 @@
 
 #include "src/base/atomicops.h"
 #include "src/common/message-template.h"
+#include "src/common/synchronization-point-support.h"
 #include "src/execution/arguments-inl.h"
 #include "src/heap/factory.h"
 #include "src/objects/elements.h"
@@ -73,7 +74,10 @@ RUNTIME_FUNCTION(Runtime_GrowableSharedArrayBufferByteLength) {
 
   CHECK_EQ(0, array_buffer->byte_length_unchecked());
   size_t byte_length = array_buffer->GetBackingStore()->byte_length();
-  return *isolate->factory()->NewNumberFromSize(byte_length);
+  DirectHandle<Number> result =
+      isolate->factory()->NewNumberFromSize(byte_length);
+  SYNCHRONIZATION_POINT("GrowableSharedArrayBufferByteLength");
+  return *result;
 }
 
 namespace {
@@ -132,16 +136,15 @@ RUNTIME_FUNCTION(Runtime_TypedArraySortFast) {
   CHECK(IsJSArrayBuffer(array->buffer()));
   DirectHandle<JSArrayBuffer> buffer(Cast<JSArrayBuffer>(array->buffer()),
                                      isolate);
-  const bool copy_data = buffer->is_shared();
+  const bool copy_data = buffer->is_shared().value();
 
   DirectHandle<ByteArray> array_copy;
   std::vector<uint8_t> offheap_copy;
   void* data_copy_ptr = nullptr;
   if (copy_data) {
-    if (byte_length <= static_cast<unsigned>(
-                           ByteArray::LengthFor(kMaxRegularHeapObjectSize))) {
+    if (byte_length <= ByteArray::LengthFor(kMaxRegularHeapObjectSize)) {
       array_copy =
-          isolate->factory()->NewByteArray(static_cast<int>(byte_length));
+          isolate->factory()->NewByteArray(static_cast<uint32_t>(byte_length));
       data_copy_ptr = array_copy->begin();
     } else {
       // Allocate copy in C++ heap.

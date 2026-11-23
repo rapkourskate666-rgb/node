@@ -10,6 +10,7 @@
 
 namespace v8 {
 namespace internal {
+namespace regexp {
 
 class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
     : public NativeRegExpMacroAssembler {
@@ -54,7 +55,8 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
   void CheckBitInTable(Handle<ByteArray> table, Label* on_bit_set) override;
   void SkipUntilBitInTable(int cp_offset, Handle<ByteArray> table,
                            Handle<ByteArray> nibble_table, int advance_by,
-                           Label* on_match, Label* on_no_match) override;
+                           int bounds_check_offset, Label* on_match,
+                           Label* on_no_match) override;
 
   // Checks whether the given offset from the current position is before
   // the end of the string.
@@ -62,8 +64,8 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
   void CheckSpecialClassRanges(StandardCharacterSet type,
                                Label* on_no_match) override;
   void Fail() override;
-  DirectHandle<HeapObject> GetCode(DirectHandle<String> source,
-                                   RegExpFlags flags) override;
+  DirectHandle<HeapObject> GetCode(DirectHandle<RegExpData> re_data,
+                                   Flags flags) override;
   void GoTo(Label* label) override;
   void IfRegisterGE(int reg, int comparand, Label* if_ge) override;
   void IfRegisterLT(int reg, int comparand, Label* if_lt) override;
@@ -208,6 +210,12 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
 
   Isolate* isolate() const { return masm_->isolate(); }
 
+  // Address of the regexp stack's thread-local block, whose stack limit,
+  // memory top and saved stack pointer sit at Stack::k*Offset.
+  ExternalReference regexp_stack_thread_local() const {
+    return ExternalReference::address_of_regexp_stack_thread_local(isolate());
+  }
+
   const std::unique_ptr<MacroAssembler> masm_;
   const NoRootArrayScope no_root_array_scope_;
 
@@ -233,6 +241,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
 // Set of non-volatile registers saved/restored by generated regexp code.
 const RegList kRegExpCalleeSaved = {r6, r7, r8, r9, r10, fp, r13};
 
+}  // namespace regexp
 }  // namespace internal
 }  // namespace v8
 

@@ -7,6 +7,8 @@
 
 #include <ostream>
 
+#include "src/base/logging.h"
+
 #define ARITHMETIC_BITWISE_OPERATION_LIST(V) \
   V(BitwiseAnd)                              \
   V(BitwiseOr)                               \
@@ -77,6 +79,30 @@ constexpr inline bool IsBinaryOperation(Operation op) {
   return !IsUnaryOperation(op);
 }
 
+constexpr inline bool IsComparisonOperation(Operation op) {
+  switch (op) {
+#define COMPARISON_CASE(name) \
+  case Operation::k##name:    \
+    return true;
+    COMPARISON_OPERATION_LIST(COMPARISON_CASE)
+#undef COMPARISON_CASE
+    default:
+      return false;
+  }
+}
+
+constexpr bool IsInlineSmiArithmeticBinaryOperationSupported(
+    Operation operation) {
+  return operation == Operation::kAdd || operation == Operation::kSubtract;
+}
+
+constexpr bool IsInlineSmiBitwiseBinaryOperationSupported(Operation operation) {
+  return operation == Operation::kBitwiseAnd ||
+         operation == Operation::kBitwiseOr ||
+         operation == Operation::kBitwiseXor ||
+         operation == Operation::kShiftRight;
+}
+
 inline std::ostream& operator<<(std::ostream& os, const Operation& operation) {
   switch (operation) {
 #define CASE(name)         \
@@ -85,6 +111,7 @@ inline std::ostream& operator<<(std::ostream& os, const Operation& operation) {
     OPERATION_LIST(CASE)
 #undef CASE
   }
+  UNREACHABLE();
 }
 
 #endif  // V8_COMMON_OPERATION_H_

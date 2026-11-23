@@ -4,6 +4,7 @@
 
 #include "src/compiler/turbofan-graph-visualizer.h"
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <regex>
@@ -27,11 +28,12 @@
 #include "src/compiler/schedule.h"
 #include "src/compiler/turbofan-graph.h"
 #include "src/objects/script-inl.h"
-#include "src/objects/shared-function-info.h"
+#include "src/objects/shared-function-info-inl.h"
 #include "src/utils/ostreams.h"
 
 #if V8_ENABLE_WEBASSEMBLY
 #include "src/wasm/wasm-disassembler.h"
+#include "src/wasm/wasm-objects-inl.h"
 #endif
 
 namespace v8 {
@@ -81,7 +83,7 @@ void JsonPrintBytecodeSource(std::ostream& os, int source_id,
   os << ", \"feedbackVector\": \"";
   if (!feedback_vector.is_null()) {
     std::stringstream stream;
-    FeedbackVector::Print(feedback_vector, stream);
+    Print(feedback_vector, stream);
     std::regex newlines_re("\n+");
     os << std::regex_replace(stream.str(), newlines_re, "\\n");
   }
@@ -101,8 +103,7 @@ void JsonPrintFunctionSource(std::ostream& os, int source_id,
 
   int start = 0;
   int end = 0;
-  if (!script.is_null() && !IsUndefined(*script, isolate) &&
-      !shared.is_null()) {
+  if (!script.is_null() && !IsUndefined(*script) && !shared.is_null()) {
     Tagged<Object> source_name = script->name();
     os << ", \"sourceName\": \"";
     if (IsString(source_name)) {
@@ -304,7 +305,7 @@ std::unique_ptr<char[]> GetVisualizerLogFileName(OptimizedCompilationInfo* info,
                                                  const char* optional_base_dir,
                                                  const char* phase,
                                                  const char* suffix) {
-  base::EmbeddedVector<char, 256> filename(0);
+  std::array<char, 256> filename = {};
   std::unique_ptr<char[]> debug_name = info->GetDebugName();
   const char* file_prefix = v8_flags.trace_turbo_file_prefix.value();
   int optimization_id = info->IsOptimizing() ? info->optimization_id() : 0;
@@ -314,16 +315,16 @@ std::unique_ptr<char[]> GetVisualizerLogFileName(OptimizedCompilationInfo* info,
       static int fast_call_wrappers_count = 0;
       optimization_id = ++fast_call_wrappers_count;
     }
-    SNPrintF(filename, "%s-%s-%i", file_prefix, debug_name.get(),
-             optimization_id);
+    base::SNPrintF(filename, "%s-%s-%i", file_prefix, debug_name.get(),
+                   optimization_id);
   } else if (info->has_shared_info()) {
-    SNPrintF(filename, "%s-%p-%i", file_prefix,
-             reinterpret_cast<void*>(info->shared_info()->address()),
-             optimization_id);
+    base::SNPrintF(filename, "%s-%p-%i", file_prefix,
+                   reinterpret_cast<void*>(info->shared_info()->address()),
+                   optimization_id);
   } else {
-    SNPrintF(filename, "%s-none-%i", file_prefix, optimization_id);
+    base::SNPrintF(filename, "%s-none-%i", file_prefix, optimization_id);
   }
-  base::EmbeddedVector<char, 256> source_file(0);
+  std::array<char, 256> source_file = {};
   bool source_available = false;
   if (v8_flags.trace_file_names && info->has_shared_info() &&
       IsScript(info->shared_info()->script())) {
@@ -332,52 +333,47 @@ std::unique_ptr<char[]> GetVisualizerLogFileName(OptimizedCompilationInfo* info,
     if (IsString(source_name)) {
       Tagged<String> str = Cast<String>(source_name);
       if (str->length() > 0) {
-        SNPrintF(source_file, "%s", str->ToCString().get());
+        base::SNPrintF(source_file, "%s", str->ToCString().get());
         std::replace(source_file.begin(),
-                     source_file.begin() + source_file.length(), '/', '_');
+                     source_file.begin() + source_file.size(), '/', '_');
         source_available = true;
       }
     }
   }
-  std::replace(filename.begin(), filename.begin() + filename.length(), '/',
-               '_');
-  std::replace(filename.begin(), filename.begin() + filename.length(), ' ',
-               '_');
-  std::replace(filename.begin(), filename.begin() + filename.length(), ':',
-               '-');
+  std::replace(filename.begin(), filename.begin() + filename.size(), '/', '_');
+  std::replace(filename.begin(), filename.begin() + filename.size(), ' ', '_');
+  std::replace(filename.begin(), filename.begin() + filename.size(), ':', '-');
 #if V8_OS_WIN
-  std::replace(filename.begin(), filename.begin() + filename.length(), '<',
-               '{');
-  std::replace(filename.begin(), filename.begin() + filename.length(), '>',
-               '}');
+  std::replace(filename.begin(), filename.begin() + filename.size(), '<', '{');
+  std::replace(filename.begin(), filename.begin() + filename.size(), '>', '}');
 #endif  // V8_OS_WIN
 
-  base::EmbeddedVector<char, 256> base_dir;
+  std::array<char, 256> base_dir;
   if (optional_base_dir != nullptr) {
-    SNPrintF(base_dir, "%s%c", optional_base_dir,
-             base::OS::DirectorySeparator());
+    base::SNPrintF(base_dir, "%s%c", optional_base_dir,
+                   base::OS::DirectorySeparator());
   } else {
     base_dir[0] = '\0';
   }
 
-  base::EmbeddedVector<char, 256> full_filename;
+  std::array<char, 256> full_filename;
   if (phase == nullptr && !source_available) {
-    SNPrintF(full_filename, "%s%s.%s", base_dir.begin(), filename.begin(),
-             suffix);
+    base::SNPrintF(full_filename, "%s%s.%s", base_dir.data(), filename.data(),
+                   suffix);
   } else if (phase != nullptr && !source_available) {
-    SNPrintF(full_filename, "%s%s-%s.%s", base_dir.begin(), filename.begin(),
-             phase, suffix);
+    base::SNPrintF(full_filename, "%s%s-%s.%s", base_dir.data(),
+                   filename.data(), phase, suffix);
   } else if (phase == nullptr && source_available) {
-    SNPrintF(full_filename, "%s%s_%s.%s", base_dir.begin(), filename.begin(),
-             source_file.begin(), suffix);
+    base::SNPrintF(full_filename, "%s%s_%s.%s", base_dir.data(),
+                   filename.data(), source_file.data(), suffix);
   } else {
-    SNPrintF(full_filename, "%s%s_%s-%s.%s", base_dir.begin(), filename.begin(),
-             source_file.begin(), phase, suffix);
+    base::SNPrintF(full_filename, "%s%s_%s-%s.%s", base_dir.data(),
+                   filename.data(), source_file.data(), phase, suffix);
   }
 
-  char* buffer = new char[full_filename.length() + 1];
-  memcpy(buffer, full_filename.begin(), full_filename.length());
-  buffer[full_filename.length()] = '\0';
+  char* buffer = new char[full_filename.size() + 1];
+  memcpy(buffer, full_filename.data(), full_filename.size());
+  buffer[full_filename.size()] = '\0';
   return std::unique_ptr<char[]>(buffer);
 }
 
@@ -1125,10 +1121,12 @@ std::ostream& operator<<(
       // Record the minimum and maximum positions observed within this
       // TopLevelLiveRange
       for (const UseInterval& interval : child->intervals()) {
-        if (interval.start().value() < instruction_range[0])
+        if (interval.start().value() < instruction_range[0]) {
           instruction_range[0] = interval.start().value();
-        if (interval.end().value() > instruction_range[1])
+        }
+        if (interval.end().value() > instruction_range[1]) {
           instruction_range[1] = interval.end().value();
+        }
       }
     }
   }

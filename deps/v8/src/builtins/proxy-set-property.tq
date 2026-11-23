@@ -11,11 +11,11 @@ extern transitioning runtime SetPropertyWithReceiver(
 
 transitioning macro CallThrowTypeErrorIfStrict(
     implicit context: Context)(message: constexpr MessageTemplate): void {
-  ThrowTypeErrorIfStrict(SmiConstant(message), Null, Null);
+  ThrowTypeErrorIfStrict(SmiConstant(message), TheHole, TheHole);
 }
 
-// ES #sec-proxy-object-internal-methods-and-internal-slots-set-p-v-receiver
-// https://tc39.github.io/ecma262/#sec-proxy-object-internal-methods-and-internal-slots-set-p-v-receiver
+// https://tc39.es/ecma262/#sec-proxy-object-internal-methods-and-internal-slots-set-p-v-receiver
+// https://tc39.es/ecma262/#sec-proxy-object-internal-methods-and-internal-slots-set-p-v-receiver
 transitioning builtin ProxySetProperty(
     implicit context: Context)(proxy: JSProxy, name: PropertyKey|PrivateSymbol,
     value: JSAny, receiverValue: JSAny): JSAny {

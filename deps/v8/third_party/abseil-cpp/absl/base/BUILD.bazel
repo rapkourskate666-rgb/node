@@ -25,7 +25,7 @@ load(
 )
 
 package(
-    default_visibility = ["//visibility:public"],
+    default_visibility = ["//visibility:private"],
     features = [
         "header_modules",
         "layering_check",
@@ -61,11 +61,48 @@ cc_library(
 )
 
 cc_library(
+    name = "cpu_detect",
+    srcs = [
+        "internal/cpu_detect.cc",
+    ],
+    hdrs = ["internal/cpu_detect.h"],
+    copts = ABSL_DEFAULT_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = [
+        "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/coding/elias_fano:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/sysinfo/topology:__subpackages__",
+    ],
+    deps = [
+        ":config",
+    ],
+)
+
+cc_library(
+    name = "hardening",
+    hdrs = [
+        "internal/hardening.h",
+    ],
+    copts = ABSL_DEFAULT_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = [
+        "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/coding:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/gtl:__subpackages__",
+    ],
+    deps = [
+        ":config",
+        ":core_headers",
+    ],
+)
+
+cc_library(
     name = "log_severity",
     srcs = ["log_severity.cc"],
     hdrs = ["log_severity.h"],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = [
         ":config",
         ":core_headers",
@@ -77,6 +114,7 @@ cc_library(
     hdrs = ["no_destructor.h"],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = [
         ":config",
         ":nullability",
@@ -88,6 +126,7 @@ cc_library(
     hdrs = ["nullability.h"],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = [":config"],
 )
 
@@ -113,6 +152,13 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/base:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/concurrent/percpu:__pkg__",
+        "@do_not_use_for_gloop_visibility_only//gloop/concurrent/rcu:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/strings:__pkg__",
+        "@do_not_use_for_gloop_visibility_only//gloop/thread/fiber:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/hash:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/process:__subpackages__",
     ],
     deps = [
         ":atomic_hook",
@@ -137,9 +183,12 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl/base:__pkg__",
+        "@do_not_use_for_gloop_visibility_only//gloop/base:__pkg__",
+        "@do_not_use_for_gloop_visibility_only//gloop/thread/fiber:__pkg__",
     ],
     deps = [
         ":base_internal",
+        ":config",
         ":core_headers",
         ":errno_saver",
     ],
@@ -154,6 +203,7 @@ cc_library(
     ],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -166,6 +216,8 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/base:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/random:__pkg__",
     ],
     deps = [
         ":base_internal",
@@ -180,6 +232,7 @@ cc_library(
     ],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = [
         ":config",
         ":core_headers",
@@ -198,6 +251,7 @@ cc_library(
     ],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = [
         ":config",
     ],
@@ -219,6 +273,7 @@ cc_library(
         "@rules_cc//cc/compiler:msvc-cl": [],
         "@rules_cc//cc/compiler:clang-cl": [],
         "@rules_cc//cc/compiler:emscripten": [],
+        "@platforms//os:wasi": [],
         "//conditions:default": ["-pthread"],
     }) + ABSL_DEFAULT_LINKOPTS,
     visibility = [
@@ -244,6 +299,7 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/base:__subpackages__",
     ],
     deps = [
         ":config",
@@ -286,8 +342,10 @@ cc_library(
             "-ladvapi32",
         ],
         "@rules_cc//cc/compiler:emscripten": [],
+        "@platforms//os:wasi": [],
         "//conditions:default": ["-pthread"],
     }) + ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = [
         ":atomic_hook",
         ":base_internal",
@@ -310,6 +368,7 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     deps = [
         ":atomic_hook",
+        ":config",
         ":core_headers",
     ],
 )
@@ -339,6 +398,7 @@ cc_test(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     deps = [
         ":base",
+        ":config",
         ":core_headers",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
@@ -374,13 +434,15 @@ cc_test(
 
 cc_library(
     name = "throw_delegate",
-    srcs = ["internal/throw_delegate.cc"],
-    hdrs = ["internal/throw_delegate.h"],
+    srcs = [
+        "throw_delegate.cc",
+    ],
+    hdrs = [
+        "throw_delegate.h",
+    ],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
-    visibility = [
-        "//absl:__subpackages__",
-    ],
+    visibility = ["//visibility:public"],
     deps = [
         ":config",
         ":raw_logging_internal",
@@ -422,6 +484,7 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/gtl:__subpackages__",
     ],
     deps = [
         ":config",
@@ -445,12 +508,15 @@ cc_library(
     hdrs = ["internal/exception_safety_testing.h"],
     copts = ABSL_TEST_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//absl:__subpackages__"],
     deps = [
         ":config",
+        ":core_headers",
         ":pretty_function",
         "//absl/memory",
         "//absl/meta:type_traits",
         "//absl/strings",
+        "//absl/strings:string_view",
         "//absl/utility",
         "@googletest//:gtest",
     ],
@@ -477,6 +543,9 @@ cc_library(
     srcs = ["spinlock_test_common.cc"],
     copts = ABSL_TEST_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = [
+        "@do_not_use_for_gloop_visibility_only//gloop/base:__pkg__",
+    ],
     deps = [
         ":base",
         ":base_internal",
@@ -494,6 +563,7 @@ cc_test(
     srcs = ["spinlock_test_common.cc"],
     copts = ABSL_TEST_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    shard_count = 4,
     tags = [
         "no_test_wasm",
     ],
@@ -591,6 +661,7 @@ cc_test(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     deps = [
         ":base",
+        ":config",
         ":core_headers",
         "//absl/synchronization",
         "@googletest//:gtest",
@@ -609,6 +680,23 @@ cc_test(
     deps = [
         ":base",
         ":config",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "hardening_test",
+    size = "small",
+    srcs = [
+        "internal/hardening_test.cc",
+    ],
+    copts = ABSL_TEST_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
+    deps = [
+        ":config",
+        ":core_headers",
+        ":hardening",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -696,7 +784,22 @@ cc_test(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     deps = [
         ":base",
+        ":config",
         "//absl/synchronization",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_detect_test",
+    size = "small",
+    srcs = ["internal/cpu_detect_test.cc"],
+    copts = ABSL_TEST_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
+    deps = [
+        ":config",
+        ":cpu_detect",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -713,6 +816,7 @@ cc_test(
         "no_test_wasm",
     ],
     deps = [
+        ":config",
         ":malloc_internal",
         "//absl/container:node_hash_map",
     ],
@@ -728,6 +832,7 @@ cc_test(
     ],
     deps = [
         ":base",
+        ":config",
         ":core_headers",
         "//absl/synchronization",
         "@googletest//:gtest",
@@ -790,6 +895,7 @@ cc_test(
         "//absl/flags:flag_internal",
         "//absl/flags:marshalling",
         "//absl/strings",
+        "//absl/strings:string_view",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -803,6 +909,7 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/base:__subpackages__",
     ],
     deps = [
         ":config",
@@ -844,6 +951,7 @@ cc_library(
     hdrs = ["fast_type_id.h"],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = [
         ":config",
     ],
@@ -870,6 +978,7 @@ cc_library(
     ],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = [
         ":config",
         ":core_headers",
@@ -935,7 +1044,7 @@ cc_test(
     linkstatic = 1,
     deps = [
         ":core_headers",
-        "//absl/strings",
+        "//absl/strings:string_view",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -949,7 +1058,6 @@ cc_test(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     deps = [
         ":core_headers",
-        "//absl/types:optional",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -962,6 +1070,7 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/util/gtl:__subpackages__",
     ],
     deps = [
         ":config",
@@ -991,10 +1100,11 @@ cc_library(
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl:__subpackages__",
+        "@do_not_use_for_gloop_visibility_only//gloop/perftools/tracing:__subpackages__",
     ],
     deps = [
-        "//absl/base:config",
-        "//absl/base:core_headers",
+        ":config",
+        ":core_headers",
     ],
 )
 
@@ -1003,6 +1113,10 @@ cc_library(
     hdrs = ["internal/iterator_traits_test_helper.h"],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = [
+        "//absl:__subpackages__",
+        "//cloud/blockstore/metallica/util:__pkg__",
+    ],
     deps = [":config"],
 )
 

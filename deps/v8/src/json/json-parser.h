@@ -9,6 +9,7 @@
 
 #include "include/v8-callbacks.h"
 #include "src/base/bit-field.h"
+#include "src/base/macros.h"
 #include "src/base/small-vector.h"
 #include "src/base/strings.h"
 #include "src/codegen/script-details.h"
@@ -234,6 +235,7 @@ class JsonParser final {
         : scope(isolate),
           max_index(0),
           elements(0),
+          fast_keys_matched(false),
           type_and_index_(TypeField::encode(type) | IndexField::encode(index)) {
     }
 
@@ -247,11 +249,96 @@ class JsonParser final {
     HandleScope scope;
     uint32_t max_index;
     uint32_t elements;
+    // True if ParseJsonObjectProperties<FastIterableState::kJsonFast> matched
+    // all property keys against the feedback map in exact sequence with no
+    // trailing properties. Used by BuildJsonObject for direct layout
+    // allocation.
+    bool fast_keys_matched;
 
    private:
     using TypeField = base::BitField<Type, 0, 2>;
     using IndexField = TypeField::template Next<size_t, 30>;
     uint32_t type_and_index_;
+  };
+
+  class JsonContinuations {
+   public:
+    explicit JsonContinuations(Isolate* isolate)
+        : isolate_(isolate), cont_(isolate, JsonContinuation::kReturn, 0) {
+      stack_.reserve(16);
+    }
+    ~JsonContinuations() {
+      while (!stack_.empty()) {
+        Pop();
+      }
+    }
+
+    JsonContinuations(const JsonContinuations&) = delete;
+    JsonContinuations& operator=(const JsonContinuations&) = delete;
+
+    void New(JsonContinuation::Type type, size_t index) {
+      stack_.emplace_back(std::move(cont_));
+      cont_ = JsonContinuation(isolate_, type, index);
+    }
+
+    template <typename T>
+    Handle<T> CloseAndEscape(Handle<T> value) {
+      return cont_.scope.CloseAndEscape(value);
+    }
+
+    template <typename T, typename U>
+    std::pair<Handle<T>, Handle<U>> CloseAndEscape(Handle<T> value,
+                                                   Handle<U> val_node) {
+      DisallowGarbageCollection no_gc;
+      Tagged<U> raw_val_node = *val_node;
+      Handle<T> escaped_value = cont_.scope.CloseAndEscape(value);
+      Handle<U> escaped_val_node =
+          cont_.scope.CloseAndEscape(handle(raw_val_node, isolate_));
+      return {escaped_value, escaped_val_node};
+    }
+
+    // Pops the current continuation (closing its HandleScope) and recreates the
+    // handle(s) in the restored parent HandleScope. Using CloseAndEscape
+    // followed by Pop would redundantly close the current HandleScope twice (or
+    // three times when escaping two handles).
+    template <typename T>
+    Handle<T> PopAndEscape(Handle<T> value) {
+      DisallowGarbageCollection no_gc;
+      Tagged<T> raw_value = *value;
+      Pop();
+      return handle(raw_value, isolate_);
+    }
+
+    template <typename T, typename U, template <typename> typename HandleType>
+      requires(std::is_convertible_v<HandleType<U>, DirectHandle<U>>)
+    std::pair<Handle<T>, Handle<U>> PopAndEscape(Handle<T> value,
+                                                 HandleType<U> val_node) {
+      DisallowGarbageCollection no_gc;
+      Tagged<T> raw_value = *value;
+      Tagged<U> raw_val_node = *val_node;
+      Pop();
+      return {handle(raw_value, isolate_), handle(raw_val_node, isolate_)};
+    }
+
+    JsonContinuation& current() { return cont_; }
+    const JsonContinuation& current() const { return cont_; }
+
+    bool HasArrayFeedback(size_t element_stack_size) const {
+      return !stack_.empty() &&
+             stack_.back().type() == JsonContinuation::kArrayElement &&
+             stack_.back().index() < element_stack_size;
+    }
+
+   private:
+    void Pop() {
+      DCHECK(!stack_.empty());
+      cont_ = std::move(stack_.back());
+      stack_.pop_back();
+    }
+
+    Isolate* isolate_;
+    std::vector<JsonContinuation> stack_;
+    JsonContinuation cont_;
   };
 
   JsonParser(Isolate* isolate, Handle<String> source,
@@ -376,6 +463,12 @@ class JsonParser final {
   JsonString ScanJsonPropertyKey(JsonContinuation* cont);
   base::uc32 ScanUnicodeCharacter();
   base::Vector<const Char> GetKeyChars(JsonString key) {
+    // For escaped keys the source range starting at `key.start()` holds the raw
+    // (undecoded) characters while `key.length()` is the decoded length, so the
+    // bytes here do not represent the actual decoded key. Return an empty
+    // vector to signal that the byte-compare transition fast path must be
+    // skipped (see JSDataObjectBuilder::TryFastTransitionToPropertyKey).
+    if (key.has_escape()) return base::Vector<const Char>();
     return base::Vector<const Char>(chars_ + key.start(), key.length());
   }
   Handle<String> MakeString(const JsonString& string,
@@ -465,7 +558,11 @@ class JsonParser final {
 
   void UpdatePointers() {
     DisallowGarbageCollection no_gc;
+    // Keeping the `GetChars()` result is safe because we update the pointer in
+    // the GCEpilogueCallback.
+    START_IGNORE_LIFETIME_SAFETY_WARNINGS();
     const Char* chars = Cast<SeqString>(source_)->GetChars(no_gc);
+    END_IGNORE_LIFETIME_SAFETY_WARNINGS();
     if (chars_ != chars) {
       size_t position = cursor_ - chars_;
       size_t length = end_ - chars_;
@@ -502,10 +599,14 @@ class JsonParser final {
   // callable.
   MaybeHandle<Object> parsed_val_node_;
 
-  SmallVector<Handle<Object>> element_stack_;
-  SmallVector<JsonProperty> property_stack_;
-  SmallVector<double> double_elements_;
-  SmallVector<int> smi_elements_;
+  // Inline capacities sized to avoid heap reallocations on medium-sized JSON
+  // arrays and objects (~100 elements) while keeping the stack-allocated
+  // JsonParser modest (~2.5 KiB of inline buffers; JsonParser is not
+  // instantiated recursively).
+  base::SmallVector<Handle<Object>, 128> element_stack_;
+  base::SmallVector<JsonProperty, 32> property_stack_;
+  base::SmallVector<double, 64> double_elements_;
+  base::SmallVector<int, 64> smi_elements_;
 
   // Cached pointer to the raw chars in source. In case source is on-heap, we
   // register an UpdatePointers callback. For this reason, chars_, cursor_ and
@@ -515,6 +616,10 @@ class JsonParser final {
   const Char* cursor_;
   const Char* end_;
   const Char* chars_;
+
+  // Remaining budget for heuristic internalization of non-key, short one-byte
+  // strings.
+  uint32_t remaining_heuristic_internalizations_;
 };
 
 // Explicit instantiation declarations.

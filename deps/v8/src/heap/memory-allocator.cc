@@ -24,6 +24,10 @@
 #include "src/sandbox/hardware-support.h"
 #include "src/utils/allocation.h"
 
+#if V8_OS_LINUX
+#include <sys/mman.h>
+#endif
+
 namespace v8::internal {
 
 size_t MemoryAllocator::commit_page_size_ = 0;
@@ -147,6 +151,14 @@ Address MemoryAllocator::AllocateAlignedMemory(
   }
 
   Address base = reservation.address();
+
+#if V8_OS_LINUX
+  // The sandbox reservation is marked MADV_DONTDUMP so that its multi-TB
+  // virtual range doesn't force the kernel to walk the whole thing on crash.
+  // Re-mark committed heap chunks as dumpable so crash investigations still
+  // see live objects. Harmless no-op for chunks outside the sandbox.
+  madvise(reinterpret_cast<void*>(base), chunk_size, MADV_DODUMP);
+#endif
 
   if (executable == EXECUTABLE) {
     ThreadIsolation::RegisterJitPage(base, chunk_size);
@@ -331,14 +343,13 @@ void MemoryAllocator::FreeReadOnlyPage(ReadOnlyPage* chunk) {
 }
 
 void MemoryAllocator::PreFreeMemory(MutablePage* chunk_metadata) {
-  MemoryChunk* chunk = chunk_metadata->Chunk();
   DCHECK(!chunk_metadata->is_pre_freed());
   LOG(isolate_, DeleteEvent("MemoryChunk", chunk_metadata));
   RecordMemoryChunkDestroyed(chunk_metadata);
   UnregisterMutableMemoryChunk(chunk_metadata);
   isolate_->heap()->RememberUnmappedPage(
       reinterpret_cast<Address>(chunk_metadata),
-      chunk->IsEvacuationCandidate());
+      chunk_metadata->is_evacuation_candidate());
   chunk_metadata->ReleaseAllAllocatedMemory();
   chunk_metadata->set_is_pre_freed();
 }
@@ -346,7 +357,7 @@ void MemoryAllocator::PreFreeMemory(MutablePage* chunk_metadata) {
 void MemoryAllocator::PerformFreeMemory(MutablePage* chunk_metadata) {
   DCHECK(chunk_metadata->is_unregistered());
   DCHECK(chunk_metadata->is_pre_freed());
-  DCHECK(!chunk_metadata->Chunk()->InReadOnlySpace());
+  DCHECK(!chunk_metadata->IsReadOnlyPage());
 
   DeleteMemoryChunk(chunk_metadata);
 }
@@ -716,8 +727,9 @@ const MemoryChunk* MemoryAllocator::LookupChunkContainingAddressInSafepoint(
     DCHECK_LE(large_page_chunk->address(), addr);
     // This code can run from the shared heap isolate and the slot may point
     // into a client heap isolate, so ignore the isolate check.
-    if (large_page_chunk->MetadataNoIsolateCheck()->Contains(addr))
+    if (large_page_chunk->MetadataNoIsolateCheck()->Contains(addr)) {
       return large_page_chunk;
+    }
   }
   // Not found in any page.
   return nullptr;

@@ -65,16 +65,19 @@ bool IsNoFrameRegion(i::Address address) {
       int offset = *offset_ptr;
       if (!offset || IsSamePage(address, address - offset)) {
         MSAN_MEMORY_IS_INITIALIZED(pc - offset, pattern->bytes_count);
-        if (!memcmp(pc - offset, pattern->bytes, pattern->bytes_count))
+        if (!memcmp(pc - offset, pattern->bytes, pattern->bytes_count)) {
           return true;
+        }
       } else {
         // It is not safe to examine bytes on another page as it might not be
         // allocated thus causing a SEGFAULT.
         // Check the pattern part that's on the same page and
         // pessimistically assume it could be the entire pattern match.
         MSAN_MEMORY_IS_INITIALIZED(pc, pattern->bytes_count - offset);
-        if (!memcmp(pc, pattern->bytes + offset, pattern->bytes_count - offset))
+        if (!memcmp(pc, pattern->bytes + offset,
+                    pattern->bytes_count - offset)) {
           return true;
+        }
       }
     }
   }
@@ -161,13 +164,11 @@ bool SimulatorHelper::FillRegisters(Isolate* isolate,
 
 }  // namespace
 
-DISABLE_ASAN void TickSample::Init(Isolate* v8_isolate,
-                                   const RegisterState& reg_state,
-                                   RecordCEntryFrame record_c_entry_frame,
-                                   bool update_stats,
-                                   bool use_simulator_reg_state,
-                                   base::TimeDelta sampling_interval,
-                                   const std::optional<uint64_t> trace_id) {
+DISABLE_ASAN void TickSample::Init(
+    Isolate* v8_isolate, const RegisterState& reg_state,
+    RecordCEntryFrame record_c_entry_frame, bool update_stats,
+    bool use_simulator_reg_state, base::TimeDelta sampling_interval,
+    const std::optional<uint64_t> trace_id, void* sample_context) {
   update_stats_ = update_stats;
   SampleInfo info;
   RegisterState regs = reg_state;
@@ -209,6 +210,7 @@ DISABLE_ASAN void TickSample::Init(Isolate* v8_isolate,
   }
   sampling_interval_ = sampling_interval;
   trace_id_ = trace_id;
+  sample_context_ = sample_context;
   timestamp = base::TimeTicks::Now();
 }
 

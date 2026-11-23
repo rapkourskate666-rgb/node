@@ -1,5 +1,5 @@
 
-libffi-3.7.1 was released on July 10, 2026.
+libffi-3.8.1 was released on November 14, 2026.
 
 
 What is libffi?
@@ -200,6 +200,67 @@ History
 =======
 
 See the git log for details at http://github.com/libffi/libffi.
+
+    3.8.1 November-14-2026
+        Improve ABI conformance and test coverage for complex-number
+          calls, closures, and small aggregates across ARM, x86, PowerPC,
+          MIPS, RISC-V, LoongArch, and SPARC.
+        aarch64/arm: fix big-endian closures receiving garbage sub-word
+          integer and float arguments, and big-endian sub-word and float
+          return values (#1012, closes #1011, #675).  Correct the stack
+          offset of a by-value composite larger than 16 bytes and the
+          AAPCS64 HFA/HVA detection (GHSA-h52h-3759-xqm4,
+          GHSA-vg77-j273-647r).
+        x86-64: return a single-long-double struct in %st0 like a bare
+          long double (#1058); copy the upper half of 16-byte vector
+          arguments in reusable call plans; and reject vector types whose
+          ABI is undefined, where GCC and Clang disagree, instead of
+          marshalling them the wrong way (GHSA-5pc3-hr6f-q3mm).
+        powerpc64: fix _Complex long double when the ABI's long double is
+          64 bits (e.g. -mlong-double-64 or musl).
+        s390x: pass 128-bit integer closure arguments by reference, like
+          complex types, instead of leaving the value pointer
+          uninitialized (GHSA-wf8m-qr3x-cch4).
+        RISC-V: ignore the caller's return buffer for void calls.
+        MIPS: emit CFI in the N32/N64 assembly so unwinding works through
+          libffi frames (#1063).
+        wasm: correct heap accesses at or above 2 GiB (#1062), make
+          closures work with stack switching, and declare the stack-helper
+          dependencies in EM_JS_DEPS for newer Emscripten (#1019).
+        Closures and trampolines: fail allocation gracefully when the
+          page-size lookup fails (#1015) and bound the executable-mmap
+          retry loop (#1055).  Fix a Darwin trampoline-table use-after-free
+          (GHSA-23hx-9rxv-9qfp), a Linux static-trampoline path mix-up that
+          could map the wrong file as code (GHSA-fq46-69xf-x5gf), and a
+          raw-API closure that passed the wrong handler data under static
+          trampolines (GHSA-w6j9-w53f-2857).
+        Keep the bundled dlmalloc symbols static so they cannot clash with
+          an application's allocator, and emit subsections_via_symbols on
+          Apple platforms for linker dead-stripping (#1017).
+        Build and packaging: honor an explicit --enable-docs, respect every
+          --libdir spelling, and keep CCASFLAGS in sync with CFLAGS (#1060).
+
+    3.8.0 August-8-2026
+        Add FFI_TYPE_VECTOR (SIMD) type support with libffi-computed
+          layout, for aarch64 and x86-64 (#1000, closes #773).
+        Add ffi_call_plan_size to report the total memory a reusable call
+          plan owns, for embedders that account for the memory held by
+          long-lived plans.
+        Add powerpc64 ELFv2 _Complex long double support for both
+          IBM-128 (double-double) and IEEE-128 formats (#1003, closes #1001).
+        Fix powerpc64 big-endian ELFv2 closures returning 5-, 6-, or
+          7-byte structs: missing return jump-table entries produced a
+          wrong result and leaked a libffi code pointer.
+        Fix ia64 return-value jump-table desync after the FFI_TYPE_LAST
+          bump, which corrupted small-struct and HFA returns.
+        Fix powerpc Darwin closure returns broken by #951 (#1002).
+        Return small (1, 2, 4 or 8 byte) structs in registers on the i386
+          FreeBSD and OpenBSD targets, matching the platform ABI and
+          fixing a segfault on struct returns through ffi_call and closures.
+        Cache the static trampoline "unsupported" result on hosts whose
+          page size exceeds the trampoline table mapping, avoiding
+          redundant re-initialization on every closure allocation
+          (e.g. 64K-page aarch64).
 
     3.7.1 July-10-2026
         Fix aarch64 ffi_call memory corruption when passing many large

@@ -185,17 +185,26 @@ class TaskRunner {
    * Implementation of above methods with an additional `location` argument.
    */
   virtual void PostTaskImpl(std::unique_ptr<Task> task,
-                            const SourceLocation& location) {}
+                            const SourceLocation& location) = 0;
   virtual void PostNonNestableTaskImpl(std::unique_ptr<Task> task,
-                                       const SourceLocation& location) {}
+                                       const SourceLocation& location) {
+    // This must be overridden if `NonNestableTasksEnabled()`.
+    abort();
+  }
   virtual void PostDelayedTaskImpl(std::unique_ptr<Task> task,
                                    double delay_in_seconds,
-                                   const SourceLocation& location) {}
+                                   const SourceLocation& location) = 0;
   virtual void PostNonNestableDelayedTaskImpl(std::unique_ptr<Task> task,
                                               double delay_in_seconds,
-                                              const SourceLocation& location) {}
+                                              const SourceLocation& location) {
+    // This must be overridden if `NonNestableDelayedTasksEnabled()`.
+    abort();
+  }
   virtual void PostIdleTaskImpl(std::unique_ptr<IdleTask> task,
-                                const SourceLocation& location) {}
+                                const SourceLocation& location) {
+    // This must be overridden if `IdleTasksEnabled()`.
+    abort();
+  }
 };
 
 /**
@@ -770,6 +779,51 @@ class PageAllocator {
 };
 
 /**
+ * An allocator interface for managing memory explicitly.
+ *
+ * Implementations of this interface must be thread-safe as V8 will
+ * invoke these methods concurrently from multiple threads.
+ */
+class Allocator {
+ public:
+  virtual ~Allocator() = default;
+
+  /**
+   * Allocates zero-initialized memory.
+   *
+   * \param size The number of bytes to allocate.
+   * \returns Pointer to the allocated memory or nullptr on failure.
+   */
+  virtual void* Allocate(size_t size) = 0;
+
+  /**
+   * Allocates uninitialized memory.
+   *
+   * \param size The number of bytes to allocate.
+   * \returns Pointer to the allocated memory or nullptr on failure.
+   */
+  virtual void* AllocateUninitialized(size_t size) = 0;
+
+  /**
+   * Allocates uninitialized memory.
+   *
+   * \param size The number of bytes to allocate.
+   * \returns Pointer to the allocated memory. Crashes on failure (e.g. OOM).
+   * This is intended for critical allocations where failure means the process
+   * cannot continue.
+   */
+  virtual void* AllocateUninitializedOrCrash(size_t size) = 0;
+
+  /**
+   * Frees memory that was acquired with one of the allocation methods.
+   *
+   * \param ptr Pointer to the memory to free. If ptr is nullptr, no operation
+   * is performed.
+   */
+  virtual void Free(void* ptr) = 0;
+};
+
+/**
  * An allocator that uses per-thread permissions to protect the memory.
  *
  * The implementation is platform/hardware specific, e.g. using pkeys on x64.
@@ -1240,6 +1294,16 @@ class Platform {
   virtual ThreadIsolatedAllocator* GetThreadIsolatedAllocator() {
     return nullptr;
   }
+
+  /**
+   * Returns the size of the zero segment of the process. The segment starts at
+   * address 0x0 and extends up to the returned size. Permissions of the segment
+   * may only be read-only, or no access. The permissions must never change and
+   * the segment must never be reused.
+   *
+   * This API is experimental and may change significantly.
+   */
+  virtual size_t GetZeroSegmentSize() { return 0; }
 
   /**
    * Enables the embedder to respond in cases where V8 can't allocate large

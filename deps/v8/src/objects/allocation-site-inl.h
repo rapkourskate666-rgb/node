@@ -14,6 +14,7 @@
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/objects/dependent-code-inl.h"
 #include "src/objects/js-objects-inl.h"
+#include "src/objects/object-conversions-inl.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -21,8 +22,6 @@
 
 namespace v8 {
 namespace internal {
-
-#include "torque-generated/src/objects/allocation-site-tq-inl.inc"
 
 inline Tagged<UnionOf<Smi, JSObject>>
 AllocationSite::transition_info_or_boilerplate() const {
@@ -131,12 +130,11 @@ inline bool AllocationSite::PointsToLiteral() const {
   return !IsSmi(raw_value);
 }
 
-// Heuristic: We only need to create allocation site info if the boilerplate
-// elements kind is the initial elements kind.
+// We only need to create allocation site info if the boilerplate elements kind
+// can transition to a more general fast elements kind.
 inline bool AllocationSite::ShouldTrack(
     ElementsKind boilerplate_elements_kind) {
-  if (!V8_ALLOCATION_SITE_TRACKING_BOOL) return false;
-  return IsSmiElementsKind(boilerplate_elements_kind);
+  return ShouldTrack(boilerplate_elements_kind, TERMINAL_FAST_ELEMENTS_KIND);
 }
 
 inline bool AllocationSite::CanTrack(InstanceType type) {

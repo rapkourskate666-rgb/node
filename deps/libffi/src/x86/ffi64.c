@@ -330,6 +330,25 @@ classify_argument (ffi_type *type, enum x86_64_reg_class classes[],
 	  }
 	return words;
       }
+    case FFI_TYPE_VECTOR:
+      /* A Short Vector occupies SSE registers: an 8-byte vector is a single
+	 SSE eightbyte; a 16-byte vector is one %xmm register (SSE + SSEUP).
+	 Wider vectors would need %ymm/%zmm handling this port does not
+	 implement; classify them as memory here and reject them outright in
+	 ffi_prep_cif_machdep so the caller gets FFI_BAD_TYPEDEF, not a
+	 silently wrong in-memory pass.  */
+      if (type->size == 8)
+	{
+	  classes[0] = X86_64_SSE_CLASS;
+	  return 1;
+	}
+      else if (type->size == 16)
+	{
+	  classes[0] = X86_64_SSE_CLASS;
+	  classes[1] = X86_64_SSEUP_CLASS;
+	  return 2;
+	}
+      return 0;
     case FFI_TYPE_COMPLEX:
       {
 	ffi_type *inner = type->elements[0];
@@ -423,6 +442,41 @@ examine_argument (ffi_type *type, enum x86_64_reg_class classes[MAX_CLASSES],
   return n;
 }
 
+/* Recursively test whether TY is, or contains, a short vector whose x86-64
+   System V calling convention is undefined, so that libffi must refuse it
+   rather than marshal it the wrong way.
+
+   The psABI only defines the convention for vectors that map to __m64/__m128
+   (8 and 16 bytes).  Narrower vectors (<1 x float>, <4 x uint8>, ...) are
+   unspecified, and GCC and Clang disagree on them.  Among the 8-byte vectors
+   the two also disagree on the single-element <1 x double>: GCC returns and
+   passes it in memory, Clang in %xmm0.  libffi cannot tell which convention
+   the target function was compiled for, so it accepts only the shapes both
+   compilers agree on and this port implements: 16-byte vectors, and 8-byte
+   vectors other than <1 x double>.  Everything else is FFI_BAD_TYPEDEF.  */
+
+static int
+vector_type_unsupported (ffi_type *ty)
+{
+  ffi_type **p;
+
+  if (ty == NULL)
+    return 0;
+  if (ty->type == FFI_TYPE_VECTOR)
+    {
+      if (ty->size == 16)
+	return 0;
+      if (ty->size == 8 && ty->elements[0]->type != FFI_TYPE_DOUBLE)
+	return 0;
+      return 1;
+    }
+  if (ty->type == FFI_TYPE_STRUCT && ty->elements != NULL)
+    for (p = ty->elements; *p != NULL; p++)
+      if (vector_type_unsupported (*p))
+	return 1;
+  return 0;
+}
+
 /* Perform machine dependent cif processing.  */
 
 #ifndef __ILP32__
@@ -450,6 +504,18 @@ ffi_prep_cif_machdep (ffi_cif *cif)
 
   rtype = cif->rtype;
   rtype_size = rtype->size;
+
+  /* Reject return and argument types that are, or contain, a vector whose
+     x86-64 System V convention is undefined (see vector_type_unsupported).
+     Doing it here, before any classification, keeps libffi from silently
+     marshalling such a value the wrong way -- which for <1 x double> turns a
+     caller's integer argument into the store address of the result.  */
+  if (vector_type_unsupported (rtype))
+    return FFI_BAD_TYPEDEF;
+  for (i = 0, avn = cif->nargs; i < avn; i++)
+    if (vector_type_unsupported (cif->arg_types[i]))
+      return FFI_BAD_TYPEDEF;
+
   switch (rtype->type)
     {
     case FFI_TYPE_VOID:
@@ -514,7 +580,9 @@ ffi_prep_cif_machdep (ffi_cif *cif)
 	{
 	  _Bool sse0 = SSE_CLASS_P (classes[0]);
 
-	  if (rtype_size == 4 && sse0)
+	  if (classes[0] == X86_64_X87_CLASS)
+	    flags = UNIX64_RET_X87;
+	  else if (rtype_size == 4 && sse0)
 	    flags = UNIX64_RET_XMM32;
 	  else if (rtype_size == 8)
 	    flags = sse0 ? UNIX64_RET_XMM64 : UNIX64_RET_INT64;
@@ -532,6 +600,17 @@ ffi_prep_cif_machdep (ffi_cif *cif)
 	      flags |= rtype_size << UNIX64_SIZE_SHIFT;
 	    }
 	}
+      break;
+    case FFI_TYPE_VECTOR:
+      /* Only supported vectors reach here (vector_type_unsupported rejected
+	 the rest above): an 8-byte vector returns in the low half of %xmm0,
+	 a 16-byte vector fills %xmm0 (SSE + SSEUP).  */
+      if (rtype_size == 8)
+	flags = UNIX64_RET_XMM64;
+      else if (rtype_size == 16)
+	flags = UNIX64_RET_XMM128;
+      else
+	return FFI_BAD_TYPEDEF;
       break;
     case FFI_TYPE_COMPLEX:
       switch (rtype->elements[0]->type)
@@ -782,6 +861,7 @@ typedef struct
   unsigned fast;        /* nonzero -> lean trampoline eligible             */
   unsigned retcode;     /* UNIX64_RET_* (low byte of flags) for the store  */
   int      thunk_n;     /* >=0 -> ffi_gp_thunks[thunk_n], else -1          */
+  unsigned alloc_bytes; /* malloc'd size, reported by ffi_call_plan_size   */
   ffi_move moves[];
 } ffi_plan;
 
@@ -828,7 +908,7 @@ build_plan (ffi_cif *cif)
   unsigned i, avn = cif->nargs;
   enum x86_64_reg_class classes[MAX_CLASSES];
   unsigned nm, gprcount, ssecount;
-  size_t argp_off;
+  size_t argp_off, nbytes;
   ffi_plan *plan;
   int all_gp64 = 1;	/* every arg is exactly one 64-bit GP move? */
 
@@ -848,9 +928,11 @@ build_plan (ffi_cif *cif)
     }
 
   /* One self-contained allocation: header + moves, released with plain free(). */
-  plan = malloc (sizeof (ffi_plan) + sizeof (ffi_move) * (2 * avn + 1));
+  nbytes = sizeof (ffi_plan) + sizeof (ffi_move) * (2 * avn + 1);
+  plan = malloc (nbytes);
   if (plan == NULL)
     return NULL;
+  plan->alloc_bytes = (unsigned) nbytes;
 
   nm = gprcount = ssecount = 0;
   argp_off = 0;
@@ -893,8 +975,14 @@ build_plan (ffi_cif *cif)
 	  switch (classes[j])
 	    {
 	    case X86_64_NO_CLASS:
-	    case X86_64_SSEUP_CLASS:
 	      continue;			/* nothing placed for this 8-byte */
+	    case X86_64_SSEUP_CLASS:
+	      /* Upper half of the preceding SSE class's %xmm slot.  */
+	      m.dst_off = (unsigned) (offsetof (struct register_args, sse)
+				      + (ssecount - 1)
+					* sizeof (union big_int_union) + 8);
+	      m.op = FFI_MOVE_SSE64;
+	      break;
 	    case X86_64_INTEGER_CLASS:
 	    case X86_64_INTEGERSI_CLASS:
 	      m.dst_off = gprcount * 8;	/* offsetof(register_args,gpr) == 0 */
@@ -1068,6 +1156,17 @@ ffi_call_plan_free (ffi_call_plan *plan)
       free (plan->fast);
       free (plan);
     }
+}
+
+size_t
+ffi_call_plan_size (ffi_call_plan *plan)
+{
+  if (plan == NULL)
+    return 0;
+  /* The move-list carries its own size; a signature with no fast path owns
+     nothing beyond the handle.  */
+  return sizeof (struct ffi_call_plan)
+	 + (plan->fast != NULL ? plan->fast->alloc_bytes : 0);
 }
 
 extern void

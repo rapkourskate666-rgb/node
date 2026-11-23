@@ -27,6 +27,8 @@
 
 #include "test/cctest/cctest.h"
 
+#include <array>
+
 #include "include/cppgc/platform.h"
 #include "include/libplatform/libplatform.h"
 #include "include/v8-array-buffer.h"
@@ -116,7 +118,7 @@ void CcTest::Run(const char* snapshot_directory) {
 #ifdef V8_ENABLE_SANDBOX_HARDWARE_SUPPORT
   v8::SandboxHardwareSupport::InitializeBeforeThreadCreation();
 #endif  // V8_ENABLE_SANDBOX_HARDWARE_SUPPORT
-  v8::V8::InitializeICUDefaultLocation(snapshot_directory);
+  CHECK(v8::V8::InitializeICUDefaultLocation(snapshot_directory));
   std::unique_ptr<v8::Platform> underlying_default_platform(
       v8::platform::NewDefaultPlatform());
   default_platform_ = underlying_default_platform.get();
@@ -226,9 +228,9 @@ i::Handle<i::String> CcTest::MakeString(const char* str) {
 }
 
 i::Handle<i::String> CcTest::MakeName(const char* str, int suffix) {
-  v8::base::EmbeddedVector<char, 128> buffer;
+  std::array<char, 128> buffer;
   v8::base::SNPrintF(buffer, "%s%d", str, suffix);
-  return CcTest::MakeString(buffer.begin());
+  return CcTest::MakeString(buffer.data());
 }
 
 v8::base::RandomNumberGenerator* CcTest::random_number_generator() {

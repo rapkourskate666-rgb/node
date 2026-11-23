@@ -8,6 +8,7 @@
 #include "src/execution/isolate.h"
 #include "src/logging/counters.h"
 #include "src/objects/code-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/sandbox/js-dispatch-table-inl.h"
 
 
@@ -17,8 +18,13 @@ namespace internal {
 void JSDispatchEntry::CheckFieldOffsets() {
   static_assert(JSDispatchEntry::kEntrypointOffset ==
                 offsetof(JSDispatchEntry, entrypoint_));
+#if V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57
+  static_assert(JSDispatchEntry::kCodeObjectOffset ==
+                offsetof(JSDispatchEntry, code_object_));
+#else
   static_assert(JSDispatchEntry::kCodeObjectOffset ==
                 offsetof(JSDispatchEntry, encoded_word_));
+#endif  // V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57
 #if defined(V8_TARGET_ARCH_64_BIT)
 #ifdef V8_TARGET_BIG_ENDIAN
   // 2-byte parameter count is on the least significant side of encoded_word_.
@@ -41,6 +47,25 @@ void JSDispatchEntry::CheckFieldOffsets() {
 #else
 #error "Unsupported Architecture"
 #endif
+}
+
+void JSDispatchTable::Verify(Isolate* isolate, Space* space) {
+  IterateEntriesIn(space, [&](uint32_t index) {
+    auto& entry = at(index);
+    if (entry.IsFreelistEntry()) return;
+
+    // 1. The object must be a valid Code object.
+    Tagged<Object> obj = Tagged<Object>(entry.GetCodePointer());
+    CHECK(Is<Code>(obj));
+    Tagged<Code> code = TrustedCast<Code>(obj);
+#ifdef VERIFY_HEAP
+    Object::ObjectVerify(code, isolate);
+#endif
+
+    // 2. The code must be compatible with the entry's parameter count.
+    uint16_t parameter_count = entry.GetParameterCount();
+    CHECK(IsCompatibleCode(code, parameter_count));
+  });
 }
 
 void JSDispatchTable::PrintEntry(JSDispatchHandle handle) {

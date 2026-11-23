@@ -7,8 +7,10 @@
 #include <stdlib.h>
 #include <wchar.h>
 
+#include <array>
 #include <memory>
 
+#include "include/v8-extension.h"
 #include "include/v8-function.h"
 #include "include/v8-local-handle.h"
 #include "include/v8-profiler.h"
@@ -18,6 +20,7 @@
 #include "src/codegen/script-details.h"
 #include "src/heap/factory.h"
 #include "src/objects/allocation-site-inl.h"
+#include "src/objects/object-conversions-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/shared-function-info.h"
 #include "test/unittests/heap/heap-utils.h"  // For ManualGCScope.
@@ -48,9 +51,8 @@ static void SetGlobalProperty(const char* name, Tagged<Object> value) {
 
 static DirectHandle<JSFunction> Compile(const char* source) {
   Isolate* isolate = reinterpret_cast<i::Isolate*>(v8::Isolate::GetCurrent());
-  Handle<String> source_code = isolate->factory()
-                                   ->NewStringFromUtf8(base::CStrVector(source))
-                                   .ToHandleChecked();
+  Handle<String> source_code =
+      isolate->factory()->NewStringFromUtf8(source).ToHandleChecked();
   ScriptCompiler::CompilationDetails compilation_details;
   DirectHandle<SharedFunctionInfo> shared =
       Compiler::GetSharedFunctionInfoForScript(
@@ -65,10 +67,10 @@ static DirectHandle<JSFunction> Compile(const char* source) {
 
 static double Inc(Isolate* isolate, int x) {
   const char* source = "result = %d + 1;";
-  base::EmbeddedVector<char, 512> buffer;
-  SNPrintF(buffer, source, x);
+  std::array<char, 512> buffer;
+  base::SNPrintF(buffer, source, x);
 
-  DirectHandle<JSFunction> fun = Compile(buffer.begin());
+  DirectHandle<JSFunction> fun = Compile(buffer.data());
   if (fun.is_null()) return -1;
 
   DirectHandle<JSObject> global(isolate->context()->global_object(), isolate);
@@ -137,12 +139,16 @@ TEST_F(CompilerTest, Sum) {
   EXPECT_EQ(5050.0, Sum(i_isolate(), 100));
 }
 
-using CompilerPrintTest = WithPrintExtensionMixin<v8::TestWithIsolate>;
+class CompilerTestWithPrintExtension : public v8::TestWithIsolate {
+ public:
+  CompilerTestWithPrintExtension() {
+    v8::RegisterExtension(std::make_unique<PrintExtension>());
+  }
+};
 
-TEST_F(CompilerPrintTest, Print) {
+TEST_F(CompilerTestWithPrintExtension, Print) {
   v8::HandleScope scope(isolate());
-  const char* extension_names[1] = {
-      WithPrintExtensionMixin::kPrintExtensionName};
+  const char* extension_names[1] = {PrintExtension::kName};
   v8::ExtensionConfiguration config(1, extension_names);
   v8::Local<v8::Context> context = v8::Context::New(isolate(), &config);
   v8::Context::Scope context_scope(context);
@@ -203,19 +209,16 @@ TEST_F(CompilerTest, UncaughtThrow) {
   EXPECT_EQ(42.0, Object::NumberValue(isolate->exception()));
 }
 
-using CompilerC2JSFramesTest = WithPrintExtensionMixin<v8::TestWithIsolate>;
-
 // Tests calling a builtin function from C/C++ code, and the builtin function
 // performs GC. It creates a stack frame looks like following:
 //   | C (PerformGC) |
 //   |   JS-to-C     |
 //   |      JS       |
 //   |   C-to-JS     |
-TEST_F(CompilerC2JSFramesTest, C2JSFrames) {
+TEST_F(CompilerTestWithPrintExtension, C2JSFrames) {
   v8_flags.expose_gc = true;
   v8::HandleScope scope(isolate());
-  const char* extension_names[2] = {
-      "v8/gc", WithPrintExtensionMixin::kPrintExtensionName};
+  const char* extension_names[2] = {"v8/gc", PrintExtension::kName};
   v8::ExtensionConfiguration config(2, extension_names);
   v8::Local<v8::Context> context = v8::Context::New(isolate(), &config);
   v8::Context::Scope context_scope(context);
@@ -238,7 +241,7 @@ TEST_F(CompilerC2JSFramesTest, C2JSFrames) {
   EXPECT_TRUE(IsJSFunction(*fun1));
 
   DirectHandle<Object> args[] = {
-      isolate->factory()->InternalizeString(base::StaticCharVector("hello"))};
+      isolate->factory()->InternalizeString("hello")};
   Execution::Call(isolate, Cast<JSFunction>(fun1), global, base::VectorOf(args))
       .Check();
 }
@@ -261,14 +264,14 @@ TEST_F(CompilerTest, GetScriptLineNumber) {
   const char function_f[] = "function f() {}";
   const int max_rows = 1000;
   const int buffer_size = max_rows + sizeof(function_f);
-  base::ScopedVector<char> buffer(buffer_size);
-  memset(buffer.begin(), '\n', buffer_size - 1);
+  std::array<char, buffer_size> buffer;
+  memset(buffer.data(), '\n', buffer_size - 1);
   buffer[buffer_size - 1] = '\0';
 
   for (int i = 0; i < max_rows; ++i) {
     if (i > 0) buffer[i - 1] = '\n';
     MemCopy(&buffer[i], function_f, sizeof(function_f) - 1);
-    v8::Local<v8::String> script_body = NewString(buffer.begin());
+    v8::Local<v8::String> script_body = NewString(buffer.data());
     v8::Script::Compile(context(), script_body, &origin)
         .ToLocalChecked()
         ->Run(context())
@@ -952,10 +955,7 @@ TEST_F(BackgroundMergeTest, GCDuringMerge) {
       "  }"
       "})";
   IndirectHandle<String> source_string =
-      isolate()
-          ->factory()
-          ->NewStringFromUtf8(base::CStrVector(source))
-          .ToHandleChecked();
+      isolate()->factory()->NewStringFromUtf8(source).ToHandleChecked();
 
   const int kTopLevelId = 0;
   const int kFId = 1;
@@ -1146,6 +1146,56 @@ TEST_F(BackgroundMergeTest, GCDuringMerge) {
     // The old h died, so it's different.
     CHECK_NE(MakeWeak(h->shared()), unmutated_old_script_list->get(kHId));
   }
+}
+
+TEST_F(BackgroundMergeTest, MergeWithEval) {
+  v8_flags.verify_code_merge = true;
+
+  HandleScope handle_scope(isolate());
+  const char* source =
+      "var f = () => {"
+      "  'use strict';"
+      "  return eval('1');"
+      "};";
+  IndirectHandle<String> source_string =
+      isolate()->factory()->NewStringFromUtf8(source).ToHandleChecked();
+
+  ScriptCompiler::CompilationDetails compilation_details;
+  DirectHandle<SharedFunctionInfo> top_level_sfi =
+      Compiler::GetSharedFunctionInfoForScript(
+          isolate(), source_string, ScriptDetails(),
+          v8::ScriptCompiler::kNoCompileOptions,
+          ScriptCompiler::kNoCacheNoReason, NOT_NATIVES_CODE,
+          &compilation_details)
+          .ToHandleChecked();
+  DirectHandle<Script> old_script(Cast<Script>(top_level_sfi->script()),
+                                  isolate());
+
+  DirectHandle<JSFunction> top_level =
+      Factory::JSFunctionBuilder{isolate(), top_level_sfi,
+                                 isolate()->native_context()}
+          .Build();
+  DirectHandle<JSObject> global(isolate()->context()->global_object(),
+                                isolate());
+  Execution::CallScript(isolate(), top_level, global,
+                        isolate()->factory()->empty_fixed_array())
+      .Check();
+
+  DirectHandle<JSFunction> f = Cast<JSFunction>(
+      JSObject::GetProperty(isolate(), global, "f").ToHandleChecked());
+  Execution::Call(isolate(), f, global, {}).Check();
+
+  ScriptStreamingData streamed_source(
+      std::make_unique<DummySourceStream>(source),
+      v8::ScriptCompiler::StreamedSource::UTF8);
+  ScriptCompiler::CompilationDetails details;
+  streamed_source.task = std::make_unique<i::BackgroundCompileTask>(
+      &streamed_source, isolate(), ScriptType::kClassic,
+      ScriptCompiler::CompileOptions::kNoCompileOptions, &details);
+
+  streamed_source.task->RunOnMainThread(isolate());
+  streamed_source.task->FinalizeScript(isolate(), source_string,
+                                       ScriptDetails(), old_script);
 }
 
 }  // namespace internal

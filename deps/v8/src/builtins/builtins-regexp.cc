@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/base/unique-array.h"
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
 #include "src/logging/counters.h"
@@ -62,7 +63,7 @@ BUILTIN(RegExpPrototypeToString) {
   BUILTIN(RegExpCapture##i##Getter) {                          \
     HandleScope scope(isolate);                                \
     isolate->CountUsage(v8::Isolate::kRegExpStaticProperties); \
-    return *RegExpUtils::GenericCaptureGetter(                 \
+    return *regexp::Utils::GenericCaptureGetter(               \
         isolate, isolate->regexp_last_match_info(), i);        \
   }
 DEFINE_CAPTURE_GETTER(1)
@@ -85,8 +86,8 @@ BUILTIN(RegExpInputGetter) {
   isolate->CountUsage(v8::Isolate::kRegExpStaticProperties);
   DirectHandle<Object> obj(isolate->regexp_last_match_info()->last_input(),
                            isolate);
-  return IsUndefined(*obj, isolate) ? ReadOnlyRoots(isolate).empty_string()
-                                    : Cast<String>(*obj);
+  return IsUndefined(*obj) ? ReadOnlyRoots(isolate).empty_string()
+                           : Cast<String>(*obj);
 }
 
 BUILTIN(RegExpInputSetter) {
@@ -106,7 +107,7 @@ BUILTIN(RegExpInputSetter) {
 BUILTIN(RegExpLastMatchGetter) {
   HandleScope scope(isolate);
   isolate->CountUsage(v8::Isolate::kRegExpStaticPropertiesWithLastMatch);
-  return *RegExpUtils::GenericCaptureGetter(
+  return *regexp::Utils::GenericCaptureGetter(
       isolate, isolate->regexp_last_match_info(), 0);
 }
 
@@ -125,7 +126,8 @@ BUILTIN(RegExpLastParenGetter) {
   // We match the SpiderMonkey behavior: return the substring defined by the
   // last pair (after the first pair) of elements of the capture array even if
   // it is empty.
-  return *RegExpUtils::GenericCaptureGetter(isolate, match_info, last_capture);
+  return *regexp::Utils::GenericCaptureGetter(isolate, match_info,
+                                              last_capture);
 }
 
 BUILTIN(RegExpLeftContextGetter) {
@@ -221,7 +223,7 @@ constexpr const uint8_t kAsciiEscapes[128]{
 
 template <typename CharT>
 MaybeDirectHandle<String> RegExpEscapeImpl(Isolate* isolate,
-                                           base::OwnedVector<CharT> source) {
+                                           base::UniqueArray<CharT> source) {
   char double_to_radix_chars[kDoubleToRadixMaxChars];
   base::Vector<char> double_to_radix_buffer =
       base::ArrayVector(double_to_radix_chars);
@@ -349,6 +351,7 @@ MaybeDirectHandle<String> RegExpEscapeImpl(Isolate* isolate,
 }
 }  // namespace
 
+// https://tc39.es/ecma262/#sec-regexp.escape
 BUILTIN(RegExpEscape) {
   HandleScope scope(isolate);
   Handle<Object> value = args.atOrUndefined(isolate, 1);
@@ -371,18 +374,18 @@ BUILTIN(RegExpEscape) {
   // the escaped string using IncrementalStringBuilder, which may allocate.
   str = String::Flatten(isolate, str);
   if (String::IsOneByteRepresentationUnderneath(*str)) {
-    base::OwnedVector<const uint8_t> copy;
+    base::UniqueArray<const uint8_t> copy;
     {
       DisallowGarbageCollection no_gc;
-      copy = base::OwnedCopyOf(str->GetFlatContent(no_gc).ToOneByteVector());
+      copy = base::UniqueCopyOf(str->GetFlatContent(no_gc).ToOneByteVector());
     }
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, escaped, RegExpEscapeImpl(isolate, std::move(copy)));
   } else {
-    base::OwnedVector<const base::uc16> copy;
+    base::UniqueArray<const base::uc16> copy;
     {
       DisallowGarbageCollection no_gc;
-      copy = base::OwnedCopyOf(str->GetFlatContent(no_gc).ToUC16Vector());
+      copy = base::UniqueCopyOf(str->GetFlatContent(no_gc).ToUC16Vector());
     }
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, escaped, RegExpEscapeImpl(isolate, std::move(copy)));

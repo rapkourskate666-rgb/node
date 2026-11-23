@@ -9,6 +9,7 @@
 #include "src/base/atomicops.h"
 #include "src/base/memory.h"
 #include "src/common/globals.h"
+#include "src/objects/objects.h"
 #include "src/runtime/runtime.h"
 #include "src/sandbox/external-entity-table.h"
 
@@ -18,6 +19,7 @@ namespace internal {
 class Isolate;
 class Counters;
 class Code;
+class HeapObject;
 enum class TieringBuiltin;
 
 /**
@@ -42,7 +44,8 @@ struct JSDispatchEntry {
   inline uint16_t GetParameterCount() const;
 
   inline void SetCodeAndEntrypointPointer(Address new_object,
-                                          Address new_entrypoint);
+                                          Address new_entrypoint,
+                                          Isolate* isolate);
   inline void SetEntrypointPointer(Address new_entrypoint);
 
   // Make this entry a freelist entry, containing the index of the next entry
@@ -51,6 +54,11 @@ struct JSDispatchEntry {
 
   // Returns true if this entry is a freelist entry.
   inline bool IsFreelistEntry() const;
+#ifdef V8_TARGET_ARCH_64_BIT
+  // Helper to check if an entry is a freelist entry using an already-loaded
+  // entrypoint value.
+  inline bool IsFreelistEntry(Address entrypoint) const;
+#endif
 
   // Get the index of the next entry on the freelist. This method may be
   // called even when the entry is not a freelist entry. However, the result
@@ -86,8 +94,18 @@ struct JSDispatchEntry {
 #endif
 
 #if defined(V8_TARGET_ARCH_64_BIT)
+  static constexpr uint32_t kMaxParameterCountBits = 16;
+  static constexpr uint32_t kParameterCountMask =
+      (1 << kMaxParameterCountBits) - 1;
   // Freelist entries contain the index of the next free entry in their lower 32
   // bits and are tagged with this tag.
+#if V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57
+  // On x64, only the top byte is set so that it does not overlap with 57-bit
+  // user-space addresses (LA57).
+  static constexpr Address kFreeEntryTag = 0xff00000000000000ull;
+  static constexpr uintptr_t kParameterCountOffset = 2 * kSystemPointerSize;
+  static constexpr uint32_t kObjectPointerShift = 0;
+#else  // !(V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57)
 #ifdef __illumos__
   // In illumos 64-bit apps, pointers are allocated both the bottom 2^47 range
   // AND the top 2^47 range in the 64-bit space. Instead of 47 bits of VA space
@@ -113,13 +131,15 @@ struct JSDispatchEntry {
 #else
   static constexpr uintptr_t kParameterCountOffset = kCodeObjectOffset;
 #endif  // V8_TARGET_BIG_ENDIAN
-  static constexpr uint32_t kObjectPointerShift = 16;
-  static constexpr uint32_t kParameterCountMask = 0xffff;
+  static constexpr uint32_t kObjectPointerShift = kMaxParameterCountBits;
+#endif  // !(V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57)
+  static constexpr uint64_t kTagAndMarkBitMask = kFreeEntryTag;
 #elif defined(V8_TARGET_ARCH_32_BIT)
   static constexpr uintptr_t kParameterCountOffset =
       kCodeObjectOffset + kSystemPointerSize;
   static constexpr uint32_t kObjectPointerShift = 0;
   static constexpr uint32_t kParameterCountMask = 0x0;
+  static constexpr uint64_t kTagAndMarkBitMask = 0;
 #else
 #error "Unsupported Architecture"
 #endif
@@ -132,12 +152,28 @@ struct JSDispatchEntry {
   // The first word contains the pointer to the (executable) entrypoint.
   std::atomic<Address> entrypoint_;
 
-  // On 64 bit architectures the second word of the entry contains (1) the
-  // pointer to the code object associated with this entry, (2) the marking bit
-  // of the entry in the LSB of the object pointer (which must be unused as the
-  // address must be aligned), and (3) the 16-bit parameter count. The parameter
-  // count is stored in the lower 16 bits and therefore the pointer is shifted
-  // to the left. The final format therefore looks as follows:
+  // On x64, the entry is 32 bytes to support full 57-bit (LA57) pointers.
+  // Following the entrypoint word, the second word contains the tagged Code
+  // object pointer, the third word contains the marking bit and 16-bit
+  // parameter count, and the fourth word is unused padding:
+  //
+  // +----------------------------------------------------------+
+  // | Bits 63 ... 0                                            |
+  // |  HeapObject pointer                                      |
+  // +----------------------+---------------+-------------------+
+  // | Bits 63 ... 17       | Bit 16        | Bits 15 ... 0     |
+  // |  Unused              |  Marking bit  |  Parameter count  |
+  // +----------------------+---------------+-------------------+
+  // | Bits 63 ... 0                                            |
+  // |  Padding (unused)                                        |
+  // +----------------------------------------------------------+
+  //
+  // On the other 64 bit architectures the second word of the entry contains (1)
+  // the pointer to the code object associated with this entry, (2) the marking
+  // bit of the entry in the LSB of the object pointer (which must be unused as
+  // the address must be aligned), and (3) the 16-bit parameter count. The
+  // parameter count is stored in the lower 16 bits and therefore the pointer is
+  // shifted to the left. The final format therefore looks as follows:
   //
   // +----------------------+---------------+-------------------+
   // | Bits 63 ... 17       | Bit 16        | Bits 15 ... 0     |
@@ -155,16 +191,23 @@ struct JSDispatchEntry {
   // individual parts and unify with 32 bit. For instance we could try to store
   // the code pointer in some compressd format, such that it fits into 32 bits.
 
+#if V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57
+  std::atomic<Address> code_object_;
+  static constexpr Address kMarkingBit = 1 << kMaxParameterCountBits;
+#else
   static constexpr Address kMarkingBit = 1 << kObjectPointerShift;
+#endif  // V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57
   std::atomic<Address> encoded_word_;
 
-#ifdef V8_TARGET_ARCH_32_BIT
+#if V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57
+  [[maybe_unused]] uint64_t padding_;
+#elif defined(V8_TARGET_ARCH_32_BIT)
   // TODO(olivf): Investigate if we could shrink the entry size on 32bit
   // platforms to 12 bytes.
   std::atomic<uint16_t> parameter_count_;
   // 16 bits of padding
   std::atomic<uint32_t> next_free_entry_;
-#endif  // V8_TARGET_ARCH_32_BIT
+#endif  // defined(V8_TARGET_ARCH_32_BIT)
 };
 
 static_assert(sizeof(JSDispatchEntry) == kJSDispatchTableEntrySize);
@@ -229,16 +272,20 @@ class V8_EXPORT_PRIVATE JSDispatchTable
   // Updates the entry referenced by the given handle to the given Code and its
   // entrypoint. The code must be compatible with the specified entry. In
   // particular, the two must use the same parameter count.
-  // NB: Callee must emit JS_DISPATCH_HANDLE_WRITE_BARRIER if needed!
+  inline void SetCode(JSDispatchHandle handle, Tagged<Code> new_code,
+                      Tagged<HeapObject> host, Isolate* isolate,
+                      WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+  // NB: Callee must use WriteBarrier::ForJSDispatchHandle or similar.
   inline void SetCodeNoWriteBarrier(JSDispatchHandle handle,
-                                    Tagged<Code> new_code);
+                                    Tagged<Code> new_code, Isolate* isolate);
 
   // Execute a tiering builtin instead of the actual code. Leaves the Code
   // pointer untouched and changes only the entrypoint.
   inline void SetTieringRequest(JSDispatchHandle handle, TieringBuiltin builtin,
                                 Isolate* isolate);
-  inline void SetCodeKeepTieringRequestNoWriteBarrier(JSDispatchHandle handle,
-                                                      Tagged<Code> new_code);
+  inline void SetCodeKeepTieringRequest(
+      JSDispatchHandle handle, Tagged<Code> new_code, Tagged<HeapObject> host,
+      Isolate* isolate, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
   // Resets the entrypoint to the code's entrypoint.
   inline void ResetTieringRequest(JSDispatchHandle handle);
   // Check if and/or which tiering builtin is installed.
@@ -306,11 +353,17 @@ class V8_EXPORT_PRIVATE JSDispatchTable
                           Space* ro_space);
 #endif  // defined(DEBUG) || defined(VERIFY_HEAP)
 
+  // Verifies that all entries in the given space are valid.
+  //
+  // In practice, this means that every active entry must point to a valid
+  // (e.g. not freed or corrupted) object of the expected type. As a general
+  // rule, the table must be in a consistent state (and so pass verification)
+  // whenever we can execute JS or Wasm code.
+  void Verify(Isolate* isolate, Space* space);
+
   void PrintEntry(JSDispatchHandle handle);
   void PrintCurrentTieringRequest(JSDispatchHandle handle, Isolate* isolate,
                                   std::ostream& os);
-
-  static constexpr bool kWriteBarrierSetsEntryMarkBit = true;
 
   static bool MaybeValidJSDispatchHandle(uint32_t handle) {
     return ((handle >> kJSDispatchHandleShift) << kJSDispatchHandleShift) ==
@@ -323,7 +376,11 @@ class V8_EXPORT_PRIVATE JSDispatchTable
 
   inline void SetCodeAndEntrypointNoWriteBarrier(JSDispatchHandle handle,
                                                  Tagged<Code> new_code,
-                                                 Address entrypoint);
+                                                 Address entrypoint,
+                                                 Isolate* isolate);
+  inline void SetCodeKeepTieringRequestNoWriteBarrier(JSDispatchHandle handle,
+                                                      Tagged<Code> new_code,
+                                                      Isolate* isolate);
 
   static uint32_t HandleToIndex(JSDispatchHandle handle) {
     uint32_t index = handle.value() >> kJSDispatchHandleShift;

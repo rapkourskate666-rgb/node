@@ -18,10 +18,10 @@ const TSCallDescriptor* CreateAllocateBuiltinDescriptor(Zone* zone,
       Linkage::GetStubCallDescriptor(
           zone, AllocateDescriptor{},
           AllocateDescriptor{}.GetStackParameterCount(),
-          CallDescriptor::kCanUseRoots, Operator::kNoThrow,
+          CallDescriptor::kNoFlags, Operator::kNoThrow,
           isolate != nullptr ? StubCallMode::kCallCodeObject
                              : StubCallMode::kCallBuiltinPointer),
-      CanThrow::kNo, LazyDeoptOnThrow::kNo, zone);
+      CanThrow{false}, LazyDeoptOnThrow{false}, zone);
 }
 
 #if V8_ENABLE_WEBASSEMBLY
@@ -31,9 +31,9 @@ const TSCallDescriptor* CreateAllocateWasmSharedBuiltinDescriptor(
       Linkage::GetStubCallDescriptor(
           zone, WasmAllocateSharedDescriptor{},
           AllocateDescriptor{}.GetStackParameterCount(),
-          CallDescriptor::kCanUseRoots, Operator::kNoThrow,
+          CallDescriptor::kNoFlags, Operator::kNoThrow,
           StubCallMode::kCallBuiltinPointer),
-      CanThrow::kNo, LazyDeoptOnThrow::kNo, zone);
+      CanThrow{false}, LazyDeoptOnThrow{false}, zone);
 }
 #endif
 

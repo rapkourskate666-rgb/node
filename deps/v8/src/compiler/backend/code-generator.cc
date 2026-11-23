@@ -8,7 +8,9 @@
 
 #include "src/base/bounds.h"
 #include "src/base/iterator.h"
+#include "src/base/unique-array.h"
 #include "src/codegen/assembler-inl.h"
+#include "src/codegen/compiler.h"
 #include "src/codegen/macro-assembler-inl.h"
 #include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/backend/code-generator-impl.h"
@@ -18,14 +20,18 @@
 #include "src/deoptimizer/translated-state.h"
 #include "src/diagnostics/eh-frame.h"
 #include "src/execution/frames.h"
+#include "src/flags/flags.h"
+#include "src/handles/global-handles-inl.h"
 #include "src/logging/counters.h"
 #include "src/logging/log.h"
 #include "src/objects/code-kind.h"
 #include "src/objects/smi.h"
 #include "src/utils/address-map.h"
 #include "src/utils/utils.h"
+#include "src/wasm/effect-handler.h"
 
 #if V8_ENABLE_WEBASSEMBLY
+#include "src/wasm/leb-helper.h"
 #include "src/wasm/wasm-deopt-data.h"
 #endif
 
@@ -70,12 +76,11 @@ CodeGenerator::CodeGenerator(Zone* codegen_zone, Frame* frame, Linkage* linkage,
       current_block_(RpoNumber::Invalid()),
       start_source_position_(start_source_position),
       current_source_position_(SourcePosition::Unknown()),
-      masm_(isolate, codegen_zone, options, CodeObjectRequired::kNo,
+      masm_(isolate, codegen_zone, options, CodeObjectRequired{false},
             std::unique_ptr<AssemblerBuffer>{}),
       resolver_(this),
       safepoints_(codegen_zone),
       handlers_(codegen_zone),
-      effect_handlers_(codegen_zone),
       deoptimization_exits_(codegen_zone),
       protected_deoptimization_literals_(codegen_zone),
       deoptimization_literals_(codegen_zone),
@@ -90,7 +95,8 @@ CodeGenerator::CodeGenerator(Zone* codegen_zone, Frame* frame, Linkage* linkage,
       source_position_table_builder_(
           codegen_zone, SourcePositionTableBuilder::RECORD_SOURCE_POSITIONS),
 #if V8_ENABLE_WEBASSEMBLY
-      protected_instructions_(codegen_zone),
+      trapping_instructions_(codegen_zone),
+      effect_handlers_(codegen_zone),
 #endif  // V8_ENABLE_WEBASSEMBLY
       result_(kSuccess),
       block_starts_(codegen_zone),
@@ -112,9 +118,9 @@ CodeGenerator::CodeGenerator(Zone* codegen_zone, Frame* frame, Linkage* linkage,
   masm_.set_builtin(builtin);
 }
 
-void CodeGenerator::RecordProtectedInstruction(uint32_t instr_offset) {
+void CodeGenerator::RecordTrappingInstruction(uint32_t instr_offset) {
 #if V8_ENABLE_WEBASSEMBLY
-  protected_instructions_.push_back({instr_offset});
+  trapping_instructions_.push_back({instr_offset});
 #endif  // V8_ENABLE_WEBASSEMBLY
 }
 
@@ -129,7 +135,10 @@ bool CodeGenerator::ShouldApplyOffsetToStackCheck(Instruction* instr,
 
   StackCheckKind kind =
       static_cast<StackCheckKind>(StackCheckField::decode(instr->opcode()));
-  if (kind != StackCheckKind::kJSFunctionEntry) return false;
+  if (kind != StackCheckKind::kJSFunctionEntry &&
+      kind != StackCheckKind::kWasm) {
+    return false;
+  }
 
   uint32_t stack_check_offset = *offset = GetStackCheckOffset();
   return stack_check_offset > kStackLimitSlackForDeoptimizationInBytes;
@@ -153,7 +162,7 @@ uint32_t CodeGenerator::GetStackCheckOffset() {
       static_cast<int32_t>(max_unoptimized_frame_height_);
 
   // The offset is either the delta between the optimized frames and the
-  // interpreted frame, or the maximal number of bytes pushed to the stack
+  // unoptimized frame, or the maximal number of bytes pushed to the stack
   // while preparing for function calls, whichever is bigger.
   uint32_t frame_height_delta = static_cast<uint32_t>(std::max(
       signed_max_unoptimized_frame_height - optimized_frame_height, 0));
@@ -207,6 +216,9 @@ void CodeGenerator::MaybeEmitOutOfLineConstantPool() {
 void CodeGenerator::AssembleCode() {
   OptimizedCompilationInfo* info = this->info();
   auto call_descriptor = linkage()->GetIncomingDescriptor();
+  DCHECK_IMPLIES(call_descriptor->IsCFunctionCall() &&
+                     info->code_kind() != CodeKind::BYTECODE_HANDLER,
+                 call_descriptor->InitializeRootRegister());
 
   // Compute incoming parameter count for code using JS linkage. This will
   // ultimately set the parameter count on the resulting Code object.
@@ -330,6 +342,7 @@ void CodeGenerator::AssembleCode() {
 #endif
 
     if (block->must_construct_frame()) {
+      DCHECK(frame_access_state()->has_frame());
       AssembleConstructFrame();
       // We need to setup the root register after we assemble the prologue, to
       // avoid clobbering callee saved registers in case of C linkage and
@@ -490,24 +503,36 @@ void CodeGenerator::AssembleArchBinarySearchSwitchRange(
 #endif  // V8_TARGET_ARCH_X64/V8_TARGET_ARCH_RISCV64
 
 void CodeGenerator::AssembleArchJump(RpoNumber target) {
-  if (!IsNextInAssemblyOrder(target))
+  if (!IsNextInAssemblyOrder(target)) {
     AssembleArchJumpRegardlessOfAssemblyOrder(target);
+  }
 }
 
-base::OwnedVector<uint8_t> CodeGenerator::GetSourcePositionTable() {
+base::UniqueArray<uint8_t> CodeGenerator::GetSourcePositionTable() {
   return source_position_table_builder_.ToSourcePositionTableVector();
 }
 
-base::OwnedVector<uint8_t> CodeGenerator::GetProtectedInstructionsData() {
+base::UniqueArray<uint8_t> CodeGenerator::GetTrappingInstructionsData() {
 #if V8_ENABLE_WEBASSEMBLY
-  return base::OwnedCopyOf(
-      base::Vector<uint8_t>::cast(base::VectorOf(protected_instructions_)));
+  return base::UniqueCopyOf(
+      base::Vector<uint8_t>::cast(base::VectorOf(trapping_instructions_)));
 #else
   return {};
 #endif  // V8_ENABLE_WEBASSEMBLY
 }
 
-MaybeHandle<Code> CodeGenerator::FinalizeCode() {
+void CodeGenerator::PrepareCodeOnBackground(LocalIsolate* local_isolate) {
+  LocalHandleScope handle_scope(local_isolate);
+  AllowHandleDereference allow_deref;
+  Handle<Code> code;
+  if (BuildCodeObject(local_isolate).ToHandle(&code)) {
+    code_ = local_isolate->heap()->NewPersistentHandle(code);
+    retained_maps_ = OptimizedCompilationJob::CollectRetainedMaps(
+        code, info_->DetachCanonicalHandles());
+  }
+}
+
+MaybeHandle<Code> CodeGenerator::BuildCodeObject(LocalIsolate* local_isolate) {
   if (result_ != kSuccess) {
     masm()->AbortedCodeGeneration();
     return {};
@@ -515,12 +540,11 @@ MaybeHandle<Code> CodeGenerator::FinalizeCode() {
 
   // Allocate the source position table.
   Handle<TrustedByteArray> source_positions =
-      source_position_table_builder_.ToSourcePositionTable(isolate());
+      source_position_table_builder_.ToSourcePositionTable(local_isolate);
 
   // Allocate and install the code.
   CodeDesc desc;
-  masm()->GetCode(isolate()->main_thread_local_isolate(), &desc, safepoints(),
-                  handler_table_offset_);
+  masm()->GetCode(local_isolate, &desc, safepoints(), handler_table_offset_);
 
 #if defined(V8_OS_WIN64)
   if (Builtins::IsBuiltinId(info_->builtin())) {
@@ -532,7 +556,7 @@ MaybeHandle<Code> CodeGenerator::FinalizeCode() {
     unwinding_info_writer_.eh_frame_writer()->GetEhFrame(&desc);
   }
 
-  Factory::CodeBuilder builder(isolate(), desc, info()->code_kind());
+  Factory::CodeBuilder builder(local_isolate, desc, info()->code_kind());
   builder.set_builtin(info()->builtin())
       .set_inlined_bytecode_size(info()->inlined_bytecode_size())
       .set_parameter_count(parameter_count_)
@@ -547,7 +571,7 @@ MaybeHandle<Code> CodeGenerator::FinalizeCode() {
   }
 
   if (CodeKindUsesDeoptimizationData(info()->code_kind())) {
-    builder.set_deoptimization_data(GenerateDeoptimizationData());
+    builder.set_deoptimization_data(GenerateDeoptimizationData(local_isolate));
     DCHECK(info()->has_bytecode_array() ||
            info()->code_kind() == CodeKind::WASM_FUNCTION);
   }
@@ -560,9 +584,24 @@ MaybeHandle<Code> CodeGenerator::FinalizeCode() {
     return {};
   }
 
-  LOG_CODE_EVENT(isolate(), CodeLinePosInfoRecordEvent(
-                                code->instruction_start(), *source_positions,
-                                JitCodeEvent::JIT_CODE));
+  return code;
+}
+
+MaybeHandle<Code> CodeGenerator::FinalizeCode() {
+  Handle<Code> code;
+  if (code_.ToHandle(&code)) {
+    code = handle(*code, isolate());
+  } else if (!BuildCodeObject(isolate()->main_thread_local_isolate())
+                  .ToHandle(&code)) {
+    return {};
+  }
+
+  if (code->has_source_position_table()) {
+    LOG_CODE_EVENT(isolate(),
+                   CodeLinePosInfoRecordEvent(code->instruction_start(),
+                                              code->source_position_table(),
+                                              JitCodeEvent::JIT_CODE));
+  }
 
   return code;
 }
@@ -577,9 +616,7 @@ bool CodeGenerator::IsNextInAssemblyOrder(RpoNumber block) const {
 void CodeGenerator::RecordSafepoint(ReferenceMap* references, int pc_offset) {
   auto safepoint = safepoints()->DefineSafepoint(masm(), pc_offset);
 
-  for (int tagged : frame()->tagged_slots()) {
-    safepoint.DefineTaggedStackSlot(tagged);
-  }
+  safepoint.DefineTaggedStackSlots(frame()->tagged_slots());
 
   int frame_header_offset = frame()->GetFixedSlotCount();
   for (const InstructionOperand& operand : references->reference_operands()) {
@@ -597,11 +634,13 @@ void CodeGenerator::RecordSafepoint(ReferenceMap* references, int pc_offset) {
   }
 }
 
+void CodeGenerator::RecordSafepointWithoutTaggedSlots() {
+  safepoints()->DefineSafepoint(masm());
+}
+
 bool CodeGenerator::IsMaterializableFromRoot(Handle<HeapObject> object,
                                              RootIndex* index_return) {
-  const CallDescriptor* incoming_descriptor =
-      linkage()->GetIncomingDescriptor();
-  if (incoming_descriptor->flags() & CallDescriptor::kCanUseRoots) {
+  if (isolate() != nullptr) {
     return isolate()->roots_table().IsRootHandle(object, index_return) &&
            RootsTable::IsImmortalImmovable(*index_return);
   }
@@ -956,9 +995,8 @@ bool CodeGenerator::GetSlotAboveSPBeforeTailCall(Instruction* instr,
     InstructionOperandConverter g(this, instr);
     *slot = g.InputInt32(instr->InputCount() - 1);
     return true;
-  } else {
-    return false;
   }
+  return false;
 }
 
 StubCallMode CodeGenerator::DetermineStubCallMode() const {
@@ -988,32 +1026,34 @@ void CodeGenerator::AssembleGaps(Instruction* instr) {
 namespace {
 
 DirectHandle<TrustedPodArray<InliningPosition>> CreateInliningPositions(
-    OptimizedCompilationInfo* info, Isolate* isolate) {
+    OptimizedCompilationInfo* info, LocalIsolate* local_isolate) {
   const OptimizedCompilationInfo::InlinedFunctionList& inlined_functions =
       info->inlined_functions();
+  const uint32_t inlined_functions_len =
+      static_cast<uint32_t>(inlined_functions.size());
   DirectHandle<TrustedPodArray<InliningPosition>> inl_positions =
-      TrustedPodArray<InliningPosition>::New(
-          isolate, static_cast<int>(inlined_functions.size()));
-  for (size_t i = 0; i < inlined_functions.size(); ++i) {
-    inl_positions->set(static_cast<int>(i), inlined_functions[i].position);
+      TrustedPodArray<InliningPosition>::New(local_isolate,
+                                             inlined_functions_len);
+  for (uint32_t i = 0; i < inlined_functions_len; ++i) {
+    inl_positions->set(i, inlined_functions[i].position);
   }
   return inl_positions;
 }
 
 }  // namespace
 
-Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData() {
+Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData(
+    LocalIsolate* local_isolate) {
   OptimizedCompilationInfo* info = this->info();
   int deopt_count = static_cast<int>(deoptimization_exits_.size());
   if (deopt_count == 0 && !info->is_osr()) {
-    return DeoptimizationData::Empty(isolate());
+    return DeoptimizationData::Empty(local_isolate);
   }
   Handle<DeoptimizationData> data =
-      DeoptimizationData::New(isolate(), deopt_count);
+      DeoptimizationData::New(local_isolate, deopt_count);
 
   DirectHandle<DeoptimizationFrameTranslation> translation_array =
-      translations_.ToFrameTranslation(
-          isolate()->main_thread_local_isolate()->factory());
+      translations_.ToFrameTranslation(local_isolate->factory());
 
   data->SetFrameTranslation(*translation_array);
   data->SetInlinedFunctionCount(
@@ -1026,16 +1066,19 @@ Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData() {
 
   if (info->has_shared_info()) {
     DirectHandle<SharedFunctionInfoWrapper> sfi_wrapper =
-        isolate()->factory()->NewSharedFunctionInfoWrapper(info->shared_info());
+        local_isolate->factory()->NewSharedFunctionInfoWrapper(
+            info->shared_info());
     data->SetWrappedSharedFunctionInfo(*sfi_wrapper);
   } else {
     data->SetWrappedSharedFunctionInfo(Smi::zero());
   }
 
+  const uint32_t protected_deopt_literals_len =
+      static_cast<uint32_t>(protected_deoptimization_literals_.size());
   DirectHandle<ProtectedDeoptimizationLiteralArray> protected_literals =
-      isolate()->factory()->NewProtectedFixedArray(
-          static_cast<int>(protected_deoptimization_literals_.size()));
-  for (unsigned i = 0; i < protected_deoptimization_literals_.size(); i++) {
+      local_isolate->factory()->NewProtectedFixedArray(
+          protected_deopt_literals_len);
+  for (uint32_t i = 0; i < protected_deopt_literals_len; i++) {
     IndirectHandle<TrustedObject> object =
         protected_deoptimization_literals_[i];
     CHECK(!object.is_null());
@@ -1043,18 +1086,21 @@ Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData() {
   }
   data->SetProtectedLiteralArray(*protected_literals);
 
+  const uint32_t deopt_literals_len =
+      static_cast<uint32_t>(deoptimization_literals_.size());
   DirectHandle<DeoptimizationLiteralArray> literals =
-      isolate()->factory()->NewDeoptimizationLiteralArray(
-          static_cast<int>(deoptimization_literals_.size()));
-  for (unsigned i = 0; i < deoptimization_literals_.size(); i++) {
-    DirectHandle<Object> object = deoptimization_literals_[i].Reify(isolate());
+      local_isolate->factory()->NewDeoptimizationLiteralArray(
+          deopt_literals_len);
+  for (uint32_t i = 0; i < deopt_literals_len; i++) {
+    DirectHandle<Object> object =
+        deoptimization_literals_[i].Reify(local_isolate);
     CHECK(!object.is_null());
     literals->set(i, *object);
   }
   data->SetLiteralArray(*literals);
 
   DirectHandle<TrustedPodArray<InliningPosition>> inl_pos =
-      CreateInliningPositions(info, isolate());
+      CreateInliningPositions(info, local_isolate);
   data->SetInliningPositions(*inl_pos);
 
   if (info->is_osr()) {
@@ -1088,7 +1134,8 @@ Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData() {
 }
 
 #if V8_ENABLE_WEBASSEMBLY
-base::OwnedVector<uint8_t> CodeGenerator::GenerateWasmDeoptimizationData() {
+base::UniqueArray<uint8_t> CodeGenerator::GenerateWasmDeoptimizationData() {
+  CHECK_EQ(result_, kSuccess);
   int deopt_count = static_cast<int>(deoptimization_exits_.size());
   if (deopt_count == 0) {
     return {};
@@ -1099,19 +1146,19 @@ base::OwnedVector<uint8_t> CodeGenerator::GenerateWasmDeoptimizationData() {
   DCHECK_EQ(inlined_function_count_, 0);
 
   auto deopt_entries =
-      base::OwnedVector<wasm::WasmDeoptEntry>::New(deopt_count);
+      base::UniqueArray<wasm::WasmDeoptEntry>::New(deopt_count);
   // Populate deoptimization entries.
   for (int i = 0; i < deopt_count; i++) {
     const DeoptimizationExit* deoptimization_exit = deoptimization_exits_[i];
     CHECK_NOT_NULL(deoptimization_exit);
-    DCHECK_EQ(i, deoptimization_exit->deoptimization_id());
+    CHECK_EQ(i, deoptimization_exit->deoptimization_id());
     deopt_entries[i] = {deoptimization_exit->bailout_id(),
                         deoptimization_exit->translation_id()};
   }
 
   base::Vector<const uint8_t> frame_translations =
       translations_.ToFrameTranslationWasm();
-  base::OwnedVector<uint8_t> result = wasm::WasmDeoptDataProcessor::Serialize(
+  base::UniqueArray<uint8_t> result = wasm::WasmDeoptDataProcessor::Serialize(
       deopt_exit_start_offset_, eager_deopt_count_, frame_translations,
       base::VectorOf(deopt_entries), deoptimization_literals_);
 #if DEBUG
@@ -1139,15 +1186,30 @@ base::OwnedVector<uint8_t> CodeGenerator::GenerateWasmDeoptimizationData() {
   return result;
 }
 
-base::OwnedVector<wasm::WasmCode::EffectHandler>
-CodeGenerator::GenerateWasmEffectHandler() {
-  auto handlers = base::OwnedVector<wasm::WasmCode::EffectHandler>::New(
-      effect_handlers_.size());
+base::UniqueArray<uint8_t> CodeGenerator::GenerateWasmEffectHandlers() {
+  size_t size = 0;
   for (size_t i = 0; i < effect_handlers_.size(); ++i) {
-    handlers[i] = {effect_handlers_[i].pc_offset, effect_handlers_[i].tag_index,
-                   effect_handlers_[i].handler->pos()};
+    size += wasm::LEBHelper::sizeof_u32v(effect_handlers_[i].pc_offset);
+    size += wasm::LEBHelper::sizeof_u32v(
+        effect_handlers_[i].tag_and_kind.raw_value());
+    if (!effect_handlers_[i].tag_and_kind.is_switch()) {
+      size += wasm::LEBHelper::sizeof_u32v(effect_handlers_[i].handler->pos());
+      size += wasm::LEBHelper::sizeof_u32v(effect_handlers_[i].sig.index);
+    }
   }
-  return handlers;
+  auto bytes = base::UniqueArray<uint8_t>::New(size);
+  uint8_t* ptr = bytes.data();
+  for (size_t i = 0; i < effect_handlers_.size(); ++i) {
+    wasm::LEBHelper::write_u32v(&ptr, effect_handlers_[i].pc_offset);
+    wasm::LEBHelper::write_u32v(&ptr,
+                                effect_handlers_[i].tag_and_kind.raw_value());
+    if (!effect_handlers_[i].tag_and_kind.is_switch()) {
+      wasm::LEBHelper::write_u32v(&ptr, effect_handlers_[i].handler->pos());
+      wasm::LEBHelper::write_u32v(&ptr, effect_handlers_[i].sig.index);
+    }
+  }
+  DCHECK_EQ(ptr, bytes.end());
+  return bytes;
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -1169,19 +1231,30 @@ void CodeGenerator::RecordCallPosition(Instruction* instr) {
 
   InstructionOperandConverter i(this, instr);
   int index = static_cast<int>(instr->InputCount()) - 1;
+#if V8_ENABLE_WEBASSEMBLY
   if (instr->HasCallDescriptorFlag(CallDescriptor::kHasEffectHandler)) {
     int num_handlers = i.ToConstant(instr->InputAt(index)).ToInt32();
     // Start from the first handler, order matters.
-    for (int handler_idx = index - 2 * num_handlers; handler_idx < index;
-         handler_idx += 2) {
-      RpoNumber handler_rpo =
-          i.ToConstant(instr->InputAt(handler_idx)).ToRpoNumber();
-      int tag_index = i.ToConstant(instr->InputAt(handler_idx + 1)).ToInt32();
-      effect_handlers_.push_back(
-          {tag_index, GetLabel(handler_rpo), masm()->pc_offset()});
+    for (int handler_idx = index - 3 * num_handlers; handler_idx < index;
+         handler_idx += 3) {
+      wasm::EffectHandlerTagIndex tag_index = wasm::EffectHandlerTagIndex(
+          i.ToConstant(instr->InputAt(handler_idx + 2)).ToInt32());
+
+      if (!tag_index.is_switch()) {
+        wasm::CanonicalTypeIndex sig{static_cast<uint32_t>(
+            i.ToConstant(instr->InputAt(handler_idx + 1)).ToInt32())};
+        RpoNumber handler_rpo =
+            i.ToConstant(instr->InputAt(handler_idx)).ToRpoNumber();
+        effect_handlers_.emplace_back(tag_index, GetLabel(handler_rpo),
+                                      masm()->pc_offset(), sig);
+      } else {
+        effect_handlers_.emplace_back(tag_index, nullptr, masm()->pc_offset(),
+                                      wasm::CanonicalTypeIndex::Invalid());
+      }
     }
-    index = index - 2 * num_handlers - 1;
+    index = index - 3 * num_handlers - 1;
   }
+#endif
   if (instr->HasCallDescriptorFlag(CallDescriptor::kHasExceptionHandler)) {
     Constant handler_input = i.ToConstant(instr->InputAt(index--));
     if (handler_input.type() == Constant::Type::kRpoNumber) {
@@ -1631,13 +1704,12 @@ void CodeGenerator::AddTranslationForOperand(Instruction* instr,
       case Constant::kFloat64:
         DCHECK(type.representation() == MachineRepresentation::kFloat64 ||
                type.representation() == MachineRepresentation::kTagged);
-        if (type == MachineType::HoleyFloat64() &&
-            constant.ToFloat64().AsUint64() == kHoleNanInt64) {
-          literal = DeoptimizationLiteral::HoleNaN();
+        if (type == MachineType::HoleyFloat64()) {
+          translations_.StoreHoleyDoubleLiteral(Float64(constant.ToFloat64()));
         } else {
-          literal = DeoptimizationLiteral(constant.ToFloat64().value());
+          translations_.StoreDoubleLiteral(Float64(constant.ToFloat64()));
         }
-        break;
+        return;
       case Constant::kHeapObject:
         DCHECK_EQ(MachineRepresentation::kTagged, type.representation());
         literal = DeoptimizationLiteral(constant.ToHeapObject());
@@ -1649,8 +1721,8 @@ void CodeGenerator::AddTranslationForOperand(Instruction* instr,
       default:
         UNREACHABLE();
     }
-    if (literal.object().equals(info()->closure()) &&
-        info()->function_context_specializing()) {
+    if (info()->function_context_specializing() &&
+        literal.IsObject(info()->closure())) {
       translations_.StoreJSFrameFunction();
     } else {
       int literal_id = DefineDeoptimizationLiteral(literal);

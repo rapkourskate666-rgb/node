@@ -252,6 +252,11 @@ class V8_EXPORT Value : public Data {
   bool IsWeakRef() const;
 
   /**
+   * Returns true if this value is an ArrayBuffer or SharedArrayBuffer.
+   */
+  bool IsArrayBufferBase() const;
+
+  /**
    * Returns true if this value is an ArrayBuffer.
    */
   bool IsArrayBuffer() const;
@@ -365,6 +370,13 @@ class V8_EXPORT Value : public Data {
    * Returns true if the value is a Module Namespace Object.
    */
   bool IsModuleNamespaceObject() const;
+
+  /**
+   * Returns true if the value is a Deferred Module Namespace Object, i.e. the
+   * namespace object created by `import defer * as ns from ...`. Note that
+   * IsModuleNamespaceObject() is also true for such values.
+   */
+  bool IsDeferredModuleNamespaceObject() const;
 
   /**
    * Returns true if the value is a primitive.

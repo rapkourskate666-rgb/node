@@ -4,6 +4,7 @@
 
 #include "src/strings/string-stream.h"
 
+#include <array>
 #include <memory>
 
 #include "src/base/vector.h"
@@ -11,6 +12,7 @@
 #include "src/logging/log.h"
 #include "src/objects/heap-object.h"
 #include "src/objects/js-array-inl.h"
+#include "src/objects/object-conversions-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/prototype.h"
 
@@ -86,26 +88,26 @@ static bool IsControlChar(char c) {
   }
 }
 
-void StringStream::Add(base::Vector<const char> format,
-                       base::Vector<FmtElm> elms) {
+void StringStream::Add(std::string_view format, std::span<const FmtElm> elms) {
   // If we already ran out of space then return immediately.
   if (full()) return;
-  int offset = 0;
-  int elm = 0;
+  size_t offset = 0;
+  size_t elm = 0;
   while (offset < format.length()) {
-    if (format[offset] != '%' || elm == elms.length()) {
+    if (format[offset] != '%' || elm == elms.size()) {
       Put(format[offset]);
       offset++;
       continue;
     }
     // Read this formatting directive into a temporary buffer
-    base::EmbeddedVector<char, 24> temp;
+    std::array<char, 24> temp;
     int format_length = 0;
     // Skip over the whole control character sequence until the
     // format element type
     temp[format_length++] = format[offset++];
-    while (offset < format.length() && IsControlChar(format[offset]))
+    while (offset < format.length() && IsControlChar(format[offset])) {
       temp[format_length++] = format[offset++];
+    }
     if (offset >= format.length()) return;
     char type = format[offset];
     temp[format_length++] = type;
@@ -122,8 +124,9 @@ void StringStream::Add(base::Vector<const char> format,
       case 'w': {
         DCHECK_EQ(FmtElm::LC_STR, current.type_);
         base::Vector<const base::uc16> value = *current.data_.u_lc_str_;
-        for (int i = 0; i < value.length(); i++)
+        for (int i = 0; i < value.length(); i++) {
           Put(static_cast<char>(value[i]));
+        }
         break;
       }
       case 'o': {
@@ -151,9 +154,9 @@ void StringStream::Add(base::Vector<const char> format,
       case 'c':
       case 'X': {
         int value = current.data_.u_int_;
-        base::EmbeddedVector<char, 24> formatted;
-        int length = SNPrintF(formatted, temp.begin(), value);
-        Add(base::Vector<const char>(formatted.begin(), length));
+        std::array<char, 24> formatted;
+        int length = base::SNPrintF(formatted, temp.data(), value);
+        Add(std::string_view(formatted.data(), length));
         break;
       }
       case 'f':
@@ -162,25 +165,22 @@ void StringStream::Add(base::Vector<const char> format,
       case 'e':
       case 'E': {
         double value = current.data_.u_double_;
-        int inf = std::isinf(value);
-        if (inf == -1) {
-          Add("-inf");
-        } else if (inf == 1) {
-          Add("inf");
+        if (std::isinf(value)) {
+          Add(value < 0 ? "-inf" : "inf");
         } else if (std::isnan(value)) {
           Add("nan");
         } else {
-          base::EmbeddedVector<char, 28> formatted;
-          SNPrintF(formatted, temp.begin(), value);
-          Add(formatted.begin());
+          std::array<char, 28> formatted;
+          base::SNPrintF(formatted, temp.data(), value);
+          Add(formatted.data());
         }
         break;
       }
       case 'p': {
         void* value = current.data_.u_pointer_;
-        base::EmbeddedVector<char, 20> formatted;
-        SNPrintF(formatted, temp.begin(), value);
-        Add(formatted.begin());
+        std::array<char, 20> formatted;
+        base::SNPrintF(formatted, temp.data(), value);
+        Add(formatted.data());
         break;
       }
       default:
@@ -250,7 +250,7 @@ void StringStream::OutputToFile(FILE* out) {
 
 DirectHandle<String> StringStream::ToString(Isolate* isolate) {
   return isolate->factory()
-      ->NewStringFromUtf8(base::Vector<const char>(buffer_, length_))
+      ->NewStringFromUtf8(std::string_view(buffer_, length_))
       .ToHandleChecked();
 }
 
@@ -304,7 +304,7 @@ void StringStream::PrintUsingMap(Isolate* isolate, Tagged<JSObject> js_object) {
   Tagged<Map> map = js_object->map();
   if (map->is_dictionary_map()) return;
 
-  Tagged<DescriptorArray> descs = map->instance_descriptors(isolate);
+  Tagged<DescriptorArray> descs = map->instance_descriptors();
   for (InternalIndex i : map->IterateOwnDescriptors()) {
     PropertyDetails details = descs->GetDetails(i);
     if (details.location() == PropertyLocation::kField) {
@@ -330,12 +330,10 @@ void StringStream::PrintUsingMap(Isolate* isolate, Tagged<JSObject> js_object) {
   }
 }
 
-void StringStream::PrintFixedArray(Tagged<FixedArray> array,
-                                   unsigned int limit) {
-  ReadOnlyRoots roots = GetReadOnlyRoots();
-  for (unsigned int i = 0; i < 10 && i < limit; i++) {
+void StringStream::PrintFixedArray(Tagged<FixedArray> array, uint32_t limit) {
+  for (uint32_t i = 0; i < 10 && i < limit; i++) {
     Tagged<Object> element = array->get(i);
-    if (IsTheHole(element, roots)) continue;
+    if (IsTheHole(element)) continue;
     for (int len = 1; len < 18; len++) {
       Put(' ');
     }
@@ -347,8 +345,8 @@ void StringStream::PrintFixedArray(Tagged<FixedArray> array,
 }
 
 void StringStream::PrintByteArray(Tagged<ByteArray> byte_array) {
-  unsigned int limit = byte_array->length();
-  for (unsigned int i = 0; i < 10 && i < limit; i++) {
+  uint32_t limit = byte_array->ulength().value();
+  for (uint32_t i = 0; i < 10 && i < limit; i++) {
     uint8_t b = byte_array->get(i);
     Add("             %d: %3d 0x%02x", i, b, b);
     if (b >= ' ' && b <= '~') {
@@ -387,8 +385,9 @@ void StringStream::PrintMentionedObjectCache(Isolate* isolate) {
       if (IsJSArray(printee)) {
         Tagged<JSArray> array = Cast<JSArray>(printee);
         if (array->HasObjectElements()) {
-          unsigned int limit = Cast<FixedArray>(array->elements())->length();
-          unsigned int length = static_cast<uint32_t>(
+          uint32_t limit =
+              Cast<FixedArray>(array->elements())->ulength().value();
+          uint32_t length = static_cast<uint32_t>(
               Object::NumberValue(Cast<JSArray>(array)->length()));
           if (length < limit) limit = length;
           PrintFixedArray(Cast<FixedArray>(array->elements()), limit);
@@ -397,7 +396,7 @@ void StringStream::PrintMentionedObjectCache(Isolate* isolate) {
     } else if (IsByteArray(printee)) {
       PrintByteArray(Cast<ByteArray>(printee));
     } else if (IsFixedArray(printee)) {
-      unsigned int limit = Cast<FixedArray>(printee)->length();
+      uint32_t limit = Cast<FixedArray>(printee)->ulength().value();
       PrintFixedArray(Cast<FixedArray>(printee), limit);
     }
   }
@@ -422,7 +421,10 @@ void StringStream::PrintPrototype(Isolate* isolate, Tagged<JSFunction> fun,
                                   Tagged<Object> receiver) {
   Tagged<Object> name = fun->shared()->Name();
   bool print_name = false;
-  if (IsNullOrUndefined(receiver, isolate) || IsTheHole(receiver, isolate) ||
+#ifdef V8_ENABLE_TDZ_HOLE
+  DCHECK(!IsTheHole(receiver));
+#endif
+  if (IsNullOrUndefined(receiver) || IsTdzHole(receiver) ||
       IsJSProxy(receiver) || IsWasmObject(receiver)) {
     print_name = true;
   } else if (!isolate->context().is_null()) {
@@ -436,7 +438,7 @@ void StringStream::PrintPrototype(Isolate* isolate, Tagged<JSFunction> fun,
          !iter.IsAtEnd(); iter.Advance()) {
       if (!IsJSObject(iter.GetCurrent())) break;
       Tagged<Object> key = iter.GetCurrent<JSObject>()->SlowReverseLookup(fun);
-      if (!IsUndefined(key, isolate)) {
+      if (!IsUndefined(key)) {
         if (!IsString(name) || !IsString(key) ||
             !Cast<String>(name)->Equals(Cast<String>(key))) {
           print_name = true;

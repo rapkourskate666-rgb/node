@@ -7,9 +7,9 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
-#include <new>
 #include <vector>
 
+#include "src/base/logging.h"
 #include "src/common/globals.h"
 #include "src/execution/isolate-inl.h"
 #include "src/strings/char-predicates-inl.h"
@@ -186,17 +186,18 @@ MaybeDirectHandle<String> Uri::Decode(Isolate* isolate,
   std::vector<base::uc16> two_byte_buffer;
 
   if (!IntoOneAndTwoByte(uri, is_uri, &one_byte_buffer, &two_byte_buffer)) {
-    THROW_NEW_ERROR(isolate, NewURIError());
+    THROW_NEW_ERROR(isolate, NewError(isolate->uri_error_function(),
+                                      MessageTemplate::kURIMalformed));
   }
 
   if (two_byte_buffer.empty()) {
-    return isolate->factory()->NewStringFromOneByte(base::Vector<const uint8_t>(
-        one_byte_buffer.data(), static_cast<int>(one_byte_buffer.size())));
+    return isolate->factory()->NewStringFromOneByte(
+        base::VectorOf(one_byte_buffer));
   }
 
   DirectHandle<SeqTwoByteString> result;
-  int result_length =
-      static_cast<int>(one_byte_buffer.size() + two_byte_buffer.size());
+  uint32_t result_length =
+      static_cast<uint32_t>(one_byte_buffer.size() + two_byte_buffer.size());
   ASSIGN_RETURN_ON_EXCEPTION(
       isolate, result, isolate->factory()->NewRawTwoByteString(result_length));
 
@@ -407,10 +408,13 @@ MaybeDirectHandle<String> Uri::Encode(Isolate* isolate,
     case EncodeStatus::kSuccess:
       return isolate->factory()->NewStringFromOneByte(base::VectorOf(buffer));
     case EncodeStatus::kUriError:
-      THROW_NEW_ERROR(isolate, NewURIError());
+      THROW_NEW_ERROR(isolate, NewError(isolate->uri_error_function(),
+                                        MessageTemplate::kURIMalformed));
+
     case EncodeStatus::kAllocationFailure:
       THROW_NEW_ERROR(isolate, NewInvalidStringLengthError());
   }
+  UNREACHABLE();
 }
 
 namespace {  // Anonymous namespace for Escape and Unescape

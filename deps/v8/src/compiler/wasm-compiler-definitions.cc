@@ -4,14 +4,18 @@
 
 #include "src/compiler/wasm-compiler-definitions.h"
 
+#include <array>
 #include <optional>
 
 #include "src/base/strings.h"
+#include "src/builtins/builtins.h"
 #include "src/codegen/interface-descriptors-inl.h"
+#include "src/compiler/common-operator.h"
 #include "src/compiler/linkage.h"
 #include "src/wasm/compilation-environment.h"
 #include "src/wasm/wasm-linkage.h"
 #include "src/wasm/wasm-module.h"
+#include "src/wasm/wasm-opcodes.h"
 
 namespace v8::internal::compiler {
 
@@ -35,10 +39,9 @@ SubtypeCheckExactness GetExactness(const wasm::WasmModule* module,
   return SubtypeCheckExactness::kMayBeSubtype;
 }
 
-base::Vector<const char> GetDebugName(Zone* zone,
-                                      const wasm::WasmModule* module,
-                                      const wasm::WireBytesStorage* wire_bytes,
-                                      int index) {
+std::string_view GetDebugName(Zone* zone, const wasm::WasmModule* module,
+                              const wasm::WireBytesStorage* wire_bytes,
+                              int index) {
   std::optional<wasm::ModuleWireBytes> module_bytes =
       wire_bytes->GetModuleBytes();
   if (module_bytes.has_value() &&
@@ -54,19 +57,34 @@ base::Vector<const char> GetDebugName(Zone* zone,
       int name_len = name.length();
       char* index_name = zone->AllocateArray<char>(name_len);
       memcpy(index_name, module_bytes->start() + name.offset(), name_len);
-      return base::Vector<const char>(index_name, name_len);
+      return std::string_view(index_name, name_len);
     }
   }
 
   constexpr int kBufferLength = 24;
 
-  base::EmbeddedVector<char, kBufferLength> name_vector;
-  int name_len = SNPrintF(name_vector, "wasm-function#%d", index);
-  DCHECK(name_len > 0 && name_len < name_vector.length());
+  std::array<char, kBufferLength> name_vector;
+  int name_len = base::SNPrintF(name_vector, "wasm-function#%d", index);
+  DCHECK(name_len > 0 && static_cast<size_t>(name_len) < name_vector.size());
 
   char* index_name = zone->AllocateArray<char>(name_len);
-  memcpy(index_name, name_vector.begin(), name_len);
-  return base::Vector<const char>(index_name, name_len);
+  memcpy(index_name, name_vector.data(), name_len);
+  return std::string_view(index_name, name_len);
+}
+
+TrapId GetTrapIdForTrap(wasm::TrapReason reason) {
+  switch (reason) {
+#define TRAPREASON_TO_TRAPID(name)                                 \
+  case wasm::k##name:                                              \
+    static_assert(static_cast<int>(TrapId::k##name) ==             \
+                      static_cast<int>(Builtin::kThrowWasm##name), \
+                  "trap id mismatch");                             \
+    return TrapId::k##name;
+    FOREACH_WASM_TRAPREASON(TRAPREASON_TO_TRAPID)
+#undef TRAPREASON_TO_TRAPID
+    default:
+      UNREACHABLE();
+  }
 }
 
 namespace {

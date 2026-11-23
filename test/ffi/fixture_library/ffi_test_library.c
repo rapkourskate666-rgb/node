@@ -11,6 +11,43 @@
 
 // Integer operations.
 
+typedef int32_t (*PointerUnaryFunction)(int32_t);
+
+FFI_EXPORT uint32_t get_pointer_size(void) {
+  return sizeof(uintptr_t);
+}
+
+static int32_t pointer_increment(int32_t value) {
+  return value + 1;
+}
+
+FFI_EXPORT PointerUnaryFunction get_function_pointer(void) {
+  return pointer_increment;
+}
+
+typedef struct PointerTestObject PointerTestObject;
+typedef int32_t (*PointerTestMethod)(PointerTestObject*, int32_t);
+
+struct PointerTestObject {
+  const PointerTestMethod* vtable;
+  int32_t base;
+};
+
+static int32_t pointer_object_add(PointerTestObject* self, int32_t value) {
+  return self->base + value;
+}
+
+FFI_EXPORT PointerTestObject* get_pointer_test_object(void) {
+  static const PointerTestMethod vtable[] = {pointer_object_add};
+  static PointerTestObject object = {vtable, 40};
+  return &object;
+}
+
+FFI_EXPORT uint64_t pointer_string_lengths(const char* first,
+                                           const char* second) {
+  return strlen(first) + strlen(second);
+}
+
 FFI_EXPORT void noop_void(void) {}
 
 FFI_EXPORT int8_t add_i8(int8_t a, int8_t b) {
@@ -46,6 +83,30 @@ FFI_EXPORT uint64_t add_u64(uint64_t a, uint64_t b) {
 }
 
 FFI_EXPORT int32_t identity_i32(int32_t value) {
+  return value;
+}
+
+FFI_EXPORT int64_t identity_i64(int64_t value) {
+  return value;
+}
+
+FFI_EXPORT uint64_t identity_u64(uint64_t value) {
+  return value;
+}
+
+FFI_EXPORT int64_t identity_i64_fallback(void* pointer,
+                                         int64_t value,
+                                         void (*callback)(void)) {
+  (void)pointer;
+  (void)callback;
+  return value;
+}
+
+FFI_EXPORT uint64_t identity_u64_fallback(void* pointer,
+                                          uint64_t value,
+                                          void (*callback)(void)) {
+  (void)pointer;
+  (void)callback;
   return value;
 }
 
@@ -106,6 +167,11 @@ FFI_EXPORT uint8_t string_first_char(const char* str) {
 
 FFI_EXPORT uint8_t string_equals_hello(const char* str) {
   return str && strcmp(str, "hello") == 0;
+}
+
+FFI_EXPORT uint8_t overwrite_string(char* str, int32_t value, uint64_t length) {
+  memset(str, value, (size_t)length);
+  return (uint8_t)str[0];
 }
 
 FFI_EXPORT char* string_concat(const char* a, const char* b) {

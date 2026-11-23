@@ -5,6 +5,7 @@
 #ifndef V8_EXECUTION_ARGUMENTS_H_
 #define V8_EXECUTION_ARGUMENTS_H_
 
+#include "src/base/logging.h"
 #include "src/execution/clobber-registers.h"
 #include "src/handles/handles.h"
 #include "src/logging/runtime-call-stats-scope.h"
@@ -74,9 +75,23 @@ class Arguments {
     // Corruption of certain heap objects (see e.g. crbug.com/1507223) can lead
     // to OOB arguments access, and therefore OOB stack access. This SBXCHECK
     // defends against that.
-    // Note: "LE" is intentional: it's okay to compute the address of the
-    // first nonexistent entry.
+    SBXCHECK_LT(static_cast<uint32_t>(index), static_cast<uint32_t>(length_));
+    return address_of_arg_at_unchecked(index);
+  }
+
+  // Allowed for callers that only compute a past-the-end address and do not
+  // dereference it (e.g. BuiltinArguments::address_of_first_argument).
+  V8_INLINE Address* address_of_arg_at_or_end(int index) const {
     SBXCHECK_LE(static_cast<uint32_t>(index), static_cast<uint32_t>(length_));
+    return address_of_arg_at_unchecked(index);
+  }
+
+  // Get the total number of arguments including the receiver.
+  V8_INLINE int length() const { return static_cast<int>(length_); }
+  V8_INLINE uint32_t ulength() const { return static_cast<uint32_t>(length_); }
+
+ private:
+  V8_INLINE Address* address_of_arg_at_unchecked(int index) const {
     uintptr_t offset = index * kSystemPointerSize;
     if (arguments_type == ArgumentsType::kJS) {
       offset = (length_ - index - 1) * kSystemPointerSize;
@@ -85,11 +100,6 @@ class Arguments {
                                       offset);
   }
 
-  // Get the total number of arguments including the receiver.
-  V8_INLINE int length() const { return static_cast<int>(length_); }
-  V8_INLINE uint32_t ulength() const { return static_cast<uint32_t>(length_); }
-
- private:
   intptr_t length_;
   Address* arguments_;
 };
@@ -113,17 +123,14 @@ FullObjectSlot Arguments<T>::slot_from_address_at(int index, int offset) const {
 #define CLOBBER_DOUBLE_REGISTERS()
 #endif
 
-// TODO(cbruni): add global flag to check whether any tracing events have been
-// enabled.
 #ifdef V8_RUNTIME_CALL_STATS
-#define RUNTIME_ENTRY_WITH_RCS(Type, InternalType, Convert, Name)             \
-  V8_NOINLINE static Type Stats_##Name(int args_length, Address* args_object, \
-                                       Isolate* isolate) {                    \
-    RCS_SCOPE(isolate, RuntimeCallCounterId::k##Name);                        \
-    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"),                     \
-                 "V8.Runtime_" #Name);                                        \
-    RuntimeArguments args(args_length, args_object);                          \
-    return Convert(__RT_impl_##Name(args, isolate));                          \
+#define RUNTIME_ENTRY_WITH_RCS(Type, InternalType, Convert, Name)              \
+  V8_NOINLINE static Type Stats_##Name(int args_length, Address* args_object,  \
+                                       Isolate* isolate) {                     \
+    RCS_SCOPE(isolate, RuntimeCallCounterId::k##Name);                         \
+    TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("v8.runtime"), "V8.Runtime_" #Name); \
+    RuntimeArguments args(args_length, args_object);                           \
+    return Convert(__RT_impl_##Name(args, isolate));                           \
   }
 
 #define TEST_AND_CALL_RCS(Name)                                \
@@ -157,6 +164,7 @@ constexpr bool RuntimeFunctionFullNameCanTriggerGC(
     FOR_EACH_INTRINSIC(CASE)
 #undef CASE
   }
+  UNREACHABLE();
 }
 }  // namespace detail
 

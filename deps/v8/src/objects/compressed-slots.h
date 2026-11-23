@@ -51,7 +51,7 @@ class CompressedObjectSlot : public SlotBase<CompressedObjectSlot, Tagged_t> {
   // TODO(saelo): it would be nice if we could have two load variants: one that
   // takes no arguments (which should normally be used), and one that takes an
   // Isolate* or an IsolateForSandbox to be compatible with the
-  // IndirectPointerSlot. Then, all slots that contain HeapObject references
+  // TrustedPointerSlot. Then, all slots that contain HeapObject references
   // would have at least a `load(isolate)` variant, and so could that could be
   // used in cases where only the slots content matters.
   inline Tagged<Object> load() const;
@@ -168,7 +168,7 @@ class OffHeapCompressedObjectSlotBase : public SlotBase<Subclass, Tagged_t> {
   inline TObject Relaxed_Load() const;
   // TODO(saelo): same as in CompressedObjectSlot, consider removing the load
   // variant with a PtrComprCageBase but instead adding one with an isolate
-  // parameter that simply forwards the the parameterless variant.
+  // parameter that simply forwards the parameterless variant.
   inline TObject Relaxed_Load(PtrComprCageBase cage_base) const;
   inline Tagged_t Relaxed_Load_Raw() const;
   static inline Tagged<Object> RawToTagged(PtrComprCageBase cage_base,

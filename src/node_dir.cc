@@ -61,8 +61,7 @@ static const char* get_dir_func_name_by_type(uv_fs_type req_type) {
 
 #define TRACE_NAME(name) "fs_dir.sync." #name
 #define GET_TRACE_ENABLED                                                      \
-  (*TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED(                                \
-       TRACING_CATEGORY_NODE2(fs_dir, sync)) != 0)
+  TRACE_EVENT_CATEGORY_ENABLED(TRACING_CATEGORY_NODE2(fs_dir, sync))
 #define FS_DIR_SYNC_TRACE(syscall)                                             \
   if (GET_TRACE_ENABLED) {                                                     \
     TRACE_EVENT0(TRACING_CATEGORY_NODE2(fs_dir, sync), TRACE_NAME(syscall));   \
@@ -206,7 +205,7 @@ static MaybeLocal<Array> DirentListToArray(Environment* env,
                                            uv_dirent_t* ents,
                                            int num,
                                            enum encoding encoding) {
-  MaybeStackBuffer<Local<Value>, 64> entries(num * 2);
+  MaybeStackBuffer<Value, 64> entries(env->isolate(), num * 2);
 
   // Return an array of all read filenames.
   int j = 0;
@@ -222,7 +221,8 @@ static MaybeLocal<Array> DirentListToArray(Environment* env,
     entries[j++] = Integer::New(env->isolate(), ents[i].type);
   }
 
-  return Array::New(env->isolate(), entries.out(), j);
+  CHECK_EQ(j, num * 2);
+  return entries.ToArray();
 }
 
 static void AfterDirRead(uv_fs_t* req) {
@@ -247,22 +247,14 @@ static void AfterDirRead(uv_fs_t* req) {
 
   uv_dir_t* dir = static_cast<uv_dir_t*>(req->ptr);
 
-  TryCatch try_catch(isolate);
-  Local<Array> js_array;
-  if (!DirentListToArray(env,
-                         dir->dirents,
-                         static_cast<int>(req->result),
-                         req_wrap->encoding())
-           .ToLocal(&js_array)) {
+  ResolveOrReject(req_wrap.get(), [&]() {
+    MaybeLocal<Array> js_array = DirentListToArray(
+        env, dir->dirents, static_cast<int>(req->result), req_wrap->encoding());
     // Clear libuv resources *before* delivering results to JS land because
-    // that can schedule another operation on the same uv_dir_t. Ditto below.
+    // that can schedule another operation on the same uv_dir_t.
     after.Clear();
-    CHECK(try_catch.CanContinue());
-    return req_wrap->Reject(try_catch.Exception());
-  }
-
-  after.Clear();
-  req_wrap->Resolve(js_array);
+    return js_array;
+  });
 }
 
 

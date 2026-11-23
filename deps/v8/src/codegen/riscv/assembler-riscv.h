@@ -55,6 +55,7 @@
 #include "src/codegen/riscv/extension-riscv-f.h"
 #include "src/codegen/riscv/extension-riscv-m.h"
 #include "src/codegen/riscv/extension-riscv-v.h"
+#include "src/codegen/riscv/extension-riscv-zfa.h"
 #include "src/codegen/riscv/extension-riscv-zfh.h"
 #include "src/codegen/riscv/extension-riscv-zicond.h"
 #include "src/codegen/riscv/extension-riscv-zicsr.h"
@@ -67,6 +68,10 @@
 
 namespace v8 {
 namespace internal {
+
+namespace regexp {
+class RegExpMacroAssemblerRISCV;
+}
 
 // -----------------------------------------------------------------------------
 // Machine instruction Operands.
@@ -180,6 +185,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
                                     public AssemblerRISCVZicond,
                                     public AssemblerRISCVZicfiss,
                                     public AssemblerRISCVZfh,
+                                    public AssemblerRISCVZfa,
                                     public AssemblerRISCVV {
  public:
   // Create an assembler. Instructions and relocation information are emitted
@@ -601,10 +607,11 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
 
     void set(int32_t avl, VSew sew, Vlmul lmul, TailAgnosticType tail = ta) {
       DCHECK(is_uint5(avl));
-      if (avl != avl_ || sew != sew_ || lmul != lmul_) {
+      if (avl != avl_ || sew != sew_ || lmul != lmul_ || tail != tail_) {
         avl_ = avl;
         sew_ = sew;
         lmul_ = lmul;
+        tail_ = tail;
         assm_->vsetivli(zero_reg, static_cast<uint8_t>(avl), sew_, lmul_, tail);
       }
     }
@@ -615,6 +622,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
       avl_ = -1;
       sew_ = sew;
       lmul_ = lmul;
+      tail_ = tail;
     }
 
     bool IsConfiguredForSimd128() const {
@@ -631,15 +639,16 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
       // mf2 -> n is 1.
       // mf4 -> n is 2.
       // mf8 -> n is 3.
+      DCHECK_EQ(kRvvELEN, 64);
       switch (CpuFeatures::vlen()) {
         case 128:
           lmul = m1;
           break;
         case 256:
-          lmul = (sew + 1) > kRvvELEN ? m1 : mf2;
+          lmul = (sew + 1) > E64 ? m1 : mf2;
           break;
         case 512:
-          lmul = (sew + 2) > kRvvELEN ? m1 : mf4;
+          lmul = (sew + 2) > E64 ? m1 : mf4;
           break;
         default:
           static_assert(kMaxRvvVLEN <= 512, "Unsupported VLEN");
@@ -660,15 +669,16 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
 
     void SetSimd128Half(VSew sew, TailAgnosticType tail = ta) {
       Vlmul lmul;
+      DCHECK_EQ(kRvvELEN, 64);
       switch (CpuFeatures::vlen()) {
         case 128:
-          lmul = (sew + 1) > kRvvELEN ? m1 : mf2;
+          lmul = (sew + 1) > E64 ? m1 : mf2;
           break;
         case 256:
-          lmul = (sew + 2) > kRvvELEN ? m1 : mf4;
+          lmul = (sew + 2) > E64 ? (sew == E32 ? mf2 : m1) : mf4;
           break;
         case 512:
-          lmul = (sew + 3) > kRvvELEN ? m1 : mf8;
+          lmul = (sew + 3) > E64 ? (sew <= E32 ? mf2 : m1) : mf8;
           break;
         default:
           static_assert(kMaxRvvVLEN <= 512, "Unsupported VLEN");
@@ -689,6 +699,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
 
     void SetSimd128x2(VSew sew, TailAgnosticType tail = ta) {
       Vlmul lmul;
+      DCHECK_EQ(kRvvELEN, 64);
       switch (CpuFeatures::vlen()) {
         case 128:
           lmul = m2;
@@ -697,7 +708,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
           lmul = m1;
           break;
         case 512:
-          lmul = (sew + 1) > kRvvELEN ? m1 : mf2;
+          lmul = (sew + 1) > E64 ? m1 : mf2;
           break;
         default:
           static_assert(kMaxRvvVLEN <= 512, "Unsupported VLEN");
@@ -722,12 +733,14 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
       avl_ = -1;
       sew_ = kVsInvalid;
       lmul_ = kVlInvalid;
+      tail_ = ta;
     }
 
    private:
     int32_t avl_ = -1;
     VSew sew_ = kVsInvalid;
     Vlmul lmul_ = kVlInvalid;
+    TailAgnosticType tail_ = ta;
     Assembler* assm_;
     FPURoundingMode mode_ = RNE;
   };
@@ -790,9 +803,6 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
   bool is_trampoline_emitted() const { return trampoline_check_ == kMaxInt; }
 
  private:
-  // Avoid overflows for displacements etc.
-  static const int kMaximalBufferSize = 512 * MB;
-
   // The relocation writer's position is at least kGap bytes below the end of
   // the generated instructions. This is so that multi-instruction sequences do
   // not have to check for overflow. The same is true for writes of large
@@ -906,7 +916,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase,
   friend class EnsureSpace;
   friend class ConstantPool;
   friend class RelocInfo;
-  friend class RegExpMacroAssemblerRISCV;
+  friend class regexp::RegExpMacroAssemblerRISCV;
 };
 
 class EnsureSpace {

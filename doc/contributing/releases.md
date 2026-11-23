@@ -341,9 +341,6 @@ known, additionally include `CVE-ID: CVE-XXXX-XXXXX` in the commit metadata.
 Make sure to sign and push to resulting commit to the private repository and not
 the public one.
 
-**Note**: Do not run CI on the PRs in `nodejs-private` until CI is locked down.
-You can integrate the PRs into the proposal without running full CI.
-
 </details>
 
 ### 2. Create a new branch for the release
@@ -377,14 +374,20 @@ git checkout -b v1.2.3-proposal upstream/v1.x-staging
 You can also run:
 
 ```bash
-git node release -S --prepare --security=../vulnerabilities.json --filterLabel vX.x
+git node release -S --prepare --security=../security-release
 ```
+
+The `--security` flag takes the path to your clone of the `security-release`
+repository (or directly to a `vulnerabilities.json` file). The reports and
+dependency updates to cherry-pick are selected automatically from each entry's
+`affectedVersions` mapping for the release line you are on, and the matching
+`CVE-ID` trailers are added from the same file.
 
 Example:
 
 ```bash
 git checkout v20.x
-git node release -S --prepare --security=../vulnerabilities.json --filterLabel v20.x
+git node release -S --prepare --security=../security-release
 ```
 
 to automate the remaining steps until step 6 or you can perform it manually
@@ -392,7 +395,7 @@ following the below steps. For semver-minors, you can pass the new version
 explicitly with `--newVersion` arg:
 
 ```bash
-git node release -S --prepare --security=../vulnerabilities.json --filterLabel v20.x --newVersion 20.20.0
+git node release -S --prepare --security=../security-release --newVersion 20.20.0
 ```
 
 <details>
@@ -422,6 +425,11 @@ already defined in `src/node_version.h`:
 #define NODE_MAJOR_VERSION x
 #define NODE_MINOR_VERSION y
 #define NODE_PATCH_VERSION z
+
+// And for alpha releases:
+#define NODE_ALPHA_MAJOR_VERSION a
+#define NODE_ALPHA_MINOR_VERSION b
+#define NODE_ALPHA_PATCH_VERSION c
 ```
 
 Set the `NODE_VERSION_IS_RELEASE` macro value to `1`. This causes the build to
@@ -430,6 +438,14 @@ be produced with a version string that does not have a trailing pre-release tag:
 ```c
 #define NODE_VERSION_IS_RELEASE 1
 ```
+
+<details>
+<summary>Major version release</summary>
+
+Remove the `NODE_ALPHA_MAJOR_VERSION`, `NODE_ALPHA_MINOR_VERSION`, and
+`NODE_ALPHA_PATCH_VERSION` macros.
+
+</details>
 
 ### 4. Update the changelog
 
@@ -441,7 +457,7 @@ Collect a formatted list of commits since the last release. Use
 [`changelog-maker`](https://github.com/nodejs/changelog-maker) to do this:
 
 ```bash
-changelog-maker --group --markdown
+changelog-maker --group --format=markdown
 ```
 
 `changelog-maker` counts commits since the last tag and if the last tag
@@ -449,7 +465,7 @@ in the repository was not on the current branch you may have to supply a
 `--start-ref` argument:
 
 ```bash
-changelog-maker --group --markdown --filter-release --start-ref v1.2.2
+changelog-maker --group --format=markdown --filter-release --start-ref v1.2.2
 ```
 
 `--filter-release` will remove the release commit from the previous release.
@@ -480,8 +496,9 @@ The new entry should take the following form:
 * Include the full list of commits since the last release here. Do not include "Working on X.Y.Z+1" commits.
 ```
 
-The release type should be either Current, LTS, or Maintenance, depending on the
-type of release being produced.
+The release type should be either Alpha, Current, or LTS, depending
+on the type of release being produced. Release lines before Node.js 27
+also have a Maintenance phase.
 
 By default, the `### Notable changes` section should be populated with the
 commits in the release that have either the `notable-change` or `semver-minor`
@@ -694,15 +711,6 @@ A number of the modules tested by CitGM are not completely
 reliable so differences shown by the comparison are not immediately cause
 for concern.
 
-<details>
-<summary>Security release</summary>
-
-If there are private security patches, do not run any CI jobs on the proposal
-until CI has been locked down. The security steward should be coordinating this
-with the Build Working Group.
-
-</details>
-
 #### 7.1 Updating the release _(optional)_
 
 Sometimes a release might be deferred to the subsequent day due to several
@@ -884,11 +892,18 @@ git secure-tag <vx.y.z> <commit-sha> -sm "YYYY-MM-DD Node.js vx.y.z (<release-ty
 
 <sup>The commit-sha is the release commit. You can get it easily by running `git rev-parse HEAD`</sup>
 
-`release-type` is either "Current" or "LTS". For LTS releases, you should also
-include the release code name.
+`release-type` is either "Alpha", "Current" or "LTS". For LTS releases, you
+should also include the release code name.
 
 ```text
 2019-10-22 Node.js v10.17.0 'Dubnium' (LTS) Release
+```
+
+For Alpha releases, the tag name includes the full pre-release version (see
+[Alpha releases](#alpha-releases-october-to-april)):
+
+```text
+2026-10-28 Node.js v27.0.0-alpha.0.0.0 (Alpha) Release
 ```
 
 The tag **must** be signed using the GPG key that's listed for you on the
@@ -900,8 +915,8 @@ project README.
 
 On release proposal branch, edit `src/node_version.h` again and:
 
-* Increment `NODE_PATCH_VERSION` by one
-* Change `NODE_VERSION_IS_RELEASE` back to `0`
+* Increment `NODE_PATCH_VERSION` (or `NODE_ALPHA_PATCH_VERSION` for alpha releases) by one.
+* Change `NODE_VERSION_IS_RELEASE` back to `0`.
 
 Commit this change with the following commit message format:
 
@@ -910,6 +925,9 @@ Working on vx.y.z # where 'z' is the incremented patch number
 
 PR-URL: <full URL to your release proposal PR>
 ```
+
+For Alpha releases, use the full pre-release version, e.g.
+`Working on v27.0.0-alpha.1.0.1`.
 
 This sets up the branch so that nightly builds are produced with the next
 version number _and_ a pre-release tag.
@@ -968,9 +986,12 @@ git restore --source=upstream/main src/node_version.h
 On the main branch, instead of reverting changes made to `src/node_version.h`
 edit it instead and:
 
-* Increment `NODE_MAJOR_VERSION` by one
-* Reset `NODE_PATCH_VERSION` to `0`
-* Change `NODE_VERSION_IS_RELEASE` back to `0`
+* Increment `NODE_MAJOR_VERSION` by one.
+* Reset `NODE_PATCH_VERSION` and `NODE_MINOR_VERSION` to `0`.
+* Set `NODE_ALPHA_MAJOR_VERSION`, `NODE_ALPHA_MINOR_VERSION`, and
+  `NODE_ALPHA_PATCH_VERSION` back to `0` (`main` should already have this, the
+  release commit will have them removed).
+* Change `NODE_VERSION_IS_RELEASE` back to `0`.
 
 Amend the current commit to apply the changes:
 
@@ -1281,9 +1302,9 @@ git node release --prepare --startLTS
 To mark a release line as LTS, the following changes must be made to
 `src/node_version.h`:
 
-* The `NODE_MINOR_VERSION` macro must be incremented by one
-* The `NODE_PATCH_VERSION` macro must be set to `0`
-* The `NODE_VERSION_IS_LTS` macro must be set to `1`
+* The `NODE_MINOR_VERSION` macro must be incremented by one.
+* The `NODE_PATCH_VERSION` macro must be set to `0`.
+* The `NODE_VERSION_IS_LTS` macro must be set to `1`.
 * The `NODE_VERSION_LTS_CODENAME` macro must be set to the code name selected
   for the LTS release.
 
@@ -1352,15 +1373,15 @@ from cutting a minor or patch release.
 
 ### Schedule
 
-New Node.js Major releases happen twice per year:
+New Node.js Major releases happen once per year:
 
-* Even-numbered releases are cut in April.
-* Odd-numbered releases are cut in October.
+* Branch-off is in October.
+* Semver-major release is in April.
 
 Major releases should be targeted for the third Tuesday of the release month.
 
 A major release must not slip beyond the release month. In other words, major
-releases must not slip into May or November.
+releases must not slip into May.
 
 The @nodejs/releasers make a call for releasers 3 months in advance.
 Currently, this call is automated in the `#nodejs-release-private`
@@ -1370,15 +1391,33 @@ The release date for the next major release should be announced immediately
 following the current release (e.g. the release date for 13.0.0 should be
 announced immediately following the release of 12.0.0).
 
-### Release branch
+### Branch-off (October)
 
-Approximately two months before a major release, new `vN.x` and
+#### Tracking issue
+
+Open an issue in the [Release repository][] titled `Prepare for vN`, listing
+the pull requests needed to prepare the release line (e.g. tooling updates or
+the expected assets in the Build repository). Keep it updated as pull requests
+are opened and land.
+
+#### Release branch
+
+Approximately six months before a major release, new `vN.x` and
 `vN.x-staging` branches (where `N` indicates the major release) should be
-created as forks of the `main` branch. Up until the cut-off date announced by
-the releaser, these must be kept in sync with `main`.
+created as forks of the `main` branch. Alpha releases should be released picking
+up commits from `main`. Target the first alpha release to be released the same
+day as the previous release line is graduated to LTS status.
 
-The `vN.x` and `vN.x-staging` branches must be kept in sync with one another
-up until the date of the release.
+Pushing the new branches is rejected by the [Require linear history][]
+repository rule, because creating a branch evaluates its whole history and
+`main` contains merge commits from 2015. A repository admin must disable the
+rule, push the branches, and enable it again:
+
+```bash
+gh api -X PUT repos/nodejs/node/rulesets/714811 -f enforcement=disabled
+git push upstream main:refs/heads/vN.x main:refs/heads/vN.x-staging
+gh api -X PUT repos/nodejs/node/rulesets/714811 -f enforcement=active
+```
 
 If a `SEMVER-MAJOR` pull request lands on the default branch within one month
 prior to the major release date, it must not be included on the new major
@@ -1386,10 +1425,9 @@ staging branch, unless there is consensus from the Node.js releasers team to
 do so. This measure aims to ensure better stability for the release candidate
 (RC) phase, which begins approximately two weeks prior to the official release.
 By restricting `SEMVER-MAJOR` commits in this period, we provide more time for
-thorough testing and reduce the potential for major breakages, especially in
-LTS lines.
+thorough testing and reduce the potential for major breakages.
 
-### Create release labels
+#### Create release labels
 
 The following issue labels must be created:
 
@@ -1404,31 +1442,32 @@ The label description can be copied from existing labels of previous releases.
 The label color must be the same for all new labels, but different from the
 labels of previous releases.
 
-### Release proposal
+#### Initial Alpha release proposal
 
-A draft release proposal should be created 6 weeks before the release. A
-separate `vN.x-proposal` branch should be created that tracks the `vN.x`
-branch. This branch will contain the draft release commit (with the draft
-changelog).
+A draft release proposal should be created before the release. Once the
+`vN.x-staging` branch exists, use the [`create-release-proposal`][] action with
+the first Alpha version:
+
+```bash
+gh workflow run "Create Release Proposal" -f release-line=N -f release-date=YYYY-MM-DD -f release-version=N.0.0-alpha.0.0.0
+```
+
+Or run it locally:
+
+```bash
+git node release -S --prepare --newVersion=N.0.0-alpha.0.0.0
+```
+
+This creates the `vN.0.0-alpha.0.0.0-proposal` branch with the draft release
+commit, which also creates `doc/changelogs/CHANGELOG_V{N}.md`, updates the
+navigation headers and the root `CHANGELOG.md`, and generates the changelog
+against `vN-1.x`, as described in the sections below. Review those changes
+before opening the release proposal.
 
 Notify the `@nodejs/npm` team in the release proposal PR to inform them of the
 upcoming release.
 
-To keep the branch in sync until the release date, it can be as simple as
-doing the following:
-
-> Make sure to check that there are no PRs with the label `dont-land-on-vX.x`.
-
-```bash
-git checkout vN.x
-git reset --hard upstream/main
-git checkout vN.x-staging
-git reset --hard upstream/main
-git push upstream vN.x
-git push upstream vN.x-staging
-```
-
-### Update `NODE_MODULE_VERSION`
+##### Update `NODE_MODULE_VERSION`
 
 This macro in `src/node_version.h` is used to signal an ABI version for native
 addons. It currently has two common uses in the community:
@@ -1453,29 +1492,33 @@ in the registry. Also include a change to the registry in your commit to
 reflect the newly used value. Ensure that the release commit removes the
 `-pre` suffix for the major version being prepared.
 
-It is current TSC policy to bump major version when ABI changes. If you
-see a need to bump `NODE_MODULE_VERSION` outside of a major release then
-you should consult the TSC. Commits may need to be reverted or a major
-version bump may need to happen.
+Starting with Node.js 27, changes that break the native addon ABI and require
+a `NODE_MODULE_VERSION` bump, such as V8 updates, may land during the Alpha and
+Current phases of a release line. Such changes should still be labeled as
+semver-major on the default branch. When they are promoted to the release line,
+they may land in semver-minor releases as long as the ABI change is clearly
+documented in the release notes.
 
-### Test releases and release candidates
+Once a release line enters LTS, ABI-breaking changes are strongly discouraged.
+They should only land when they are necessary, such as for security fixes, and
+when there is no way to make the change without breaking the ABI. Breaking
+changes that are not necessary for an LTS line, such as adding fields to a
+struct to expose more information in a diagnostic API, do not meet this bar,
+and should be reworked as non-breaking changes before they could land. In
+practice, this means V8 is generally stable on a release line after it enters
+LTS, and no ABI or API breaking changes
+are expected unless in exceptional circumstances.
 
-Test builds should be generated from the `vN.x-proposal` branch starting at
-about 6 weeks before the release.
+This policy applies to addons that depend on V8, Node.js, or other non-Node-API
+native interfaces. Node-API remains the recommended interface for native addons
+that require ABI stability across Node.js versions.
 
-Release Candidates should be generated from the `vN.x-proposal` branch starting
-at about 4 weeks before the release, with a target of one release candidate
-per week.
-
-Always run test releases and release candidates through the Canary in the
-Goldmine tool for additional testing.
-
-### Changelogs
+##### Changelogs
 
 Generating major release changelogs is a bit more involved than minor and patch
 changelogs.
 
-#### Create the changelog file
+###### Create the changelog file
 
 In the `doc/changelogs` directory, create a new `CHANGELOG_V{N}.md` file where
 `{N}` is the major version of the release. Follow the structure of the existing
@@ -1487,7 +1530,7 @@ updated to account for the new `CHANGELOG_V{N}.md` file.
 Once the file is created, the root `CHANGELOG.md` file must be updated to
 reference the newly-created major release `CHANGELOG_V{N}.md`.
 
-#### Generate the changelog
+###### Generate the changelog
 
 To generate a proper major release changelog, use the `branch-diff` tool to
 compare the `vN.x` branch against the `vN-1.x` branch (e.g. for Node.js 12.0,
@@ -1506,14 +1549,7 @@ $ branch-diff upstream/vN-1.x upstream/vN.x --require-label=semver-minor --group
 $ branch-diff upstream/vN-1.x upstream/vN.x --exclude-label=semver-major,semver-minor --group --filter-release --markdown # get all patches
 ```
 
-#### Generate the notable changes
-
-For a major release, all SEMVER-MAJOR commits that are not strictly internal,
-test, or doc-related are to be listed as notable changes. Some SEMVER-MINOR
-commits may be listed as notable changes on a case-by-case basis. Use your
-judgment there.
-
-### Update the expected assets
+##### Update the expected assets
 
 The promotion script does a basic check that the expected files are present.
 Open a pull request in the Build repository to add the list of expected files
@@ -1521,6 +1557,107 @@ for the new release line as a new file, `v{N}.x` (where `{N}` is the major
 version of the release), in the [expected assets][] folder. The change will
 need to be deployed onto the web server by a member of the [build-infra team][]
 before the release is promoted.
+
+### Alpha releases (October to April)
+
+Between the branch-off and the semver-major release, the `vN.x` line is
+released as Alpha versions. Unlike Current and LTS lines, Alpha releases may
+contain `SEMVER-MAJOR` changes.
+
+#### Versioning
+
+Alpha versions use the `vN.0.0-alpha.X.Y.Z` format, where `X.Y.Z` follows
+[Semantic Versioning][] relative to the previous Alpha release, so users can
+tell the kind of changes between two Alpha releases. The first Alpha release of
+a line is `vN.0.0-alpha.0.0.0`.
+
+Set the `NODE_ALPHA_*_VERSION` macros in `src/node_version.h` as follows,
+leaving `NODE_MAJOR_VERSION` at `N` and `NODE_MINOR_VERSION` and
+`NODE_PATCH_VERSION` at `0`:
+
+* If the release contains at least one `SEMVER-MAJOR` commit, increment
+  `NODE_ALPHA_MAJOR_VERSION` and reset `NODE_ALPHA_MINOR_VERSION` and
+  `NODE_ALPHA_PATCH_VERSION` to `0`.
+* Otherwise, if it contains at least one `SEMVER-MINOR` commit, increment
+  `NODE_ALPHA_MINOR_VERSION` and reset `NODE_ALPHA_PATCH_VERSION` to `0`.
+* Otherwise, increment `NODE_ALPHA_PATCH_VERSION`.
+
+For example, `v27.0.0-alpha.0.0.0` followed by a release containing a
+`SEMVER-MAJOR` commit is `v27.0.0-alpha.1.0.0`. The git tag, the release commit
+title and the changelog entries all use this full version:
+
+```text
+2026-10-28, Version 27.0.0-alpha.0.0.0 (Alpha)
+```
+
+#### Preparing an Alpha release
+
+Alpha releases pick up commits from `main`, including `SEMVER-MAJOR` ones. To
+list the commits to land on `vN.x-staging`, do not exclude the `semver-major`
+label:
+
+```bash
+N=27 sh -c 'branch-diff v$N.x-staging upstream/main --exclude-label=dont-land-on-v$N.x,backport-requested-v$N.x,backport-blocked-v$N.x,backport-open-v$N.x,backported-to-v$N.x --filter-release --format=simple'
+```
+
+The [`create-release-proposal`][] action and `git node release --prepare`
+compute the next Alpha version from the commit labels. The proposal branch is
+named after the full version, e.g. `v27.0.0-alpha.1.0.0-proposal`.
+
+Alpha releases are added to `doc/changelogs/CHANGELOG_V{N}.md`, in the same way
+as Current releases, and are labeled "Alpha" in the changelog tables. List all
+`SEMVER-MAJOR` commits that are not strictly internal, test, or doc-related as
+notable changes.
+
+Alpha releases are published on GitHub as pre-releases, so they are not marked
+as the latest release.
+
+`REPLACEME` placeholders are replaced with the full Alpha version (e.g.
+`v27.0.0-alpha.1.0.0`).
+
+### Semver-major release (April)
+
+#### Release proposal
+
+A draft release proposal should be created 2 weeks before the release, using
+the [`create-release-proposal`][] action with `-f release-version=N.0.0`, or
+locally:
+
+```bash
+git node release -S --prepare --newVersion=N.0.0
+```
+
+This creates the `vN.0.0-proposal` branch with the draft release commit (with
+the draft changelog).
+
+Notify the `@nodejs/npm` team in the release proposal PR to inform them of the
+upcoming release.
+
+Major release proposal should contain a single commit, the release one. All
+semver-major changes must have landed in an alpha version before the major is
+released. Semver-major changes that have missed the alpha period will be included
+in the next major release line.
+
+##### Marking a release line as "out of Alpha"
+
+To mark a release line as stable, the following changes must be made to
+`src/node_version.h`:
+
+* Remove `NODE_ALPHA_MAJOR_VERSION`, `NODE_ALPHA_MINOR_VERSION`, and
+  `NODE_ALPHA_PATCH_VERSION`.
+
+The "Alpha" labels in `doc/changelogs/CHANGELOG_V{N}.md` and `CHANGELOG.md`
+must be changed to "Current". `git node release --prepare --newVersion=N.0.0`
+does both, and `git node release --promote` bumps `NODE_MAJOR_VERSION` on
+`main` when cherry-picking the release commit.
+
+#### Generate the notable changes
+
+For a major release, all SEMVER-MAJOR commits that are not strictly internal,
+test, or doc-related are to be listed as notable changes. Some SEMVER-MINOR
+commits may be listed as notable changes on a case-by-case basis. Use your
+judgment there.
+Include the notable changes from the Alpha versions where it applies.
 
 ### Snap
 
@@ -1569,6 +1706,9 @@ Typical resolution: sign the release again.
 
 [Build issue tracker]: https://github.com/nodejs/build/issues/new
 [Node.js Snap management repository]: https://github.com/nodejs/snap
+[Release repository]: https://github.com/nodejs/Release
+[Require linear history]: https://github.com/nodejs/node/rules/714811
+[Semantic Versioning]: https://semver.org/
 [Snap]: https://snapcraft.io/node
 [`create-release-post.yml`]: https://github.com/nodejs/nodejs.org/actions/workflows/create-release-post.yml
 [`create-release-proposal`]: https://github.com/nodejs/node/actions/workflows/create-release-proposal.yml

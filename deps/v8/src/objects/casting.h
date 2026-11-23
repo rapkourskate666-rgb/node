@@ -5,6 +5,102 @@
 #ifndef V8_OBJECTS_CASTING_H_
 #define V8_OBJECTS_CASTING_H_
 
+/**
+ * V8 Casting Guide
+ * ================
+ *
+ * This file defines the casting infrastructure for V8's tagged objects.
+ *
+ * Untrusted objects (e.g. JSObject) live in the sandbox and their Map can be
+ * tampered with. Trusted objects (e.g. BytecodeArray) live outside the
+ * sandbox in trusted space.
+ *
+ *
+ * 1. Release-Time Security Checks (Always-on CHECK or SBXCHECK)
+ * -------------------------------------------------------------
+ * These are required when type safety must be guaranteed at runtime under
+ * the V8 Sandbox attacker model.
+ *
+ *         To      |  Untrusted        Trusted
+ * From            |
+ * --------------------------------------------------
+ * Object          |  CheckedCast      <Impossible>*
+ * TrustedObject   |  -                SbxCast
+ *
+ * * Note: A checked cast from a generic untrusted Object to a TrustedObject is
+ *   impossible at runtime because untrusted pointers can point to arbitrary,
+ *   unaligned memory, making a sound runtime type check impossible.
+ *
+ *
+ * 2. Debug-Only Validation Checks (DCHECK-only or no-op)
+ * ------------------------------------------------------
+ * These are used when type safety is statically guaranteed, validated via
+ * non-typesystem invariants, or when performance is critical.
+ *
+ *         To      |  Untrusted        Trusted
+ * From            |
+ * --------------------------------------------------
+ * Object          |  Cast             TrustedCast
+ * TrustedObject   |  -                TrustedCast
+ * Uninitialized   |  UncheckedCast    -
+ *
+ * * Note: "Uninitialized" refers to partially-initialized objects (e.g., during
+ *   deserialization or construction) where CastTraits checks would fail.
+ *
+ *
+ * Guide to Cast Functions
+ * =======================
+ *
+ * Cast<T>
+ * -------
+ * The default cast for untrusted objects. Only performs a debug-only DCHECK.
+ * Since untrusted objects can be tampered with anyway, release-time checks
+ * provide no additional security.
+ *
+ * TrustedCast<T>
+ * --------------
+ * Use this for trusted objects when the type is known through external means
+ * but cannot be proven locally to the type system (e.g., trusted stack slots).
+ * Like Cast<T>, it only performs a debug-only DCHECK.
+ *
+ * WARNING: Never use TrustedCast<T> on pointers loaded from untrusted/sandbox-
+ * accessible fields, as an attacker can tamper with them and cause release-time
+ * type confusion. Use SbxCast<T> or TryCast<T> instead.
+ *
+ * SbxCast<T>
+ * ----------
+ * Use this when a trusted pointer is obtained from an untrusted source AND the
+ * TPT (Trusted Pointer Table) tag is shared among multiple types (1:N mapping).
+ * It performs an always-on SBXCHECK to prevent type-confusion attacks.
+ *
+ * CheckedCast<T>
+ * --------------
+ * Performs an always-on CHECK at release time. Use this when casting untrusted
+ * objects where correctness is absolutely critical.
+ *
+ * TryCast<T>
+ * ----------
+ * Performs a dynamic type check and returns a boolean. For trusted objects,
+ * this is specifically used for 1:N mappings where multiple instance types
+ * share the same TPT tag and you need to safely distinguish them at runtime.
+ *
+ * Note on 1:1 Mappings: For trusted objects with a 1:1 mapping between their
+ * InstanceType and their TPT tag (like BytecodeArray), no explicit cast is
+ * usually needed when reading from a field, as ReadTrustedPointerField<T>
+ * already ensures the correct type.
+ *
+ * UncheckedCast<T>
+ * ----------------
+ * Performs a raw cast with zero compile-time or runtime checks. Used when the
+ * object is partially initialized (so Is<T> checks would fail), or when the
+ * type is already proven.
+ *
+ * GCSafeCast<T>
+ * -------------
+ * Performs a debug-only GC-aware type check. Used only within garbage
+ * collection code paths.
+ */
+
 #include <type_traits>
 
 #include "include/v8-source-location.h"
@@ -15,7 +111,9 @@
 namespace v8::internal {
 
 // CastTraits<T> is a type trait that defines type checking behaviour for
-// tagged object casting. The expected specialization is:
+// tagged object casting. It only ever receives strong references or Smis;
+// reference strength and structural targets (Union, Weak) are handled by
+// CastTraitsImpl below. The expected specialization is:
 //
 //     template<>
 //     struct CastTraits<SomeObject> {
@@ -30,7 +128,8 @@ namespace v8::internal {
 // HeapObjects and the Object implementation has additional overhead in Smi
 // checks.
 //
-//     struct CastTraits<Object> {
+//     template<>
+//     struct CastTraits<SomeObject> {
 //       static bool AllowFrom(Tagged<HeapObject> value) {
 //         return IsSomeObject(value);
 //       }
@@ -42,14 +141,66 @@ namespace v8::internal {
 template <typename To>
 struct CastTraits;
 
+// CastTraitsImpl<T>::AllowFrom accepts any tagged source and checks membership
+// in T, including reference strength. This is what Is<T> and the Cast family
+// call. Do not specialize for object types; the primary template forwards to
+// CastTraits<T>. Only structural targets (Weak, Union, ClearedWeakValue)
+// specialize it.
+//
+// The static source type is kept as narrow as possible: Tagged<Union<...>> of
+// heap objects only derives from Tagged<HeapObject>, so overload resolution
+// picks the HeapObject overload of CastTraits<T>::AllowFrom and skips the Smi
+// check.
 template <typename T>
-concept NotGCedType = !std::is_base_of_v<HeapObject, T> &&
-                      !std::is_base_of_v<HeapObjectLayout, T>;
+struct CastTraitsImpl {
+  // T is Smi or a strong HeapObject type; Weak, Union and ClearedWeakValue
+  // targets are handled by the specializations below.
+  static_assert(!is_maybe_weak_v<T> && !is_union_v<T> &&
+                !std::is_same_v<T, ClearedWeakValue>);
 
-// `Is<T>(value)` checks whether `value` is a tagged object of type `T`.
+  template <typename U>
+  static inline bool AllowFrom(Tagged<U> value) {
+    if constexpr (std::is_same_v<U, ClearedWeakValue>) {
+      // Always weak-tagged, and StrongOf<ClearedWeakValue> is not a strong
+      // type.
+      return false;
+    } else if constexpr (!is_maybe_weak_v<U>) {
+      return CastTraits<T>::AllowFrom(value);
+    } else {
+      // U is maybe-weak: Weak<X> or a Union with a weak member (e.g.
+      // MaybeWeak<X>, MaybeObject). T, on the other hand, is a strong target,
+      // so a weak reference is never a T.
+      if constexpr (std::is_same_v<T, Smi>) {
+        // A weak-tagged word is never Smi-tagged, so no strength check needed.
+        return value.IsSmi();
+      }
+      if (!value.IsStrongOrSmi()) return false;
+      // Re-type the now strong value as StrongOf<U>, e.g.
+      // Union<A, Weak<B>> -> Union<A, B>. This keeps B even though a strong B
+      // cannot occur, but the Tagged base class (and thus the selected
+      // overload) is the same as for Union<A>.
+      // TODO(jgruber): Filter Weak members out of the Union instead of keeping
+      // their strong counterparts.
+      // The bits are already strong; do not use MakeStrong, whose tag masking
+      // clobbers Smi payload bit 1 under 31-bit Smi tagging.
+      return CastTraits<T>::AllowFrom(UncheckedCast<StrongOf<U>>(value));
+    }
+  }
+};
+
+class Oddball;
+
+template <typename T>
+concept NotGCedType = !std::is_base_of_v<HeapObject, T>;
+
+// `Is<T>(value)` checks membership in T, including reference strength.
 template <typename T, typename U>
 inline bool Is(Tagged<U> value) {
-  return CastTraits<T>::AllowFrom(value);
+  return CastTraitsImpl<T>::AllowFrom(value);
+}
+template <typename T>
+inline bool Is(const HeapObject* obj) {
+  return Is<T>(Tagged<HeapObject>(obj));
 }
 template <typename T, typename U>
 inline bool Is(IndirectHandle<U> value);
@@ -124,6 +275,9 @@ concept HasCppPointerTryCastImplementation =
 template <typename To, typename From, template <typename> class Holder>
   requires HasTryCastImplementation<Holder, To, From>
 inline bool TryCast(Holder<From> value, Holder<To>* out) {
+  static_assert(!is_subtype_v<To, TrustedObject> ||
+                    is_subtype_v<From, Union<Smi, Oddball, TrustedObject>>,
+                "Type of untrusted objects cannot be checked reliably");
   if (!Is<To>(value)) return false;
   *out = UncheckedCast<To>(value);
   return true;
@@ -222,10 +376,17 @@ concept HasCppPointerCastImplementation =
 // doing a debug check that `value` is a tagged object of type `T`. Down-casts
 // to trusted objects are allowed for callers which already ensured their
 // correctness. Null-valued holders are allowed.
+//
+// WARNING: This must NEVER be used on pointers loaded from untrusted/sandbox-
+// accessible fields, as an attacker can tamper with them and cause release-time
+// type confusion. Use SbxCast<T> or TryCast<T> instead for those cases.
 template <typename To, typename From, template <typename> class Holder>
   requires HasCastImplementation<Holder, To, From>
 inline Holder<To> TrustedCast(
     Holder<From> value, SourceLocation loc = SourceLocation::CurrentIfDebug()) {
+  static_assert(is_subtype_v<To, TrustedObject> ||
+                is_subtype_v<To, ExposedTrustedObject> ||
+                is_subtype_v<To, Union<Smi, TrustedObject>>);
   // Casting pointers to in-sandbox objects is allowed even with an active
   // DisallowSandboxAccess scope (as casting itself doesn't access any memory).
   // However, in debug builds the DCHECK below will need to access the Map of
@@ -238,7 +399,9 @@ inline Holder<To> TrustedCast(
 
 // `SbxCast<T>(value)` casts `value` to a tagged object of trusted type `T`,
 // with a sandbox-only dynamic type check ensuring that `value` is a tagged
-// object of type `T`. Null-valued holders are allowed.
+// object of type `T`. This is required for security when the object was
+// obtained from an untrusted source AND the TPT tag is shared among multiple
+// types (1:N mapping). Null-valued holders are allowed.
 template <typename To, typename From, template <typename> class Holder>
   requires HasCastImplementation<Holder, To, From>
 inline Holder<To> SbxCast(
@@ -246,7 +409,8 @@ inline Holder<To> SbxCast(
   // Under the attacker model of the sandbox we cannot trust the type of
   // in-sandbox objects for sandbox checks as these objects can be arbitrarily
   // tampered with.
-  static_assert(is_subtype_v<To, TrustedObject>,
+  static_assert(is_subtype_v<To, TrustedObject>);
+  static_assert(is_subtype_v<From, Union<Smi, Oddball, TrustedObject>>,
                 "Type of untrusted objects cannot be checked reliably");
   DCHECK_WITH_MSG_AND_LOC(NullOrIs<To>(value),
                           V8_PRETTY_FUNCTION_VALUE_OR("Cast type check"), loc);
@@ -323,61 +487,38 @@ inline Holder<To> Cast(Holder<From> value,
       "      Tagged<Trusted> t = SbxCast<Trusted>(obj);\n"
       "* TrustedCast if correct by construction (or other deprecated usage)\n"
       "      Tagged<Trusted> t = "
-      "TrustedCast<Trusted>(obj->ReadTrustedPointerField<kTrustedTag>(...);\n");
-  return TrustedCast<To>(value, loc);
+      "TrustedCast<Trusted>(TrustedPointerField::ReadTrustedPointerField<"
+      "kTrustedTag>(obj, ...));\n");
+  DCHECK_WITH_SANDBOX_ACCESS_AND_MSG_AND_LOC(
+      NullOrIs<To>(value), V8_PRETTY_FUNCTION_VALUE_OR("Cast type check"), loc);
+  return UncheckedCast<To>(value);
 }
 
 // TODO(leszeks): Figure out a way to make these cast to actual pointers rather
 // than Tagged.
 template <typename To, typename From>
-  requires std::is_base_of_v<HeapObjectLayout, From>
+  requires std::is_base_of_v<HeapObject, From>
 inline Tagged<To> UncheckedCast(const From* value) {
   return UncheckedCast<To>(Tagged(value));
 }
 template <typename To, typename From>
-  requires std::is_base_of_v<HeapObjectLayout, From>
+  requires std::is_base_of_v<HeapObject, From>
 inline Tagged<To> TrustedCast(const From* value) {
   return TrustedCast<To>(Tagged(value));
 }
 template <typename To, typename From>
-  requires std::is_base_of_v<HeapObjectLayout, From>
+  requires std::is_base_of_v<HeapObject, From>
 inline Tagged<To> CheckedCast(const From* value) {
   return CheckedCast<To>(Tagged(value));
 }
 template <typename To, typename From>
-  requires std::is_base_of_v<HeapObjectLayout, From>
+  requires std::is_base_of_v<HeapObject, From>
 inline Tagged<To> SbxCast(const From* value) {
   return SbxCast<To>(Tagged(value));
 }
 template <typename To, typename From>
-  requires std::is_base_of_v<HeapObjectLayout, From>
+  requires std::is_base_of_v<HeapObject, From>
 inline Tagged<To> Cast(const From* value,
-                       SourceLocation loc = SourceLocation::CurrentIfDebug()) {
-  return Cast<To>(Tagged(value), loc);
-}
-template <typename To, typename From>
-  requires(std::is_base_of_v<HeapObject, From>)
-inline Tagged<To> UncheckedCast(From value) {
-  return UncheckedCast<To>(Tagged(value));
-}
-template <typename To, typename From>
-  requires(std::is_base_of_v<HeapObject, From>)
-inline Tagged<To> TrustedCast(From value) {
-  return TrustedCast<To>(Tagged(value));
-}
-template <typename To, typename From>
-  requires(std::is_base_of_v<HeapObject, From>)
-inline Tagged<To> CheckedCast(From value) {
-  return CheckedCast<To>(Tagged(value));
-}
-template <typename To, typename From>
-  requires(std::is_base_of_v<HeapObject, From>)
-inline Tagged<To> SbxCast(From value) {
-  return SbxCast<To>(Tagged(value));
-}
-template <typename To, typename From>
-  requires(std::is_base_of_v<HeapObject, From>)
-inline Tagged<To> Cast(From value,
                        SourceLocation loc = SourceLocation::CurrentIfDebug()) {
   return Cast<To>(Tagged(value), loc);
 }
@@ -400,54 +541,57 @@ inline Derived* Cast(Base* from,
   return static_cast<Derived*>(from);
 }
 
-// `Is<T>(maybe_weak_value)` specialization for possible weak values and strong
-// target `T`, that additionally first checks whether `maybe_weak_value` is
-// actually a strong value (or a Smi, which can't be weak).
-template <typename T, typename U>
-inline bool Is(Tagged<MaybeWeak<U>> value) {
-  // Cast from maybe weak to strong needs to be strong or smi.
-  if constexpr (!is_maybe_weak_v<T>) {
-    if (!value.IsStrongOrSmi()) return false;
-    return CastTraits<T>::AllowFrom(Tagged<U>(value.ptr()));
-  } else {
-    // Dispatches to CastTraits<MaybeWeak<T>> below.
-    return CastTraits<T>::AllowFrom(value);
-  }
-}
-template <typename T, typename... U>
-constexpr inline bool Is(Tagged<Union<U...>> value) {
-  using UnionU = Union<U...>;
-  if constexpr (is_subtype_v<UnionU, HeapObject>) {
-    return Is<T>(Tagged<HeapObject>(value));
-  } else if constexpr (is_subtype_v<UnionU, MaybeWeak<HeapObject>>) {
-    return Is<T>(Tagged<MaybeWeak<HeapObject>>(value));
-  } else if constexpr (is_subtype_v<UnionU, Object>) {
-    return Is<T>(Tagged<Object>(value));
-  } else {
-    static_assert(is_subtype_v<UnionU, MaybeWeak<Object>>);
-    return Is<T>(Tagged<MaybeWeak<Object>>(value));
-  }
-}
-
-// Specialization for maybe weak cast targets, which first converts the incoming
-// value to a strong reference and then checks if the cast to the strong T
-// is allowed. Cleared weak references always return true.
+// Cleared references belong to every Weak<T>, irrespective of payload type.
 template <typename T>
-struct CastTraits<MaybeWeak<T>> {
+struct CastTraitsImpl<Weak<T>> {
   template <typename U>
   static bool AllowFrom(Tagged<U> value) {
-    if constexpr (is_maybe_weak_v<U>) {
-      // Cleared values are always ok.
-      if (value.IsCleared()) return true;
-      // TODO(leszeks): Skip Smi check for values that are known to not be Smi.
-      if (value.IsSmi()) {
-        return CastTraits<T>::AllowFrom(Tagged<Smi>(value.ptr()));
-      }
-      return CastTraits<T>::AllowFrom(MakeStrong(value));
+    if constexpr (std::is_same_v<U, ClearedWeakValue>) {
+      return true;
+    } else if constexpr (!is_maybe_weak_v<U>) {
+      // A strong reference is never a Weak<T>.
+      return false;
     } else {
-      return CastTraits<T>::AllowFrom(value);
+      if (value.IsCleared()) return true;
+      // Only sources that admit strong references need the tag test.
+      if constexpr (!is_weak_v<U>) {
+        if (!value.IsWeak()) return false;
+      }
+      // The reference is weak, hence not a Smi, but U may still have Smi
+      // members (e.g. MaybeObject), which MakeStrong rejects statically. Since
+      // there is no Weak<Smi>, Weak<HeapObject> is the tightest Smi-free type
+      // in that case; otherwise keep WeakOf<U> (MaybeWeak<Map> -> Weak<Map>).
+      using WeakU =
+          std::conditional_t<is_subtype_v<Smi, U>, Weak<HeapObject>, WeakOf<U>>;
+      return Is<T>(MakeStrong(UncheckedCast<WeakU>(value)));
     }
   }
+};
+
+template <typename... T>
+struct CastTraitsImpl<Union<T...>> {
+  template <typename U>
+  static inline bool AllowFrom(Tagged<U> value) {
+    return (Is<T>(value) || ...);
+  }
+};
+
+template <>
+struct CastTraitsImpl<ClearedWeakValue> {
+  template <typename U>
+  static inline bool AllowFrom(Tagged<U> value) {
+    return value.IsCleared();
+  }
+};
+
+// ReadOnly<T> is a strong predicate on T, so it is a plain CastTraits
+// specialization and goes through the primary CastTraitsImpl.
+template <typename T>
+struct CastTraits<ReadOnly<T>> {
+  static inline bool AllowFrom(Tagged<Object> value) {
+    return value.IsHeapObject() && AllowFrom(UncheckedCast<HeapObject>(value));
+  }
+  static inline bool AllowFrom(Tagged<HeapObject> value);
 };
 
 template <>

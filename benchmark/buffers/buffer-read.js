@@ -1,5 +1,6 @@
 'use strict';
 const common = require('../common.js');
+const assert = require('assert');
 const { Buffer } = require('buffer');
 
 const types = [
@@ -20,22 +21,24 @@ const types = [
 ];
 
 const bench = common.createBenchmark(main, {
-  buffer: ['fast'],
+  buffer: ['fast', 'slow'],
   type: types,
   n: [1e6],
 });
 
-function main({ n, buf, type }) {
-  const buff = buf === 'fast' ?
+function main({ n, buffer, type }) {
+  const buff = buffer === 'fast' ?
     Buffer.alloc(8) :
     Buffer.allocUnsafeSlow(8);
   const fn = `read${type}`;
 
   buff.writeDoubleLE(0, 0);
+  let result;
   bench.start();
 
   for (let i = 0; i !== n; i++) {
-    buff[fn](0);
+    result = buff[fn](0);
   }
   bench.end(n);
+  assert.notStrictEqual(result, undefined);
 }

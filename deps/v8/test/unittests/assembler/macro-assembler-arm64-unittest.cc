@@ -36,7 +36,7 @@ class MacroAssemblerTest : public TestWithIsolate {};
 
 TEST_F(MacroAssemblerTest, TestHardAbort) {
   auto buffer = AllocateAssemblerBuffer();
-  MacroAssembler masm(isolate(), AssemblerOptions{}, CodeObjectRequired::kNo,
+  MacroAssembler masm(isolate(), AssemblerOptions{}, CodeObjectRequired{false},
                       buffer->CreateView());
   __ set_root_array_available(false);
   __ set_abort_hard(true);
@@ -59,7 +59,7 @@ TEST_F(MacroAssemblerTest, TestHardAbort) {
 
 TEST_F(MacroAssemblerTest, TestCheck) {
   auto buffer = AllocateAssemblerBuffer();
-  MacroAssembler masm(isolate(), AssemblerOptions{}, CodeObjectRequired::kNo,
+  MacroAssembler masm(isolate(), AssemblerOptions{}, CodeObjectRequired{false},
                       buffer->CreateView());
   __ set_root_array_available(false);
   __ set_abort_hard(true);
@@ -95,7 +95,7 @@ TEST_F(MacroAssemblerTest, CompareAndBranch) {
     TRACED_FOREACH(int, imm, kTestCases) {
       auto buffer = AllocateAssemblerBuffer();
       MacroAssembler masm(isolate(), AssemblerOptions{},
-                          CodeObjectRequired::kNo, buffer->CreateView());
+                          CodeObjectRequired{false}, buffer->CreateView());
       __ set_root_array_available(false);
       __ set_abort_hard(true);
 
@@ -135,31 +135,75 @@ TEST_F(MacroAssemblerTest, CompareAndBranch) {
   }
 }
 
+TEST_F(MacroAssemblerTest, DispatchHandlePoolEntries) {
+  auto buffer = AllocateAssemblerBuffer();
+  MacroAssembler masm(isolate(), AssemblerOptions{}, CodeObjectRequired{false},
+                      buffer->CreateView());
+  const uint32_t kHandleA = 0x1200;
+  const uint32_t kHandleB = 0x3400;
+
+  {
+    AssemblerBufferWriteScope rw_scope(*buffer);
+
+    __ Mov(w0, Immediate(kHandleA, RelocInfo::JS_DISPATCH_HANDLE));
+    __ Mov(w1, Immediate(kHandleA, RelocInfo::JS_DISPATCH_HANDLE));
+    __ Mov(w2, Immediate(kHandleB, RelocInfo::JS_DISPATCH_HANDLE));
+
+    CodeDesc desc;
+    masm.GetCode(isolate(), &desc);
+  }
+
+  Instruction* load_a = reinterpret_cast<Instruction*>(buffer->start());
+  Instruction* load_a_again = load_a->following();
+  Instruction* load_b = load_a_again->following();
+  ASSERT_TRUE(load_a->IsLdrLiteralW());
+  ASSERT_TRUE(load_a_again->IsLdrLiteralW());
+  ASSERT_TRUE(load_b->IsLdrLiteralW());
+  EXPECT_EQ(load_a->ImmPCOffsetTarget(), load_a_again->ImmPCOffsetTarget());
+  EXPECT_EQ(kHandleA,
+            *reinterpret_cast<uint32_t*>(load_a->ImmPCOffsetTarget()));
+  EXPECT_EQ(kHandleB,
+            *reinterpret_cast<uint32_t*>(load_b->ImmPCOffsetTarget()));
+
+  // The pool holds the guard and one 4-byte entry per handle.
+  Instruction* marker = load_b->following();
+  ASSERT_TRUE(marker->IsLdrLiteralX());
+  EXPECT_EQ(3, marker->ImmLLiteral());
+}
+
 struct MoveObjectAndSlotTestCase {
   const char* comment;
   Register dst_object;
   Register dst_slot;
   Register object;
   Register offset_register = no_reg;
+  Extend offset_extend = NO_EXTEND;
 };
 
 const MoveObjectAndSlotTestCase kMoveObjectAndSlotTestCases[] = {
     {"no overlap", x0, x1, x2},
     {"no overlap", x0, x1, x2, x3},
+    {"no overlap", x0, x1, x2, w3, UXTW},
 
     {"object == dst_object", x2, x1, x2},
     {"object == dst_object", x2, x1, x2, x3},
+    {"object == dst_object", x2, x1, x2, w3, UXTW},
 
     {"object == dst_slot", x1, x2, x2},
     {"object == dst_slot", x1, x2, x2, x3},
+    {"object == dst_slot", x1, x2, x2, w3, UXTW},
 
     {"offset == dst_object", x0, x1, x2, x0},
+    {"offset == dst_object", x0, x1, x2, w0, UXTW},
 
     {"offset == dst_object && object == dst_slot", x0, x1, x1, x0},
+    {"offset == dst_object && object == dst_slot", x0, x1, x1, w0, UXTW},
 
     {"offset == dst_slot", x0, x1, x2, x1},
+    {"offset == dst_slot", x0, x1, x2, w1, UXTW},
 
-    {"offset == dst_slot && object == dst_object", x0, x1, x0, x1}};
+    {"offset == dst_slot && object == dst_object", x0, x1, x0, x1},
+    {"offset == dst_slot && object == dst_object", x0, x1, x0, w1, UXTW}};
 
 // Make sure we include offsets that cannot be encoded in an add instruction.
 const int kOffsets[] = {0, 42, kMaxRegularHeapObjectSize, 0x101001};
@@ -175,8 +219,8 @@ TEST_P(MacroAssemblerTestMoveObjectAndSlot, MoveObjectAndSlot) {
   const MoveObjectAndSlotTestCase test_case = GetParam();
   TRACED_FOREACH(int32_t, offset, kOffsets) {
     auto buffer = AllocateAssemblerBuffer();
-    MacroAssembler masm(isolate(), AssemblerOptions{}, CodeObjectRequired::kNo,
-                        buffer->CreateView());
+    MacroAssembler masm(isolate(), AssemblerOptions{},
+                        CodeObjectRequired{false}, buffer->CreateView());
 
     {
       AssemblerBufferWriteScope rw_buffer_scope(*buffer);
@@ -194,7 +238,12 @@ TEST_P(MacroAssemblerTestMoveObjectAndSlot, MoveObjectAndSlot) {
         offset_operand = Operand(offset);
       } else {
         __ Mov(test_case.offset_register, Operand(offset));
-        offset_operand = Operand(test_case.offset_register);
+        if (test_case.offset_extend == NO_EXTEND) {
+          offset_operand = Operand(test_case.offset_register);
+        } else {
+          offset_operand =
+              Operand(test_case.offset_register, test_case.offset_extend);
+        }
       }
 
       std::stringstream comment;
@@ -251,6 +300,40 @@ TEST_P(MacroAssemblerTestMoveObjectAndSlot, MoveObjectAndSlot) {
 INSTANTIATE_TEST_SUITE_P(MacroAssemblerTest,
                          MacroAssemblerTestMoveObjectAndSlot,
                          ::testing::ValuesIn(kMoveObjectAndSlotTestCases));
+
+#ifdef V8_COMPRESS_POINTERS
+TEST_F(MacroAssemblerTest, ConstantPoolAlignmentGap) {
+  auto buffer = AllocateAssemblerBuffer();
+  MacroAssembler masm(isolate(), AssemblerOptions{}, CodeObjectRequired{false},
+                      buffer->CreateView());
+  Handle<HeapObject> object = isolate()->factory()->undefined_value();
+
+  {
+    AssemblerBufferWriteScope rw_scope(*buffer);
+
+    __ Mov(x0, Operand(object));
+    __ Mov(w1, Operand(object, RelocInfo::COMPRESSED_EMBEDDED_OBJECT));
+    // Start the pool's entries at an offset that is not 8-byte aligned.
+    __ Nop();
+
+    CodeDesc desc;
+    masm.GetCode(isolate(), &desc);
+  }
+
+  Instruction* load64 = reinterpret_cast<Instruction*>(buffer->start());
+  Instruction* load32 = load64->following();
+  Instruction* marker = load32->following()->following();
+  ASSERT_TRUE(load64->IsLdrLiteralX());
+  ASSERT_TRUE(load32->IsLdrLiteralW());
+  ASSERT_TRUE(marker->IsLdrLiteralX());
+
+  // The 32-bit entry fills the alignment gap after the guard.
+  Instruction* gap = marker->following()->following();
+  EXPECT_EQ(gap, load32->ImmPCOffsetTarget());
+  EXPECT_EQ(gap->following(), load64->ImmPCOffsetTarget());
+  EXPECT_EQ(4, marker->ImmLLiteral());
+}
+#endif  // V8_COMPRESS_POINTERS
 
 #undef __
 

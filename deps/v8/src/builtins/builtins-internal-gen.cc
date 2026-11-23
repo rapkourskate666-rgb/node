@@ -6,6 +6,7 @@
 #include <optional>
 
 #include "src/api/api.h"
+#include "src/base/strong-alias.h"
 #include "src/baseline/baseline.h"
 #include "src/builtins/builtins-inl.h"
 #include "src/builtins/builtins-utils-gen.h"
@@ -38,10 +39,10 @@ TF_BUILTIN(CopyFastSmiOrObjectElements, CodeStubAssembler) {
 
   // Load the {object}s elements.
   TNode<FixedArrayBase> source =
-      CAST(LoadObjectField(js_object, JSObject::kElementsOffset));
+      CAST(LoadObjectField(js_object, offsetof(JSObject, elements_)));
   TNode<FixedArrayBase> target =
       CloneFixedArray(source, ExtractFixedArrayFlag::kFixedArrays);
-  StoreObjectField(js_object, JSObject::kElementsOffset, target);
+  StoreObjectField(js_object, offsetof(JSObject, elements_), target);
   Return(target);
 }
 
@@ -52,7 +53,7 @@ TF_BUILTIN(GrowFastDoubleElements, CodeStubAssembler) {
   Label runtime(this, Label::kDeferred);
   TNode<FixedArrayBase> elements = LoadElements(object);
   elements = TryGrowElementsCapacity(object, elements, PACKED_DOUBLE_ELEMENTS,
-                                     key, &runtime);
+                                     SmiUntag(key), &runtime);
   Return(elements);
 
   BIND(&runtime);
@@ -66,8 +67,8 @@ TF_BUILTIN(GrowFastSmiOrObjectElements, CodeStubAssembler) {
 
   Label runtime(this, Label::kDeferred);
   TNode<FixedArrayBase> elements = LoadElements(object);
-  elements =
-      TryGrowElementsCapacity(object, elements, PACKED_ELEMENTS, key, &runtime);
+  elements = TryGrowElementsCapacity(object, elements, PACKED_ELEMENTS,
+                                     SmiUntag(key), &runtime);
   Return(elements);
 
   BIND(&runtime);
@@ -81,7 +82,6 @@ TF_BUILTIN(ReturnReceiver, CodeStubAssembler) {
 }
 
 TF_BUILTIN(DebugBreakTrampoline, CodeStubAssembler) {
-  Label tailcall_to_shared(this);
   auto context = Parameter<Context>(Descriptor::kContext);
   auto new_target = Parameter<Object>(Descriptor::kJSNewTarget);
   auto arg_count =
@@ -89,8 +89,11 @@ TF_BUILTIN(DebugBreakTrampoline, CodeStubAssembler) {
 #ifdef V8_JS_LINKAGE_INCLUDES_DISPATCH_HANDLE
   auto dispatch_handle =
       UncheckedParameter<JSDispatchHandleT>(Descriptor::kJSDispatchHandle);
+  TNode<Uint16T> expected_parameter_count =
+      LoadParameterCountFromJSDispatchTable(dispatch_handle);
 #else
   auto dispatch_handle = InvalidDispatchHandleConstant();
+  TNode<Uint16T> expected_parameter_count = Uint16Constant(0);
 #endif
   auto function = Parameter<JSFunction>(Descriptor::kJSTarget);
 
@@ -99,28 +102,25 @@ TF_BUILTIN(DebugBreakTrampoline, CodeStubAssembler) {
       ExternalConstant(ExternalReference::debug_break_at_entry_function());
   TNode<ExternalReference> isolate_ptr =
       ExternalConstant(ExternalReference::isolate_address());
-  TNode<SharedFunctionInfo> shared =
-      CAST(LoadObjectField(function, JSFunction::kSharedFunctionInfoOffset));
-  TNode<IntPtrT> result = UncheckedCast<IntPtrT>(
-      CallCFunction(f, MachineType::UintPtr(),
-                    std::make_pair(MachineType::Pointer(), isolate_ptr),
-                    std::make_pair(MachineType::TaggedPointer(), shared)));
-  GotoIf(IntPtrEqual(result, IntPtrConstant(0)), &tailcall_to_shared);
+  TNode<SharedFunctionInfo> shared = CAST(
+      LoadObjectField(function, offsetof(JSFunction, shared_function_info_)));
+  TNode<Object> result =
+      CAST(CallCFunction(f, MachineType::AnyTagged(),
+                         std::make_pair(MachineType::Pointer(), isolate_ptr),
+                         std::make_pair(MachineType::TaggedPointer(), shared)));
 
-  CallRuntime(Runtime::kDebugBreakAtEntry, context, function);
-  Goto(&tailcall_to_shared);
+  auto code = Select<Object>(
+      TaggedIsSmi(result),
+      [=, this] {
+        return CallRuntime(Runtime::kDebugBreakAtEntry, context, function);
+      },
+      [=] { return result; });
 
-  BIND(&tailcall_to_shared);
-  // Tail call into code object on the SharedFunctionInfo.
-  // TODO(https://crbug.com/451355210, ishell): consider removing this
-  // duplicate implementation in favour of returning code object from above
-  // runtime calls once non-leaptering code is removed.
-  TNode<Code> code = GetSharedFunctionInfoCode(shared);
-
-  // TailCallJSCode will take care of parameter count validation between the
-  // code and dispatch handle.
-  TailCallJSCode(code, context, function, new_target, arg_count,
-                 dispatch_handle);
+  TailCallJSCode(
+      TrustedCast<Code>(
+          code, "used in a call which will be checked via dispatch table"),
+      context, function, new_target, arg_count, dispatch_handle,
+      expected_parameter_count);
 }
 
 class WriteBarrierCodeStubAssembler : public CodeStubAssembler {
@@ -260,7 +260,7 @@ class WriteBarrierCodeStubAssembler : public CodeStubAssembler {
     BIND(&next);
   }
 
-  void IndirectPointerWriteBarrier(SaveFPRegsMode fp_mode) {
+  void TrustedPointerWriteBarrier(SaveFPRegsMode fp_mode) {
     CSA_DCHECK(this, IsMarking());
 
     // For this barrier, the slot contains an index into a pointer table and not
@@ -268,15 +268,15 @@ class WriteBarrierCodeStubAssembler : public CodeStubAssembler {
     // with the indirect pointer tag of the slot, so it cannot directly be
     // dereferenced but needs to be decoded first.
     TNode<IntPtrT> slot = UncheckedParameter<IntPtrT>(
-        IndirectPointerWriteBarrierDescriptor::kSlotAddress);
+        TrustedPointerWriteBarrierDescriptor::kSlotAddress);
     TNode<IntPtrT> object = BitcastTaggedToWord(UncheckedParameter<Object>(
-        IndirectPointerWriteBarrierDescriptor::kObject));
+        TrustedPointerWriteBarrierDescriptor::kObject));
     TNode<IntPtrT> tag = UncheckedParameter<IntPtrT>(
-        IndirectPointerWriteBarrierDescriptor::kIndirectPointerTag);
+        TrustedPointerWriteBarrierDescriptor::kTrustedPointerTag);
 
     TNode<ExternalReference> function = ExternalConstant(
         ExternalReference::
-            write_barrier_indirect_pointer_marking_from_code_function());
+            write_barrier_trusted_pointer_marking_from_code_function());
     CallCFunctionWithCallerSavedRegisters(
         function, MachineTypeOf<Int32T>::value, fp_mode,
         std::make_pair(MachineTypeOf<IntPtrT>::value, object),
@@ -577,7 +577,7 @@ class WriteBarrierCodeStubAssembler : public CodeStubAssembler {
     Return(TrueConstant());
   }
 
-  void GenerateIndirectPointerBarrier(SaveFPRegsMode fp_mode) {
+  void GenerateTrustedPointerBarrier(SaveFPRegsMode fp_mode) {
     if (V8_DISABLE_WRITE_BARRIERS_BOOL) {
       Return(TrueConstant());
       return;
@@ -588,7 +588,7 @@ class WriteBarrierCodeStubAssembler : public CodeStubAssembler {
       return;
     }
 
-    IndirectPointerWriteBarrier(fp_mode);
+    TrustedPointerWriteBarrier(fp_mode);
     IncrementCounter(isolate()->counters()->write_barriers(), 1);
     Return(TrueConstant());
   }
@@ -626,12 +626,12 @@ TF_BUILTIN(RecordWriteIgnoreFP, WriteBarrierCodeStubAssembler) {
   GenerateRecordWrite(SaveFPRegsMode::kIgnore);
 }
 
-TF_BUILTIN(IndirectPointerBarrierSaveFP, WriteBarrierCodeStubAssembler) {
-  GenerateIndirectPointerBarrier(SaveFPRegsMode::kSave);
+TF_BUILTIN(TrustedPointerBarrierSaveFP, WriteBarrierCodeStubAssembler) {
+  GenerateTrustedPointerBarrier(SaveFPRegsMode::kSave);
 }
 
-TF_BUILTIN(IndirectPointerBarrierIgnoreFP, WriteBarrierCodeStubAssembler) {
-  GenerateIndirectPointerBarrier(SaveFPRegsMode::kIgnore);
+TF_BUILTIN(TrustedPointerBarrierIgnoreFP, WriteBarrierCodeStubAssembler) {
+  GenerateTrustedPointerBarrier(SaveFPRegsMode::kIgnore);
 }
 
 TF_BUILTIN(EphemeronKeyBarrierSaveFP, WriteBarrierCodeStubAssembler) {
@@ -778,6 +778,74 @@ TF_BUILTIN(TSANSeqCstStore64SaveFP, TSANSeqCstStoreCodeStubAssembler) {
   GenerateTSANSeqCstStore(SaveFPRegsMode::kSave, kInt64Size);
 }
 
+class TSANReleaseStoreCodeStubAssembler : public CodeStubAssembler {
+ public:
+  explicit TSANReleaseStoreCodeStubAssembler(
+      compiler::CodeAssemblerState* state)
+      : CodeStubAssembler(state) {}
+
+  TNode<ExternalReference> GetExternalReference(int size) {
+    if (size == kInt8Size) {
+      return ExternalConstant(
+          ExternalReference::tsan_release_store_function_8_bits());
+    } else if (size == kInt16Size) {
+      return ExternalConstant(
+          ExternalReference::tsan_release_store_function_16_bits());
+    } else if (size == kInt32Size) {
+      return ExternalConstant(
+          ExternalReference::tsan_release_store_function_32_bits());
+    } else {
+      CHECK_EQ(size, kInt64Size);
+      return ExternalConstant(
+          ExternalReference::tsan_release_store_function_64_bits());
+    }
+  }
+
+  void GenerateTSANReleaseStore(SaveFPRegsMode fp_mode, int size) {
+    TNode<ExternalReference> function = GetExternalReference(size);
+    auto address = UncheckedParameter<IntPtrT>(TSANStoreDescriptor::kAddress);
+    TNode<IntPtrT> value = BitcastTaggedToWord(
+        UncheckedParameter<Object>(TSANStoreDescriptor::kValue));
+    CallCFunctionWithCallerSavedRegisters(
+        function, MachineType::Int32(), fp_mode,
+        std::make_pair(MachineType::IntPtr(), address),
+        std::make_pair(MachineType::IntPtr(), value));
+    Return(UndefinedConstant());
+  }
+};
+
+TF_BUILTIN(TSANReleaseStore8IgnoreFP, TSANReleaseStoreCodeStubAssembler) {
+  GenerateTSANReleaseStore(SaveFPRegsMode::kIgnore, kInt8Size);
+}
+
+TF_BUILTIN(TSANReleaseStore8SaveFP, TSANReleaseStoreCodeStubAssembler) {
+  GenerateTSANReleaseStore(SaveFPRegsMode::kSave, kInt8Size);
+}
+
+TF_BUILTIN(TSANReleaseStore16IgnoreFP, TSANReleaseStoreCodeStubAssembler) {
+  GenerateTSANReleaseStore(SaveFPRegsMode::kIgnore, kInt16Size);
+}
+
+TF_BUILTIN(TSANReleaseStore16SaveFP, TSANReleaseStoreCodeStubAssembler) {
+  GenerateTSANReleaseStore(SaveFPRegsMode::kSave, kInt16Size);
+}
+
+TF_BUILTIN(TSANReleaseStore32IgnoreFP, TSANReleaseStoreCodeStubAssembler) {
+  GenerateTSANReleaseStore(SaveFPRegsMode::kIgnore, kInt32Size);
+}
+
+TF_BUILTIN(TSANReleaseStore32SaveFP, TSANReleaseStoreCodeStubAssembler) {
+  GenerateTSANReleaseStore(SaveFPRegsMode::kSave, kInt32Size);
+}
+
+TF_BUILTIN(TSANReleaseStore64IgnoreFP, TSANReleaseStoreCodeStubAssembler) {
+  GenerateTSANReleaseStore(SaveFPRegsMode::kIgnore, kInt64Size);
+}
+
+TF_BUILTIN(TSANReleaseStore64SaveFP, TSANReleaseStoreCodeStubAssembler) {
+  GenerateTSANReleaseStore(SaveFPRegsMode::kSave, kInt64Size);
+}
+
 class TSANRelaxedLoadCodeStubAssembler : public CodeStubAssembler {
  public:
   explicit TSANRelaxedLoadCodeStubAssembler(compiler::CodeAssemblerState* state)
@@ -797,9 +865,15 @@ class TSANRelaxedLoadCodeStubAssembler : public CodeStubAssembler {
   void GenerateTSANRelaxedLoad(SaveFPRegsMode fp_mode, int size) {
     TNode<ExternalReference> function = GetExternalReference(size);
     auto address = UncheckedParameter<IntPtrT>(TSANLoadDescriptor::kAddress);
+    auto shared_base =
+        UncheckedParameter<Object>(TSANLoadDescriptor::kSharedBase);
+    auto invoke_tsan_acquire =
+        UncheckedParameter<Int32T>(TSANLoadDescriptor::kInvokeTsanAcquire);
     CallCFunctionWithCallerSavedRegisters(
         function, MachineType::Int32(), fp_mode,
-        std::make_pair(MachineType::IntPtr(), address));
+        std::make_pair(MachineType::IntPtr(), address),
+        std::make_pair(MachineType::AnyTagged(), shared_base),
+        std::make_pair(MachineType::Int32(), invoke_tsan_acquire));
     Return(UndefinedConstant());
   }
 };
@@ -1062,7 +1136,7 @@ class SetOrCopyDataPropertiesAssembler : public CodeStubAssembler {
                       BranchIfSameValue(key, property, &skip, &continue_label);
                       Bind(&continue_label);
                     },
-                    1, LoopUnrollingMode::kNo, IndexAdvanceMode::kPost);
+                    1, kNoLoopUnrolling, IndexAdvanceMode::kPost);
               }
 
               CallBuiltin(Builtin::kCreateDataProperty, context, target, key,
@@ -1145,7 +1219,7 @@ TF_BUILTIN(CopyDataPropertiesWithExcludedProperties,
       source, excluded_property_count, excluded_properties));
 }
 
-// ES #sec-copydataproperties
+// https://tc39.es/ecma262/#sec-copydataproperties
 TF_BUILTIN(CopyDataProperties, SetOrCopyDataPropertiesAssembler) {
   auto target = Parameter<JSObject>(Descriptor::kTarget);
   auto source = Parameter<Object>(Descriptor::kSource);
@@ -1193,13 +1267,13 @@ TF_BUILTIN(ForInEnumerate, CodeStubAssembler) {
 }
 
 TF_BUILTIN(ForInPrepare, CodeStubAssembler) {
-  // The {enumerator} is either a Map or a FixedArray.
+  // The {enumerator} is either a Map, a FixedArray, or a ForInEnumeratorHolder.
   auto enumerator = Parameter<HeapObject>(Descriptor::kEnumerator);
   auto index = Parameter<TaggedIndex>(Descriptor::kVectorIndex);
   auto feedback_vector = Parameter<FeedbackVector>(Descriptor::kFeedbackVector);
   TNode<UintPtrT> vector_index = Unsigned(TaggedIndexToIntPtr(index));
 
-  TNode<FixedArray> cache_array;
+  TNode<Union<FixedArray, ForInEnumeratorHolder>> cache_array;
   TNode<Smi> cache_length;
   ForInPrepare(enumerator, vector_index, feedback_vector, &cache_array,
                &cache_length, UpdateFeedbackMode::kGuaranteedFeedback);
@@ -1626,49 +1700,6 @@ TF_BUILTIN(CreateDataProperty, CodeStubAssembler) {
                                                  key, value);
 }
 
-TF_BUILTIN(InstantiateAsmJs, JSTrampolineAssembler) {
-  Label tailcall_to_function(this);
-  auto function = Parameter<JSFunction>(Descriptor::kTarget);
-  auto context = Parameter<Context>(Descriptor::kContext);
-  auto arg_count =
-      UncheckedParameter<Int32T>(Descriptor::kActualArgumentsCount);
-#ifdef V8_JS_LINKAGE_INCLUDES_DISPATCH_HANDLE
-  auto dispatch_handle =
-      UncheckedParameter<JSDispatchHandleT>(Descriptor::kDispatchHandle);
-#else
-  TNode<JSDispatchHandleT> dispatch_handle = ReinterpretCast<JSDispatchHandleT>(
-      LoadJSFunctionDispatchHandle(function));
-#endif
-
-  // This builtin is used on functions with different parameter counts.
-  SetSupportsDynamicParameterCount(function, dispatch_handle);
-
-  // Retrieve arguments from caller (stdlib, foreign, heap).
-  CodeStubArguments args(this, arg_count);
-
-  TNode<Object> stdlib = args.GetOptionalArgumentValue(0);
-  TNode<Object> foreign = args.GetOptionalArgumentValue(1);
-  TNode<Object> heap = args.GetOptionalArgumentValue(2);
-
-  // Call runtime, on success just pass the result to the caller and pop all
-  // arguments. A smi 0 is returned on failure, an object on success.
-  TNode<JSAny> maybe_result_or_smi_zero = CallRuntime<JSAny>(
-      Runtime::kInstantiateAsmJs, context, function, stdlib, foreign, heap);
-  GotoIf(TaggedIsSmi(maybe_result_or_smi_zero), &tailcall_to_function);
-  args.PopAndReturn(maybe_result_or_smi_zero);
-
-  BIND(&tailcall_to_function);
-  // On failure, tail call back to regular JavaScript by re-calling the given
-  // function which has been reset to the compile lazy builtin.
-  // Make sure that the dispatch table entry is still intact; calling out to JS
-  // might have free'd and re-allocated it (https://crbug.com/462217236).
-  CSA_SBXCHECK(
-      this,
-      Word32Equal(DynamicJSParameterCount(),
-                  LoadParameterCountFromJSDispatchTable(dispatch_handle)));
-  TailCallJSFunction(function);
-}
-
 TF_BUILTIN(FindNonDefaultConstructorOrConstruct, CodeStubAssembler) {
   auto this_function = Parameter<JSFunction>(Descriptor::kThisFunction);
   auto new_target = Parameter<Object>(Descriptor::kNewTarget);
@@ -1725,8 +1756,8 @@ TF_BUILTIN(CheckMaglevType, CodeStubAssembler) {
   TNode<Int32T> expected_type = SmiToInt32(expected_type_smi);
 
   Label is_smi(this), is_heap_number(this), is_string(this), is_symbol(this),
-      is_oddball(this), is_context(this), is_js_receiver(this),
-      is_other_heap_object(this), done(this);
+      is_big_int(this), is_oddball(this), is_context(this),
+      is_js_receiver(this), is_other_heap_object(this), done(this);
 
   GotoIf(TaggedIsSmi(object), &is_smi);
 
@@ -1740,6 +1771,7 @@ TF_BUILTIN(CheckMaglevType, CodeStubAssembler) {
   GotoIf(Int32LessThan(instance_type, Int32Constant(FIRST_NONSTRING_TYPE)),
          &is_string);
   GotoIf(Word32Equal(instance_type, Int32Constant(SYMBOL_TYPE)), &is_symbol);
+  GotoIf(Word32Equal(instance_type, Int32Constant(BIGINT_TYPE)), &is_big_int);
   GotoIf(Word32Equal(instance_type, Int32Constant(ODDBALL_TYPE)), &is_oddball);
 
   GotoIf(IsInRange(instance_type, FIRST_CONTEXT_TYPE, LAST_CONTEXT_TYPE),
@@ -1779,6 +1811,9 @@ TF_BUILTIN(CheckMaglevType, CodeStubAssembler) {
   BIND(&is_symbol);
   CheckType(maglev::NodeType::kSymbol);
 
+  BIND(&is_big_int);
+  CheckType(maglev::NodeType::kBigInt);
+
   BIND(&is_oddball);
   {
     Label is_null(this), is_undefined(this);
@@ -1799,7 +1834,8 @@ TF_BUILTIN(CheckMaglevType, CodeStubAssembler) {
   BIND(&is_js_receiver);
   {
     Label is_js_array(this), is_js_data_view(this), is_primitive_wrapper(this),
-        is_js_function(this), is_string_wrapper(this), is_other_callable(this);
+        is_js_function(this), is_string_wrapper(this), is_other_callable(this),
+        is_js_generator_object(this);
 
     GotoIf(Word32Equal(instance_type, Int32Constant(JS_ARRAY_TYPE)),
            &is_js_array);
@@ -1807,6 +1843,8 @@ TF_BUILTIN(CheckMaglevType, CodeStubAssembler) {
            &is_js_data_view);
     GotoIf(Word32Equal(instance_type, Int32Constant(JS_PRIMITIVE_WRAPPER_TYPE)),
            &is_primitive_wrapper);
+    GotoIf(Word32Equal(instance_type, Int32Constant(JS_GENERATOR_OBJECT_TYPE)),
+           &is_js_generator_object);
     GotoIf(
         IsInRange(instance_type, FIRST_JS_FUNCTION_TYPE, LAST_JS_FUNCTION_TYPE),
         &is_js_function);
@@ -1840,6 +1878,9 @@ TF_BUILTIN(CheckMaglevType, CodeStubAssembler) {
 
     BIND(&is_string_wrapper);
     CheckType(maglev::NodeType::kStringWrapper);
+
+    BIND(&is_js_generator_object);
+    CheckType(maglev::NodeType::kJSGeneratorObject);
 
     BIND(&is_other_callable);
     CheckType(maglev::NodeType::kOtherCallable);

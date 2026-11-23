@@ -17,8 +17,6 @@
 namespace v8 {
 namespace internal {
 
-#include "torque-generated/src/objects/promise-tq-inl.inc"
-
 Tagged<Object> PromiseReactionJobTask::argument() const {
   return argument_.load();
 }
@@ -35,11 +33,11 @@ void PromiseReactionJobTask::set_context(Tagged<Context> value,
   context_.store(this, value, mode);
 }
 
-Tagged<UnionOf<JSCallable, Undefined>> PromiseReactionJobTask::handler() const {
+Tagged<PromiseReactionHandler> PromiseReactionJobTask::handler() const {
   return handler_.load();
 }
-void PromiseReactionJobTask::set_handler(
-    Tagged<UnionOf<JSCallable, Undefined>> value, WriteBarrierMode mode) {
+void PromiseReactionJobTask::set_handler(Tagged<PromiseReactionHandler> value,
+                                         WriteBarrierMode mode) {
   handler_.store(this, value, mode);
 }
 
@@ -53,58 +51,60 @@ void PromiseReactionJobTask::set_promise_or_capability(
   promise_or_capability_.store(this, value, mode);
 }
 
+PromiseResolveThenableJobTask::PromiseResolveThenableJobTask(
+    const AllocationWitness& witness, Tagged<JSPromise> promise_to_resolve,
+    Tagged<JSReceiver> thenable, Tagged<JSReceiver> then,
+    Tagged<Context> context
+#ifdef V8_ENABLE_CONTINUATION_PRESERVED_EMBEDDER_DATA
+    ,
+    Tagged<Object> continuation_preserved_embedder_data
+#endif
+    )
+    : Microtask(witness, witness.roots().promise_resolve_thenable_job_task_map()
+#ifdef V8_ENABLE_CONTINUATION_PRESERVED_EMBEDDER_DATA
+                             ,
+                continuation_preserved_embedder_data
+#endif
+                ),
+      context_(witness, context),
+      promise_to_resolve_(witness, promise_to_resolve),
+      thenable_(witness, thenable),
+      then_(witness, then) {
+}
+
 Tagged<Context> PromiseResolveThenableJobTask::context() const {
   return context_.load();
-}
-void PromiseResolveThenableJobTask::set_context(Tagged<Context> value,
-                                                WriteBarrierMode mode) {
-  context_.store(this, value, mode);
 }
 
 Tagged<JSPromise> PromiseResolveThenableJobTask::promise_to_resolve() const {
   return promise_to_resolve_.load();
 }
-void PromiseResolveThenableJobTask::set_promise_to_resolve(
-    Tagged<JSPromise> value, WriteBarrierMode mode) {
-  promise_to_resolve_.store(this, value, mode);
-}
 
 Tagged<JSReceiver> PromiseResolveThenableJobTask::thenable() const {
   return thenable_.load();
-}
-void PromiseResolveThenableJobTask::set_thenable(Tagged<JSReceiver> value,
-                                                 WriteBarrierMode mode) {
-  thenable_.store(this, value, mode);
 }
 
 Tagged<JSReceiver> PromiseResolveThenableJobTask::then() const {
   return then_.load();
 }
-void PromiseResolveThenableJobTask::set_then(Tagged<JSReceiver> value,
-                                             WriteBarrierMode mode) {
-  then_.store(this, value, mode);
-}
 
 // PromiseCapability
+PromiseCapability::PromiseCapability(
+    const AllocationWitness& witness,
+    Tagged<UnionOf<JSReceiver, Undefined>> promise, Tagged<JSAny> resolve,
+    Tagged<JSAny> reject)
+    : Struct(witness.roots().promise_capability_map()),
+      promise_(witness, promise),
+      resolve_(witness, resolve),
+      reject_(witness, reject) {}
+
 Tagged<UnionOf<JSReceiver, Undefined>> PromiseCapability::promise() const {
   return promise_.load();
 }
-void PromiseCapability::set_promise(
-    Tagged<UnionOf<JSReceiver, Undefined>> value, WriteBarrierMode mode) {
-  promise_.store(this, value, mode);
-}
 
-Tagged<Object> PromiseCapability::resolve() const { return resolve_.load(); }
-void PromiseCapability::set_resolve(Tagged<Object> value,
-                                    WriteBarrierMode mode) {
-  resolve_.store(this, value, mode);
-}
+Tagged<JSAny> PromiseCapability::resolve() const { return resolve_.load(); }
 
-Tagged<Object> PromiseCapability::reject() const { return reject_.load(); }
-void PromiseCapability::set_reject(Tagged<Object> value,
-                                   WriteBarrierMode mode) {
-  reject_.store(this, value, mode);
-}
+Tagged<JSAny> PromiseCapability::reject() const { return reject_.load(); }
 
 #ifdef V8_ENABLE_CONTINUATION_PRESERVED_EMBEDDER_DATA
 Tagged<Object> PromiseReaction::continuation_preserved_embedder_data() const {
@@ -124,20 +124,23 @@ void PromiseReaction::set_next(Tagged<UnionOf<PromiseReaction, Smi>> value,
   next_.store(this, value, mode);
 }
 
-Tagged<UnionOf<JSCallable, Undefined>> PromiseReaction::reject_handler() const {
+Tagged<UnionOf<JSCallable, JSGeneratorObject, Undefined>>
+PromiseReaction::reject_handler() const {
   return reject_handler_.load();
 }
 void PromiseReaction::set_reject_handler(
-    Tagged<UnionOf<JSCallable, Undefined>> value, WriteBarrierMode mode) {
+    Tagged<UnionOf<JSCallable, JSGeneratorObject, Undefined>> value,
+    WriteBarrierMode mode) {
   reject_handler_.store(this, value, mode);
 }
 
-Tagged<UnionOf<JSCallable, Undefined>> PromiseReaction::fulfill_handler()
-    const {
+Tagged<UnionOf<JSCallable, JSGeneratorObject, Undefined>>
+PromiseReaction::fulfill_handler() const {
   return fulfill_handler_.load();
 }
 void PromiseReaction::set_fulfill_handler(
-    Tagged<UnionOf<JSCallable, Undefined>> value, WriteBarrierMode mode) {
+    Tagged<UnionOf<JSCallable, JSGeneratorObject, Undefined>> value,
+    WriteBarrierMode mode) {
   fulfill_handler_.store(this, value, mode);
 }
 

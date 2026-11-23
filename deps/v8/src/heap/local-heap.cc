@@ -43,7 +43,8 @@ void LocalHeap::VerifyCurrent() const { DCHECK_EQ(this, LocalHeap::Current()); }
 #endif
 
 LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
-                     std::unique_ptr<PersistentHandles> persistent_handles)
+                     std::unique_ptr<PersistentHandles> persistent_handles,
+                     v8::base::Stack::StackSlot stack_start)
     : heap_(heap),
       ptr_compr_cage_access_scope_(heap->isolate()),
       is_main_thread_(kind == ThreadKind::kMain),
@@ -87,7 +88,19 @@ LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
     persistent_handles_->Attach(this);
   }
   if (!is_main_thread()) {
+    DCHECK(::heap::base::Stack::IsOnStack(this));
     saved_current_local_heap_ = LocalHeap::TryGetCurrent();
+    // Set the stack start for the outermost background `LocalHeap` on this
+    // thread. When `saved_current_local_heap_->is_main_thread()` is true, a
+    // parked main thread is constructing a background `LocalHeap` (whose
+    // segment in `Stack::background_stacks_` is separate from the main thread's
+    // `Stack::current_segment_`). For nested background `LocalHeap`s, keep the
+    // outermost stack start because `Stack::background_stacks_` only stores a
+    // single segment per thread.
+    if (!saved_current_local_heap_ ||
+        saved_current_local_heap_->is_main_thread()) {
+      stack_start_scope_.emplace(stack_start);
+    }
     saved_current_isolate_ = Isolate::TryGetCurrent();
     Isolate::SetCurrent(heap_->isolate());
     LocalHeap::SetCurrent(this);
@@ -231,8 +244,9 @@ bool LocalHeap::IsRunning() const {
 void LocalHeap::ParkSlowPath() {
   while (true) {
     ThreadState current_state = ThreadState::Running();
-    if (state_.CompareExchangeStrong(current_state, ThreadState::Parked()))
+    if (state_.CompareExchangeStrong(current_state, ThreadState::Parked())) {
       return;
+    }
 
     // CAS above failed, so state is Running with some additional flag.
     DCHECK(current_state.IsRunning());
@@ -244,8 +258,9 @@ void LocalHeap::ParkSlowPath() {
       if (current_state.IsSafepointRequested()) {
         ThreadState old_state = state_.SetParked();
         heap_->safepoint()->NotifyPark();
-        if (old_state.IsCollectionRequested())
+        if (old_state.IsCollectionRequested()) {
           heap_->collection_barrier_->CancelCollectionAndResumeThreads();
+        }
         return;
       }
 
@@ -283,8 +298,9 @@ void LocalHeap::ParkSlowPath() {
 void LocalHeap::UnparkSlowPath() {
   while (true) {
     ThreadState current_state = ThreadState::Parked();
-    if (state_.CompareExchangeStrong(current_state, ThreadState::Running()))
+    if (state_.CompareExchangeStrong(current_state, ThreadState::Running())) {
       return;
+    }
 
     // CAS above failed, so state is Parked with some additional flag.
     DCHECK(current_state.IsParked());
@@ -302,8 +318,9 @@ void LocalHeap::UnparkSlowPath() {
         DCHECK(!current_state.IsSafepointRequested());
 
         if (!state_.CompareExchangeStrong(current_state,
-                                          current_state.SetRunning()))
+                                          current_state.SetRunning())) {
           continue;
+        }
 
         if (!heap()->ignore_local_gc_requests()) {
           heap_->PerformRequestedGC(this);
@@ -404,8 +421,9 @@ bool LocalHeap::IsSafeForConservativeStackScanning() const {
     // The main thread can avoid the trampoline, if it's not the main thread of
     // a client isolate.
     if (is_main_thread() && (heap()->isolate()->is_shared_space_isolate() ||
-                             !heap()->isolate()->has_shared_space()))
+                             !heap()->isolate()->has_shared_space())) {
       return true;
+    }
     // Otherwise, require that we're inside the trampoline.
     return is_in_trampoline();
   }
@@ -481,11 +499,6 @@ void LocalHeap::NotifyObjectSizeChange(
     ClearRecordedSlots clear_recorded_slots) {
   heap()->NotifyObjectSizeChange(object, old_size, new_size,
                                  clear_recorded_slots);
-}
-
-void LocalHeap::WeakenDescriptorArrays(
-    GlobalHandleVector<DescriptorArray> strong_descriptor_arrays) {
-  AsHeap()->WeakenDescriptorArrays(std::move(strong_descriptor_arrays));
 }
 
 }  // namespace internal

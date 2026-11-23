@@ -75,7 +75,7 @@ TEST_F(FeedbackVectorTest, VectorStructure) {
     CHECK_EQ(helper.slot(7), vector->ToSlot(index));
 
     CHECK_EQ(3 + 5 * FeedbackMetadata::GetSlotSize(FeedbackSlotKind::kCall),
-             vector->length());
+             vector->length().value());
   }
 
   {
@@ -263,7 +263,7 @@ TEST_F(FeedbackVectorTest, VectorPolymorphicCallFeedback) {
   CHECK_EQ(InlineCacheState::POLYMORPHIC, nexus.ic_state());
   Tagged<HeapObject> heap_object;
   CHECK(nexus.GetFeedback().GetHeapObjectIfWeak(&heap_object));
-  CHECK(IsFeedbackCell(heap_object, isolate));
+  CHECK(IsFeedbackCell(heap_object));
   // Ensure this is the feedback cell for the closure returned by
   // foo_maker.
   CHECK_EQ(heap_object, a_foo->raw_feedback_cell());
@@ -561,10 +561,11 @@ TEST_F(FeedbackVectorTest, VectorLoadICOnSmi) {
   bool number_map_found = false;
   bool o_map_found = false;
   for (DirectHandle<Map> current : maps) {
-    if (*current == number_map)
+    if (*current == number_map) {
       number_map_found = true;
-    else if (*current == o->map())
+    } else if (*current == o->map()) {
       o_map_found = true;
+    }
   }
   CHECK(number_map_found && o_map_found);
 
@@ -705,17 +706,17 @@ TEST_F(FeedbackVectorTest, ReferenceContextAllocatesNoSlots) {
     DirectHandle<JSFunction> f = GetFunction("testcompound");
 
     // There should be 1 LOAD_GLOBAL_IC for load of a and 2 LOAD_ICs, for load
-    // of x.old and x.young.
+    // of x.old and x.young. The `+` in `x.old + x.young` carries embedded
+    // feedback in the BytecodeArray, so no FeedbackVector slot is allocated.
     Handle<FeedbackVector> feedback_vector(f->feedback_vector(), isolate);
     FeedbackVectorHelper helper(feedback_vector);
-    CHECK_EQ(7, helper.slot_count());
+    CHECK_EQ(6, helper.slot_count());
     CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kLoadGlobalNotInsideTypeof);
     CHECK_SLOT_KIND(helper, 1, FeedbackSlotKind::kSetNamedStrict);
     CHECK_SLOT_KIND(helper, 2, FeedbackSlotKind::kSetNamedStrict);
     CHECK_SLOT_KIND(helper, 3, FeedbackSlotKind::kSetNamedStrict);
-    CHECK_SLOT_KIND(helper, 4, FeedbackSlotKind::kBinaryOp);
+    CHECK_SLOT_KIND(helper, 4, FeedbackSlotKind::kLoadProperty);
     CHECK_SLOT_KIND(helper, 5, FeedbackSlotKind::kLoadProperty);
-    CHECK_SLOT_KIND(helper, 6, FeedbackSlotKind::kLoadProperty);
   }
 }
 
@@ -744,7 +745,7 @@ TEST_F(FeedbackVectorTest, VectorStoreICBasic) {
   CHECK_EQ(InlineCacheState::MONOMORPHIC, nexus.ic_state());
 }
 
-TEST_F(FeedbackVectorTest, DefineNamedOwnIC) {
+TEST_F(FeedbackVectorTest, DefineNamedOwnInLiteralIC) {
   if (!i::v8_flags.use_ic) return;
   v8_flags.allow_natives_syntax = true;
 
@@ -767,6 +768,56 @@ TEST_F(FeedbackVectorTest, DefineNamedOwnIC) {
   CHECK_SLOT_KIND(helper, 1, FeedbackSlotKind::kDefineNamedOwn);
   FeedbackNexus nexus(i_isolate(), feedback_vector, helper.slot(1));
   CHECK_EQ(InlineCacheState::MONOMORPHIC, nexus.ic_state());
+}
+
+TEST_F(FeedbackVectorTest, DefineNamedOwnIC) {
+  if (!i::v8_flags.use_ic) return;
+  v8_flags.lazy_feedback_allocation.Set(false);
+
+  v8::HandleScope scope(v8_isolate());
+  Isolate* isolate = i_isolate();
+
+  TryRunJS(
+      "var C = class {"
+      "  a = 1;"
+      "};"
+      "new C();"
+      "new C();"
+      "new C();");
+  DirectHandle<JSFunction> c = GetFunction("C");
+  DirectHandle<JSFunction> initializer = Cast<JSFunction>(
+      JSReceiver::GetProperty(isolate, c,
+                              isolate->factory()->class_fields_symbol())
+          .ToHandleChecked());
+  // There should be one IC slot in the instance members initializer.
+  Handle<FeedbackVector> feedback_vector(initializer->feedback_vector(),
+                                         isolate);
+  FeedbackVectorHelper helper(feedback_vector);
+  CHECK_EQ(1, helper.slot_count());
+  CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kDefineNamedOwn);
+  FeedbackNexus nexus(isolate, feedback_vector, helper.slot(0));
+  CHECK_EQ(InlineCacheState::MONOMORPHIC, nexus.ic_state());
+}
+
+TEST_F(FeedbackVectorTest, MaxLengthAndSizeFor) {
+  static_assert(FeedbackVector::SizeFor(0) == FeedbackVector::kHeaderSize);
+  static_assert(FeedbackVector::SizeFor(10) ==
+                FeedbackVector::kHeaderSize + 10 * kTaggedSize);
+  static_assert(FeedbackVector::SizeFor(FeedbackVector::kMaxLength) ==
+                FeedbackVector::kHeaderSize +
+                    FeedbackVector::kMaxLength * kTaggedSize);
+
+  EXPECT_EQ(FeedbackVector::kHeaderSize, FeedbackVector::SizeFor(0));
+  EXPECT_EQ(FeedbackVector::kHeaderSize + 10 * kTaggedSize,
+            FeedbackVector::SizeFor(10));
+  EXPECT_EQ(
+      FeedbackVector::kHeaderSize + FeedbackVector::kMaxLength * kTaggedSize,
+      FeedbackVector::SizeFor(FeedbackVector::kMaxLength));
+
+  ASSERT_DEATH_IF_SUPPORTED({ FeedbackVector::SizeFor(-1); }, ".*");
+  ASSERT_DEATH_IF_SUPPORTED(
+      { FeedbackVector::SizeFor(FeedbackVector::kMaxLength + 1); }, ".*");
+  ASSERT_DEATH_IF_SUPPORTED({ FeedbackVector::SizeFor(1 << 30); }, ".*");
 }
 
 }  // namespace internal

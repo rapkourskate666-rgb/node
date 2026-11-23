@@ -95,7 +95,7 @@ enum MemoryRepresentation {
   TaggedSigned = "TaggedSigned",
   UncompressedTaggedPointer = "UncompressedTaggedPointer",
   ProtectedPointer = "ProtectedPointer",
-  IndirectPointer = "IndirectPointer",
+  TrustedPointer = "TrustedPointer",
   SandboxedPointer = "SandboxedPointer",
   Simd128 = "Simd128",
   Simd256 = "Simd256",
@@ -119,7 +119,7 @@ function mrString(rep: MemoryRepresentation): string {
   case MemoryRepresentation.TaggedSigned: return "ts";
   case MemoryRepresentation.UncompressedTaggedPointer: return "utp";
   case MemoryRepresentation.ProtectedPointer: return "pp";
-  case MemoryRepresentation.IndirectPointer: return "ip";
+  case MemoryRepresentation.TrustedPointer: return "trp";
   case MemoryRepresentation.SandboxedPointer: return "sp";
   case MemoryRepresentation.Simd128: return "s128";
   case MemoryRepresentation.Simd256: return "s256";
@@ -568,7 +568,7 @@ enum WriteBarrierKind {
   AssertNoWriteBarrier = "AssertNoWriteBarrier",
   MapWriteBarrier = "MapWriteBarrier",
   PointerWriteBarrier = "PointerWriteBarrier",
-  IndirectPointerWriteBarrier = "IndirectPointerWriteBarrier",
+  TrustedPointerWriteBarrier = "TrustedPointerWriteBarrier",
   EphemeronKeyWriteBarrier = "EphemeronKeyWriteBarrier",
   FullWriteBarrier = "FullWriteBarrier",
 }
@@ -671,12 +671,13 @@ export class TurboshaftGraphOperation extends Node<TurboshaftGraphEdge<Turboshaf
   bytecodePosition: BytecodePosition;
   origin: NodeOrigin;
   opEffects: String;
+  properties: string;
 
   compactPrinter: CompactOperationPrinter;
 
   constructor(id: number, title: string, block: TurboshaftGraphBlock,
               sourcePosition: SourcePosition, bytecodePosition: BytecodePosition,
-              origin: NodeOrigin, opEffects: String) {
+              origin: NodeOrigin, opEffects: String, properties: string = "") {
     super(id);
     this.title = title;
     this.block = block;
@@ -684,6 +685,7 @@ export class TurboshaftGraphOperation extends Node<TurboshaftGraphEdge<Turboshaf
     this.bytecodePosition = bytecodePosition;
     this.origin = origin;
     this.opEffects = opEffects;
+    this.properties = properties;
     this.visible = true;
     this.compactPrinter = null;
   }
@@ -711,6 +713,9 @@ export class TurboshaftGraphOperation extends Node<TurboshaftGraphEdge<Turboshaf
 
   public getTitle(): string {
     let title = `${this.id} ${this.title}`;
+    if (this.properties) {
+      title += `\nProperties:\n${this.properties}`;
+    }
     title += `\nEffects: ${this.opEffects}`;
     if (this.origin) {
       title += `\nOrigin: ${this.origin.toString()}`;

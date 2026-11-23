@@ -52,6 +52,23 @@ TEST_F(BitVectorTest, SmallBitVectorIterator) {
   ++iter;
   EXPECT_TRUE(iter == end);
   EXPECT_FALSE(iter != end);
+
+  BitVector::ReverseIterator riter = v.rbegin();
+  BitVector::ReverseIterator rend = v.rend();
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(33, *riter);
+  ++riter;
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(31, *riter);
+  ++riter;
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(30, *riter);
+  ++riter;
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(27, *riter);
+  ++riter;
+  EXPECT_TRUE(riter == rend);
+  EXPECT_FALSE(riter != rend);
 }
 
 TEST_F(BitVectorTest, Union) {
@@ -146,6 +163,19 @@ TEST_F(BitVectorTest, BigBitVectorIterator) {
   ++iter;
   EXPECT_EQ(iter, end);
 
+  auto riter = v.rbegin();
+  auto rend = v.rend();
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(499, *riter);
+  ++riter;
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(300, *riter);
+  ++riter;
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(27, *riter);
+  ++riter;
+  EXPECT_EQ(riter, rend);
+
   // Remove small entries, add another big one.
   v.Resize(1000, zone());
   v.Remove(27);
@@ -160,6 +190,16 @@ TEST_F(BitVectorTest, BigBitVectorIterator) {
   EXPECT_EQ(500, *iter);
   ++iter;
   EXPECT_EQ(iter, end);
+
+  riter = v.rbegin();
+  rend = v.rend();
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(500, *riter);
+  ++riter;
+  EXPECT_NE(riter, rend);
+  EXPECT_EQ(499, *riter);
+  ++riter;
+  EXPECT_EQ(riter, rend);
 }
 
 TEST_F(BitVectorTest, MoveConstructorInline) {
@@ -262,6 +302,52 @@ TEST_F(BitVectorTest, MoveAssignLarge) {
   EXPECT_TRUE(a.Contains(133));
   EXPECT_FALSE(a.Contains(22));
   EXPECT_FALSE(a.Contains(134));
+}
+
+TEST_F(BitVectorTest, BoundedAddRemoveAndCopyFrom) {
+  constexpr int kLength = 250;
+  for (int start : {0, 1, 7, 31, 32, 63, 64, 65, 127, 128, 190}) {
+    for (int count : {0, 1, 2, 5, 31, 32, 33, 63, 64, 65, 128, 135}) {
+      if (start + count > kLength) continue;
+
+      BitVector added(kLength, zone());
+      added.Add(start, count);
+      for (int i = 0; i < kLength; ++i) {
+        bool expected = (i >= start && i < start + count);
+        EXPECT_EQ(expected, added.Contains(i));
+      }
+
+      BitVector removed(kLength, zone());
+      removed.AddAll();
+      removed.Remove(start, count);
+      for (int i = 0; i < kLength; ++i) {
+        bool expected = (i < start || i >= start + count);
+        EXPECT_EQ(expected, removed.Contains(i));
+      }
+
+      BitVector src(kLength, zone());
+      for (int i = 0; i < kLength; ++i) {
+        if ((i * 7 + 3) % 5 < 2) src.Add(i);
+      }
+
+      BitVector dst_ones(kLength, zone());
+      dst_ones.AddAll();
+      dst_ones.CopyFrom(src, start, count);
+
+      BitVector dst_zeros(kLength, zone());
+      dst_zeros.CopyFrom(src, start, count);
+
+      for (int i = 0; i < kLength; ++i) {
+        if (i >= start && i < start + count) {
+          EXPECT_EQ(src.Contains(i), dst_ones.Contains(i));
+          EXPECT_EQ(src.Contains(i), dst_zeros.Contains(i));
+        } else {
+          EXPECT_TRUE(dst_ones.Contains(i));
+          EXPECT_FALSE(dst_zeros.Contains(i));
+        }
+      }
+    }
+  }
 }
 
 }  // namespace internal

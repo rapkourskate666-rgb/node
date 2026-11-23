@@ -14,31 +14,52 @@
 namespace v8 {
 namespace internal {
 
+class NormalPage;
+void ForceEvacuationCandidate(NormalPage* page);
+class SemiSpaceNewSpace;
+
 class HeapInternalsBase {
  protected:
-  void SimulateIncrementalMarking(Heap* heap, bool force_completion);
+  static size_t OldGenerationSpaceAvailable(Heap* heap);
+  void SimulateIncrementalMarking(Heap* heap, bool force_completion = true);
   void SimulateFullSpace(
-      v8::internal::NewSpace* space,
-      std::vector<Handle<FixedArray>>* out_handles = nullptr);
-  void SimulateFullSpace(v8::internal::PagedSpace* space);
-  void FillCurrentPage(v8::internal::NewSpace* space,
+      NewSpace* space, std::vector<Handle<FixedArray>>* out_handles = nullptr);
+  static void SimulateFullSpace(PagedSpace* space);
+  void FillCurrentPage(NewSpace* space,
                        std::vector<Handle<FixedArray>>* out_handles = nullptr);
+  void FillCurrentPageButNBytes(
+      SemiSpaceNewSpace* space, int extra_bytes,
+      std::vector<Handle<FixedArray>>* out_handles = nullptr);
+  static AllocationResult AllocateRawForTest(
+      Heap* heap, int size_in_bytes, AllocationType type,
+      AllocationOrigin origin = AllocationOrigin::kRuntime);
+  AllocationResult AllocateByteArrayForTest(Heap* heap, uint32_t length,
+                                            AllocationType allocation_type);
+  AllocationResult AllocateFixedArrayForTest(Heap* heap, uint32_t length,
+                                             AllocationType allocation);
+  AllocationResult AllocateMapForTest(Isolate* isolate);
+  void SetForceOOM(Heap* heap, bool value);
+  void SetDelaySweeperTasksForTesting(Heap* heap, bool value);
+  int MemoryReducerStateId(Heap* heap);
+  std::vector<Handle<FixedArray>> CreatePadding(
+      Heap* heap, int padding_size, AllocationType allocation,
+      int object_size = kMaxRegularHeapObjectSize);
 };
 
-inline void InvokeMajorGC(i::Isolate* isolate) {
+inline void InvokeMajorGC(Isolate* isolate) {
   isolate->heap()->CollectGarbage(OLD_SPACE, GarbageCollectionReason::kTesting);
 }
 
-inline void InvokeMajorGC(i::Isolate* isolate, GCFlag gc_flag) {
+inline void InvokeMajorGC(Isolate* isolate, GCFlag gc_flag) {
   isolate->heap()->CollectAllGarbage(gc_flag,
                                      GarbageCollectionReason::kTesting);
 }
 
-inline void InvokeMinorGC(i::Isolate* isolate) {
+inline void InvokeMinorGC(Isolate* isolate) {
   isolate->heap()->CollectGarbage(NEW_SPACE, GarbageCollectionReason::kTesting);
 }
 
-inline void InvokeAtomicMajorGC(i::Isolate* isolate) {
+inline void InvokeAtomicMajorGC(Isolate* isolate) {
   Heap* heap = isolate->heap();
   heap->PreciseCollectAllGarbage(GCFlag::kNoFlags,
                                  GarbageCollectionReason::kTesting);
@@ -49,7 +70,7 @@ inline void InvokeAtomicMajorGC(i::Isolate* isolate) {
   }
 }
 
-inline void InvokeAtomicMinorGC(i::Isolate* isolate) {
+inline void InvokeAtomicMinorGC(Isolate* isolate) {
   InvokeMinorGC(isolate);
   Heap* heap = isolate->heap();
   if (heap->sweeping_in_progress()) {
@@ -59,7 +80,7 @@ inline void InvokeAtomicMinorGC(i::Isolate* isolate) {
   }
 }
 
-inline void InvokeMemoryReducingMajorGCs(i::Isolate* isolate) {
+inline void InvokeMemoryReducingMajorGCs(Isolate* isolate) {
   isolate->heap()->CollectAllAvailableGarbage(
       GarbageCollectionReason::kTesting);
 }
@@ -71,20 +92,24 @@ class WithHeapInternals : public TMixin, HeapInternalsBase {
   WithHeapInternals(const WithHeapInternals&) = delete;
   WithHeapInternals& operator=(const WithHeapInternals&) = delete;
 
-  void InvokeMajorGC() { i::InvokeMajorGC(this->i_isolate()); }
+  void InvokeMajorGC() { internal::InvokeMajorGC(this->i_isolate()); }
 
   void InvokeMajorGC(GCFlag gc_flag) {
-    i::InvokeMajorGC(this->i_isolate(), gc_flag);
+    internal::InvokeMajorGC(this->i_isolate(), gc_flag);
   }
 
-  void InvokeMinorGC() { i::InvokeMinorGC(this->i_isolate()); }
+  void InvokeMinorGC() { internal::InvokeMinorGC(this->i_isolate()); }
 
-  void InvokeAtomicMajorGC() { i::InvokeAtomicMajorGC(this->i_isolate()); }
+  void InvokeAtomicMajorGC() {
+    internal::InvokeAtomicMajorGC(this->i_isolate());
+  }
 
-  void InvokeAtomicMinorGC() { i::InvokeAtomicMinorGC(this->i_isolate()); }
+  void InvokeAtomicMinorGC() {
+    internal::InvokeAtomicMinorGC(this->i_isolate());
+  }
 
   void InvokeMemoryReducingMajorGCs() {
-    i::InvokeMemoryReducingMajorGCs(this->i_isolate());
+    internal::InvokeMemoryReducingMajorGCs(this->i_isolate());
   }
 
   void PreciseCollectAllGarbage() {
@@ -94,18 +119,65 @@ class WithHeapInternals : public TMixin, HeapInternalsBase {
 
   Heap* heap() const { return this->i_isolate()->heap(); }
 
+  using HeapInternalsBase::OldGenerationSpaceAvailable;
+  size_t OldGenerationSpaceAvailable() {
+    return HeapInternalsBase::OldGenerationSpaceAvailable(heap());
+  }
+
+  using HeapInternalsBase::SimulateIncrementalMarking;
   void SimulateIncrementalMarking(bool force_completion = true) {
     return HeapInternalsBase::SimulateIncrementalMarking(heap(),
                                                          force_completion);
   }
 
   void SimulateFullSpace(
-      v8::internal::NewSpace* space,
-      std::vector<Handle<FixedArray>>* out_handles = nullptr) {
+      NewSpace* space, std::vector<Handle<FixedArray>>* out_handles = nullptr) {
     return HeapInternalsBase::SimulateFullSpace(space, out_handles);
   }
-  void SimulateFullSpace(v8::internal::PagedSpace* space) {
+  static void SimulateFullSpace(PagedSpace* space) {
     return HeapInternalsBase::SimulateFullSpace(space);
+  }
+
+  void FillCurrentPage(NewSpace* space,
+                       std::vector<Handle<FixedArray>>* out_handles = nullptr) {
+    return HeapInternalsBase::FillCurrentPage(space, out_handles);
+  }
+
+  void FillCurrentPageButNBytes(
+      SemiSpaceNewSpace* space, int extra_bytes,
+      std::vector<Handle<FixedArray>>* out_handles = nullptr) {
+    return HeapInternalsBase::FillCurrentPageButNBytes(space, extra_bytes,
+                                                       out_handles);
+  }
+
+  using HeapInternalsBase::AllocateRawForTest;
+  AllocationResult AllocateRawForTest(
+      int size_in_bytes, AllocationType type,
+      AllocationOrigin origin = AllocationOrigin::kRuntime) {
+    return HeapInternalsBase::AllocateRawForTest(heap(), size_in_bytes, type,
+                                                 origin);
+  }
+  AllocationResult AllocateByteArrayForTest(Heap* heap, uint32_t length,
+                                            AllocationType allocation_type) {
+    return HeapInternalsBase::AllocateByteArrayForTest(heap, length,
+                                                       allocation_type);
+  }
+  AllocationResult AllocateFixedArrayForTest(Heap* heap, uint32_t length,
+                                             AllocationType allocation) {
+    return HeapInternalsBase::AllocateFixedArrayForTest(heap, length,
+                                                        allocation);
+  }
+  AllocationResult AllocateMapForTest(Isolate* isolate) {
+    return HeapInternalsBase::AllocateMapForTest(isolate);
+  }
+  void SetForceOOM(bool value) {
+    HeapInternalsBase::SetForceOOM(heap(), value);
+  }
+  void SetDelaySweeperTasksForTesting(bool value) {
+    HeapInternalsBase::SetDelaySweeperTasksForTesting(heap(), value);
+  }
+  int MemoryReducerStateId() {
+    return HeapInternalsBase::MemoryReducerStateId(heap());
   }
 
   void GrowNewSpaceToMaximumCapacity() {
@@ -130,8 +202,32 @@ class WithHeapInternals : public TMixin, HeapInternalsBase {
     }
   }
 
+  void ForceEvacuationCandidate(NormalPage* page) {
+    internal::ForceEvacuationCandidate(page);
+  }
+
   void EmptyNewSpaceUsingGC() { InvokeMajorGC(); }
+
+  int NumberOfGlobalObjects() {
+    int count = 0;
+    HeapObjectIterator iterator(heap());
+    for (Tagged<HeapObject> obj = iterator.Next(); !obj.is_null();
+         obj = iterator.Next()) {
+      if (IsJSGlobalObject(obj)) count++;
+    }
+    return count;
+  }
+
+  std::vector<Handle<FixedArray>> CreatePadding(
+      int padding_size, AllocationType allocation,
+      int object_size = kMaxRegularHeapObjectSize) {
+    return HeapInternalsBase::CreatePadding(heap(), padding_size, allocation,
+                                            object_size);
+  }
 };
+
+class TestWithPlatformAndHeapInternals : public TestWithPlatform,
+                                         protected HeapInternalsBase {};
 
 template <typename TMixin>
 class WithCppHeap : public TMixin {
@@ -194,6 +290,18 @@ class V8_NODISCARD ManualGCScope final {
   const bool flag_cppheap_concurrent_marking_;
 };
 
+class V8_NODISCARD ManualEvacuationCandidatesSelectionScope final {
+ public:
+  explicit ManualEvacuationCandidatesSelectionScope(ManualGCScope&) {
+    DCHECK(!v8_flags.manual_evacuation_candidates_selection);
+    v8_flags.manual_evacuation_candidates_selection = true;
+  }
+  ~ManualEvacuationCandidatesSelectionScope() {
+    DCHECK(v8_flags.manual_evacuation_candidates_selection);
+    v8_flags.manual_evacuation_candidates_selection = false;
+  }
+};
+
 // DisableHandleChecksForMockingScope disables the checks for v8::Local and
 // internal::DirectHandle, so that such handles can be allocated off-stack.
 // This is required for mocking functions that take such handles as parameters
@@ -214,6 +322,15 @@ class V8_NODISCARD DisableHandleChecksForMockingScope final {
   DisableHandleChecksForMockingScope() {}
 };
 #endif
+
+int FixedArrayLenFromSize(int size);
+
+void AbandonCurrentlyFreeMemory(PagedSpace* space);
+
+Tagged<HeapObject> AllocateAligned(Heap* heap, MainAllocator* allocator,
+                                   int size, AllocationAlignment alignment);
+
+Address AlignOldSpace(Heap* heap, AllocationAlignment alignment, int offset);
 
 }  // namespace internal
 }  // namespace v8

@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#include <array>
 #include <cmath>
 
 #include "src/base/bits.h"
@@ -202,10 +203,10 @@ void S390Debugger::Debug() {
       disasm::NameConverter converter;
       disasm::Disassembler dasm(converter);
       // use a reasonably large buffer
-      v8::base::EmbeddedVector<char, 256> buffer;
+      std::array<char, 256> buffer;
       dasm.InstructionDecode(buffer,
                              reinterpret_cast<uint8_t*>(sim_->get_pc()));
-      PrintF("  0x%08" V8PRIxPTR "  %s\n", sim_->get_pc(), buffer.begin());
+      PrintF("  0x%08" V8PRIxPTR "  %s\n", sim_->get_pc(), buffer.data());
       last_pc = sim_->get_pc();
     }
     char* line = ReadLine("sim> ");
@@ -242,7 +243,7 @@ void S390Debugger::Debug() {
           disasm::NameConverter converter;
           disasm::Disassembler dasm(converter);
           // use a reasonably large buffer
-          v8::base::EmbeddedVector<char, 256> buffer;
+          std::array<char, 256> buffer;
 
           if (GetValue(arg1, &value)) {
             // Interpret a numeric argument as the number of instructions to
@@ -251,7 +252,7 @@ void S390Debugger::Debug() {
               dasm.InstructionDecode(
                   buffer, reinterpret_cast<uint8_t*>(sim_->get_pc()));
               PrintF("  0x%08" V8PRIxPTR "  %s\n", sim_->get_pc(),
-                     buffer.begin());
+                     buffer.data());
               sim_->ExecuteInstruction(
                   reinterpret_cast<Instruction*>(sim_->get_pc()));
             }
@@ -261,14 +262,14 @@ void S390Debugger::Debug() {
             while (!sim_->has_bad_pc()) {
               dasm.InstructionDecode(
                   buffer, reinterpret_cast<uint8_t*>(sim_->get_pc()));
-              char* mnemonicStart = buffer.begin();
+              char* mnemonicStart = buffer.data();
               while (*mnemonicStart != 0 && *mnemonicStart != ' ')
                 mnemonicStart++;
               SScanF(mnemonicStart, "%s", mnemonic);
               if (!strcmp(arg1, mnemonic)) break;
 
               PrintF("  0x%08" V8PRIxPTR "  %s\n", sim_->get_pc(),
-                     buffer.begin());
+                     buffer.data());
               sim_->ExecuteInstruction(
                   reinterpret_cast<Instruction*>(sim_->get_pc()));
             }
@@ -443,7 +444,7 @@ void S390Debugger::Debug() {
         disasm::NameConverter converter;
         disasm::Disassembler dasm(converter);
         // use a reasonably large buffer
-        v8::base::EmbeddedVector<char, 256> buffer;
+        std::array<char, 256> buffer;
 
         uint8_t* prev = nullptr;
         uint8_t* cur = nullptr;
@@ -483,7 +484,7 @@ void S390Debugger::Debug() {
           prev = cur;
           cur += dasm.InstructionDecode(buffer, cur);
           PrintF("  0x%08" V8PRIxPTR "  %s\n", reinterpret_cast<intptr_t>(prev),
-                 buffer.begin());
+                 buffer.data());
           numInstructions--;
         }
       } else if (strcmp(cmd, "gdb") == 0) {
@@ -2501,10 +2502,10 @@ void Simulator::ExecuteInstruction(Instruction* instr, bool auto_incr_pc) {
     disasm::NameConverter converter;
     disasm::Disassembler dasm(converter);
     // use a reasonably large buffer
-    v8::base::EmbeddedVector<char, 256> buffer;
+    std::array<char, 256> buffer;
     dasm.InstructionDecode(buffer, reinterpret_cast<uint8_t*>(instr));
     PrintF("%05" PRId64 "  %08" V8PRIxPTR "  %s\n", icount_,
-           reinterpret_cast<intptr_t>(instr), buffer.begin());
+           reinterpret_cast<intptr_t>(instr), buffer.data());
 
     // Flush stdout to prevent incomplete file output during abnormal exits
     // This is caused by the output being buffered before being written to file
@@ -4233,7 +4234,6 @@ EVALUATE(VTM) {
 #define VECTOR_FP_BINARY_OP(op)                                    \
   switch (m4) {                                                    \
     case 2:                                                        \
-      DCHECK(CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_1)); \
       if (m5 == 8) {                                               \
         float src1 = get_simd_register_by_lane<float>(r2, 0);      \
         float src2 = get_simd_register_by_lane<float>(r3, 0);      \
@@ -4307,7 +4307,6 @@ EVALUATE(VFD) {
 #define VECTOR_FP_MULTIPLY_QFMS(op, sign)                               \
   switch (m6) {                                                         \
     case 2:                                                             \
-      DCHECK(CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_1));      \
       if (m5 == 8) {                                                    \
         VECTOR_FP_MULTIPLY_QFMS_OPERATION(float, op, sign, true, fmaf)  \
       } else {                                                          \
@@ -4445,7 +4444,6 @@ static void FPMinMaxForEachLane(Simulator* sim, Operation Op, int dst, int lhs,
     FPMinMaxForEachLane<type>(this, op<type>, r1, r2, r3, m5, m6); \
     break;
 EVALUATE(VFMIN) {
-  DCHECK(CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_1));
   DCHECK_OPCODE(VFMIN);
   DECODE_VRR_C_INSTRUCTION(r1, r2, r3, m6, m5, m4);
   switch (m4) {
@@ -4458,7 +4456,6 @@ EVALUATE(VFMIN) {
 }
 
 EVALUATE(VFMAX) {
-  DCHECK(CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_1));
   DCHECK_OPCODE(VFMAX);
   DECODE_VRR_C_INSTRUCTION(r1, r2, r3, m6, m5, m4);
   switch (m4) {
@@ -4506,7 +4503,6 @@ void VectorFPCompare(Simulator* sim, int dst, int src1, int src2, int m6,
 #define VECTOR_FP_COMPARE(op)                                               \
   switch (m4) {                                                             \
     case 2:                                                                 \
-      DCHECK(CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_1));          \
       if (m5 == 8) {                                                        \
         float src1 = get_simd_register_by_lane<float>(r2, 0);               \
         float src2 = get_simd_register_by_lane<float>(r3, 0);               \
@@ -4630,7 +4626,6 @@ EVALUATE(VFI) {
 
   switch (m3) {
     case 2:
-      DCHECK(CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_1));
       for (int i = 0; i < 4; i++) {
         float value = get_simd_register_by_lane<float>(r2, i);
         float n = std::isnan(value) ? NAN : ComputeRounding<float>(value, m5);

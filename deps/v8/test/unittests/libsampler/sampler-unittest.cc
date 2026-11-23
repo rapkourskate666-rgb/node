@@ -64,7 +64,7 @@ class TestApiCallbacks {
                      const v8::PropertyCallbackInfo<v8::Value>& info) {}
 
   static void Setter(v8::Local<v8::Name> name, v8::Local<v8::Value> value,
-                     const v8::PropertyCallbackInfo<void>& info) {}
+                     const v8::PropertyCallbackInfo<v8::Boolean>& info) {}
 };
 
 static void RunSampler(v8::Local<v8::Context> env,
@@ -217,6 +217,31 @@ TEST_F(SamplerTest, AtomicGuard_GetBlockingSuccess) {
   }
   AtomicGuard guard(&atomic);
   CHECK(guard.is_success());
+}
+
+TEST_F(SamplerTest, StopSamplerWhileSignalPendingDoesNotCrash) {
+  class SampleAndStopThread : public base::Thread {
+   public:
+    explicit SampleAndStopThread(Sampler* sampler)
+        : Thread(base::Thread::Options("SampleAndStopThread")),
+          sampler_(sampler) {}
+
+    void Run() override {
+      sampler_->DoSample();
+      sampler_->Stop();
+    }
+
+   private:
+    Sampler* sampler_;
+  };
+
+  for (int i = 0; i < 100; ++i) {
+    CountingSampler sampler(isolate());
+    sampler.Start();
+    SampleAndStopThread thread(&sampler);
+    CHECK(thread.Start());
+    thread.Join();
+  }
 }
 
 #endif  // USE_SIGNALS

@@ -8,6 +8,7 @@
 #include "include/v8-local-handle.h"
 #include "src/base/bit-field.h"
 #include "src/common/globals.h"
+#include "src/objects/internal-index.h"
 #include "src/objects/property-details.h"
 #include "src/utils/allocation.h"
 
@@ -30,12 +31,6 @@ class JavaScriptFrame;
     kHasSideEffectToReceiver)                                                  \
   V(_, bound_function_name, BoundFunctionName, kHasNoSideEffect,               \
     kHasSideEffectToReceiver)                                                  \
-  IF_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS(                                  \
-      V, _, function_arguments, FunctionArguments, kHasNoSideEffect,           \
-      kHasSideEffectToReceiver)                                                \
-  IF_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS(V, _, function_caller,            \
-                                             FunctionCaller, kHasNoSideEffect, \
-                                             kHasSideEffectToReceiver)         \
   V(_, function_name, FunctionName, kHasNoSideEffect,                          \
     kHasSideEffectToReceiver)                                                  \
   V(_, function_length, FunctionLength, kHasNoSideEffect,                      \
@@ -121,8 +116,7 @@ class Accessors : public AllStatic {
 
   // Used to implement legacy .arguments and .caller.
   //
-  // TODO(syg): Move these out of accessors once
-  // V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS is removed.
+  // TODO(https://crbug.com/414525205): Move these out of accessors.
   static DirectHandle<Object> GetLegacyFunctionArguments(
       Isolate* isolate, DirectHandle<JSFunction> function);
   static DirectHandle<Object> GetLegacyFunctionCaller(
@@ -130,9 +124,9 @@ class Accessors : public AllStatic {
 
   // Returns true for properties that are accessors to object fields.
   // If true, the matching FieldIndex is returned through |field_index|.
-  static bool IsJSObjectFieldAccessor(Isolate* isolate, DirectHandle<Map> map,
-                                      DirectHandle<Name> name,
-                                      FieldIndex* field_index);
+  static bool IsJSObjectFieldAccessor(
+      Isolate* isolate, DirectHandle<Map> map, DirectHandle<Name> name,
+      FieldIndex* field_index, InternalIndex* fake_descriptor_index = nullptr);
 
   static MaybeDirectHandle<Object> ReplaceAccessorWithDataProperty(
       Isolate* isolate, DirectHandle<JSObject> holder, DirectHandle<Name> name,

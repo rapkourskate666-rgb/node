@@ -16,7 +16,7 @@ console.context() methods:
     [3] : countReset
     [4] : debug
     [5] : dir
-    [6] : dirXml
+    [6] : dirxml
     [7] : error
     [8] : group
     [9] : groupCollapsed
@@ -92,5 +92,18 @@ Running test: testConsoleTimeInDifferentConsoleContexts
     [0] : {
         type : string
         value : foo: 2 ms
+    }
+]
+
+Running test: testConsoleAssertInConsoleContext
+assert-context#13
+[
+    [0] : {
+        type : string
+        value : failed %s
+    }
+    [1] : {
+        type : string
+        value : assertion
     }
 ]

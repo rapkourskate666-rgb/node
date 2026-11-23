@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "cppgc/common.h"
+#include "cppgc/macros.h"
 #include "v8-array-buffer.h"       // NOLINT(build/include_directory)
 #include "v8-callbacks.h"          // NOLINT(build/include_directory)
 #include "v8-data.h"               // NOLINT(build/include_directory)
@@ -198,6 +199,13 @@ enum class ContextDependants {
 using StackState = cppgc::EmbedderStackState;
 
 /**
+ * A stack-allocated scope that sets the current thread's stack start address
+ * for conservative stack scanning and restores the previous stack start on
+ * destruction.
+ */
+using StackStartScope = cppgc::StackStartScope;
+
+/**
  * The set of V8 isolates in a process is partitioned into groups. Each group
  * has its own sandbox (if V8 was configured with support for the sandbox) and
  * pointer-compression cage (if configured with pointer compression).
@@ -266,6 +274,12 @@ class V8_EXPORT IsolateGroup {
    */
   bool SandboxContains(void* pointer) const;
   VirtualAddressSpace* GetSandboxAddressSpace();
+
+  /**
+   * Sets the allocator used for allocations inside this group's sandbox.
+   * This must be called before the first Isolate is created in the group.
+   */
+  void SetInSandboxAllocator(std::shared_ptr<Allocator> allocator);
 #else
   V8_INLINE bool SandboxContains(void* pointer) const { return true; }
 #endif
@@ -438,6 +452,8 @@ class V8_EXPORT Isolate {
    * automatically executed otherwise.
    */
   class V8_EXPORT V8_NODISCARD SuppressMicrotaskExecutionScope {
+    CPPGC_STACK_ALLOCATED();
+
    public:
     explicit SuppressMicrotaskExecutionScope(
         Isolate* isolate, MicrotaskQueue* microtask_queue = nullptr);
@@ -659,7 +675,15 @@ class V8_EXPORT Isolate {
     kWithStatement = 180,
     kHtmlWrapperMethods = 181,
     kWasmCustomDescriptors = 182,
-    kWasmResizableBuffers = 183,
+    kOBSOLETE_WasmResizableBuffers = 183,
+    kInvalidatedArrayBufferMutableProtector = 184,
+    kHoleyArrayReadthrough = 185,
+    kWasmGCAllocation = 186,
+    kModuleNamespaceMissingDefaultWithStarExport = 187,
+    kRegExpMatcherFlagsMismatch = 188,
+    kRegExpCustomSpecies = 189,
+    kWasmWideArithmetic = 190,
+    kBigInt = 191,
 
     // If you add new values here, you'll also need to update Chromium's:
     // web_feature.mojom, use_counter_callback.cc, and enums.xml. V8 changes to
@@ -825,6 +849,12 @@ class V8_EXPORT Isolate {
       IsJSApiWrapperNativeErrorCallback callback);
 
   /**
+   * Set the callback invoked when an ArrayBuffer wrapping an embedder object
+   * is detached.
+   */
+  void SetArrayBufferDetachCallback(ArrayBufferDetachCallback callback);
+
+  /**
    * This specifies the callback called when the stack property of Error
    * is accessed.
    */
@@ -966,18 +996,19 @@ class V8_EXPORT Isolate {
   V8_INLINE MaybeLocal<T> GetDataFromSnapshotOnce(size_t index);
 
   /**
-   * Returns the value that was set or restored by
-   * SetContinuationPreservedEmbedderData(), if any.
+   * Returns the value set by `SetContinuationPreservedEmbedderData()` or
+   * restored during microtask execution for the currently running continuation,
+   * if any. Returns undefiend if no continuation preserved embedder data was
+   * set.
    */
-  V8_DEPRECATED("Use GetContinuationPreservedEmbedderDataV2 instead")
-  Local<Value> GetContinuationPreservedEmbedderData();
+  Local<Data> GetContinuationPreservedEmbedderData();
 
   /**
-   * Sets a value that will be stored on continuations and reset while the
-   * continuation runs.
+   * Sets a value that will be stored on continuations and restored while the
+   * continuation runs. If `data` is empty, the continuation preserved embedder
+   * data is set to undefined.
    */
-  V8_DEPRECATED("Use SetContinuationPreservedEmbedderDataV2 instead")
-  void SetContinuationPreservedEmbedderData(Local<Value> data);
+  void SetContinuationPreservedEmbedderData(Local<Data> data);
 
   /**
    * Returns the value set by `SetContinuationPreservedEmbedderDataV2()` or
@@ -985,6 +1016,7 @@ class V8_EXPORT Isolate {
    * if any. Returns undefiend if no continuation preserved embedder data was
    * set.
    */
+  V8_DEPRECATE_SOON("Use GetContinuationPreservedEmbedderData instead")
   Local<Data> GetContinuationPreservedEmbedderDataV2();
 
   /**
@@ -992,6 +1024,7 @@ class V8_EXPORT Isolate {
    * continuation runs. If `data` is empty, the continuation preserved embedder
    * data is set to undefined.
    */
+  V8_DEPRECATE_SOON("Use SetContinuationPreservedEmbedderData instead")
   void SetContinuationPreservedEmbedderDataV2(Local<Data> data);
 
   /**
@@ -1246,8 +1279,7 @@ class V8_EXPORT Isolate {
   void SetReleaseCppHeapCallbackForTesting(ReleaseCppHeapCallback callback);
 
   /**
-   * \returns the C++ heap managed by V8. Only available if such a heap has been
-   *   attached using `AttachCppHeap()`.
+   * \returns the C++ heap managed by V8.
    */
   CppHeap* GetCppHeap() const;
 
@@ -1402,11 +1434,13 @@ class V8_EXPORT Isolate {
   /**
    * Enqueues the callback to the default MicrotaskQueue
    */
+  V8_DEPRECATE_SOON("Use *MicrotaskQueue::EnqueueMicrotask* instead")
   void EnqueueMicrotask(Local<Function> microtask);
 
   /**
-   * Enqueues the callback to the default MicrotaskQueue
+   * Enqueues the callback to the default MicrotaskQueue.
    */
+  V8_DEPRECATE_SOON("Use *MicrotaskQueue::EnqueueMicrotask* instead")
   void EnqueueMicrotask(MicrotaskCallback callback, void* data = nullptr);
 
   /**
@@ -1502,7 +1536,7 @@ class V8_EXPORT Isolate {
    * The optional parameter |dependant_context| specifies whether the disposed
    * context was depending on state from other contexts or not.
    */
-  V8_DEPRECATE_SOON("Use version that passes ContextDependants.")
+  V8_DEPRECATED("Use version that passes ContextDependants.")
   int ContextDisposedNotification(bool dependant_context = true);
 
   /**
@@ -1713,6 +1747,14 @@ class V8_EXPORT Isolate {
       ModifyCodeGenerationFromStringsCallback2 callback);
 
   /**
+   * Set the callback to invoke when a dynamic script (e.g. eval or Function) is
+   * compiled from the embedder without a calling user JavaScript script on the
+   * stack.
+   */
+  void SetDynamicScriptCompiledFromEmbedderCallback(
+      DynamicScriptCompiledFromEmbedderCallback callback);
+
+  /**
    * Set the callback to invoke to check if wasm code generation should
    * be allowed.
    */
@@ -1723,7 +1765,11 @@ class V8_EXPORT Isolate {
    * Embedder over{ride|load} injection points for wasm APIs. The expectation
    * is that the embedder sets them at most once.
    */
+  void SetWasmModuleCallback(WasmModuleCallback callback);
+  V8_DEPRECATE_SOON("Use the WasmModuleCallback overload instead")
   void SetWasmModuleCallback(ExtensionCallback callback);
+  void SetWasmInstanceCallback(WasmInstanceCallback callback);
+  V8_DEPRECATE_SOON("Use the WasmInstanceCallback overload instead")
   void SetWasmInstanceCallback(ExtensionCallback callback);
 
   void SetWasmStreamingCallback(WasmStreamingCallback callback);
@@ -1892,7 +1938,6 @@ class V8_EXPORT Isolate {
   internal::ValueHelper::InternalRepresentationType GetDataFromSnapshotOnce(
       size_t index);
   int64_t AdjustAmountOfExternalAllocatedMemoryImpl(int64_t change_in_bytes);
-  void HandleExternalMemoryInterrupt();
 };
 
 void Isolate::SetData(uint32_t slot, void* data) {

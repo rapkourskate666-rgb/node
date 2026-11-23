@@ -221,7 +221,8 @@ class BaselineAssembler {
   };
   inline void LdaContextSlotNoCell(
       Register context, uint32_t index, uint32_t depth,
-      CompressionMode compression_mode = CompressionMode::kDefault);
+      CompressionMode compression_mode = CompressionMode::kDefault,
+      Register output = kInterpreterAccumulatorRegister);
   inline void StaContextSlotNoCell(Register context, Register value,
                                    uint32_t index, uint32_t depth);
   inline void LdaModuleVariable(Register context, int cell_index,
@@ -234,6 +235,36 @@ class BaselineAssembler {
   inline void SmiUntag(Register output, Register value);
 
   inline void Word32And(Register output, Register lhs, int rhs);
+
+#ifdef V8_ENABLE_SPARKPLUG_PLUS
+  // Jumps to |target| unless both |lhs| and |rhs| are Smis, using a single
+  // merged tag test.
+  inline void JumpIfNotBothSmi(Register lhs, Register rhs, Label* target,
+                               Label::Distance distance = Label::kFar);
+
+  // Compares two tagged values without asserting that they are Smis.
+  inline void JumpIfTagged(Condition cc, Register lhs, Register rhs,
+                           Label* target,
+                           Label::Distance distance = Label::kFar);
+
+  // value := value + Smi(constant). Jumps to |overflow| when the result is not
+  // a valid Smi.
+  inline void SmiAddConstantAndJumpIfOverflow(
+      Register value, int constant, Label* overflow,
+      Label::Distance distance = Label::kFar);
+
+  // Computes a tagged Smi Add/Sub into |output|. |output| may alias |lhs|.
+  // Jumps to |overflow| without modifying |lhs| when the result is not a Smi.
+  inline void SmiAddSubAndJumpIfOverflow(
+      Register output, Register lhs, Tagged<Smi> rhs, Operation operation,
+      Label* overflow, Label::Distance distance = Label::kFar);
+
+  // Computes BitwiseAnd/BitwiseOr/BitwiseXor/ShiftRight in place.
+  // TODO(yuheng): Add support for ShiftLeft and ShiftRightLogical with overflow
+  // checks. They are currently omitted because their results can exceed the Smi
+  // range.
+  inline void SmiBitwiseOp(Register lhs, Tagged<Smi> rhs, Operation operation);
+#endif  // V8_ENABLE_SPARKPLUG_PLUS
 
   inline void Switch(Register reg, int case_value_base, Label** labels,
                      int num_labels);

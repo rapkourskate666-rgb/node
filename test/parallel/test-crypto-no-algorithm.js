@@ -4,10 +4,10 @@ const common = require('../common');
 if (!common.hasCrypto)
   common.skip('missing crypto');
 
-const { hasOpenSSL3 } = require('../common/crypto');
+const { isBoringSSL } = require('../common/crypto');
 
-if (!hasOpenSSL3)
-  common.skip('this test requires OpenSSL 3.x');
+if (isBoringSSL)
+  common.skip('this test requires OpenSSL');
 
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -30,7 +30,7 @@ if (isMainThread) {
   const derivations = [
     ['HKDF', () => crypto.hkdfSync('sha256', Buffer.alloc(32), Buffer.alloc(8),
                                    Buffer.alloc(0), 32)],
-    ['PBKDF2', () => crypto.pbkdf2Sync('secret', Buffer.alloc(16), 1000, 32,
+    ['PBKDF2', () => crypto.pbkdf2Sync('passphrase', Buffer.alloc(16), 1000, 32,
                                        'sha256')],
   ];
   for (const { 0: name, 1: derive } of derivations) {

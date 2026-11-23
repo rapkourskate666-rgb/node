@@ -4,6 +4,7 @@
 
 #include "src/snapshot/shared-heap-deserializer.h"
 
+#include "src/base/platform/elapsed-timer.h"
 #include "src/heap/heap-inl.h"
 
 namespace v8 {
@@ -20,17 +21,29 @@ void SharedHeapDeserializer::DeserializeIntoIsolate() {
     return;
   }
 
+  base::ElapsedTimer timer;
+  if (V8_UNLIKELY(v8_flags.profile_deserialization)) timer.Start();
   DCHECK(isolate()->shared_heap_object_cache()->empty());
   HandleScope scope(isolate());
 
   IterateSharedHeapObjectCache(isolate(), this);
   DeserializeStringTable();
   DeserializeDeferredObjects();
+  PostProcessExposedTrustedObjects();
 
   if (should_rehash()) {
     // The hash seed has already been initialized in ReadOnlyDeserializer, thus
     // there is no need to call `HashSeed::InitializeRoots(isolate());`.
     Rehash();
+  }
+
+  if (V8_UNLIKELY(v8_flags.profile_deserialization)) {
+    // ATTENTION: The Memory.json benchmark greps for this exact output. Do not
+    // change it without also updating Memory.json.
+    const size_t bytes = source()->length();
+    const double ms = timer.Elapsed().InMillisecondsF();
+    PrintF("[Deserializing shared heap (%zu bytes) took %0.3f ms]\n", bytes,
+           ms);
   }
 }
 
@@ -43,10 +56,10 @@ void SharedHeapDeserializer::DeserializeStringTable() {
   const int length = source()->GetUint30();
 
   // .. and the contents.
-  DirectHandleVector<String> strings(isolate());
+  DirectHandleVector<InternalizedString> strings(isolate());
   strings.reserve(length);
   for (int i = 0; i < length; ++i) {
-    strings.emplace_back(Cast<String>(ReadObject()));
+    strings.emplace_back(Cast<InternalizedString>(ReadObject()));
   }
 
   StringTable* t = isolate()->string_table();

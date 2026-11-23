@@ -12,7 +12,9 @@ const fixtures = require('../common/fixtures');
 const tmpdir = require('../common/tmpdir');
 const envSuffix = common.isWindows ? '-windows' : '';
 
-describe('node --run [command]', () => {
+tmpdir.refresh();
+
+describe('node --run [command]', { concurrency: !process.env.TEST_PARALLEL }, () => {
   it('returns error on non-existent file', async () => {
     const child = await common.spawnPromisified(
       process.execPath,
@@ -35,6 +37,28 @@ describe('node --run [command]', () => {
     );
     assert.match(child.stdout, /Error: no test specified/);
     assert.strictEqual(child.code, 1);
+  });
+
+  it('recognizes cmd.exe case-insensitively', {
+    skip: !common.isWindows,
+  }, async () => {
+    const env = { ...process.env };
+    const comspecKey = Object.keys(env)
+      .find((key) => key.toLowerCase() === 'comspec');
+    assert.notStrictEqual(comspecKey, undefined);
+    const comspec = env[comspecKey];
+    assert.match(comspec, /cmd\.exe$/i);
+    delete env[comspecKey];
+    env.ComSpec = comspec.replace(/cmd\.exe$/i, 'CMD.EXE');
+
+    const child = await common.spawnPromisified(
+      process.execPath,
+      [ '--run', 'pwd-windows'],
+      { cwd: fixtures.path('run-script'), env },
+    );
+    assert.strictEqual(child.stdout.trim(), fixtures.path('run-script'));
+    assert.strictEqual(child.stderr, '');
+    assert.strictEqual(child.code, 0);
   });
 
   it('adds node_modules/.bin to path', async () => {
@@ -261,6 +285,97 @@ describe('node --run [command]', () => {
       { cwd: fixtures.path('run-script/cannot-find-script') },
     );
     assert.match(child.stderr, /Can't find "scripts" field in/);
+    assert.strictEqual(child.stdout, '');
+    assert.strictEqual(child.code, 1);
+  });
+
+  it('escapes shell characters', async () => {
+    const child = await common.spawnPromisified(
+      process.execPath,
+      [ '--run', `positional-args${envSuffix}`, '--', '%PAYLOAD%', '$PAYLOAD'],
+      { cwd: fixtures.path('run-script'), env: { ...process.env, PAYLOAD: 'env value' } },
+    );
+    assert.strictEqual(
+      child.stdout,
+      common.isWindows ?
+        `Raw '"^%PAYLOAD^%" "$PAYLOAD"'\r\nArguments: '%PAYLOAD% $PAYLOAD'\r\nThe total number of arguments is: 2\r\n` :
+        "Arguments: '%PAYLOAD% $PAYLOAD'\nThe total number of arguments is: 2\n");
+    assert.strictEqual(child.stderr, '');
+    assert.strictEqual(child.code, 0);
+  });
+
+  it('lists available scripts when no command is given', async () => {
+    const child = await common.spawnPromisified(
+      process.execPath,
+      [ '--run'],
+      { cwd: fixtures.path('run-script') },
+    );
+    assert.match(child.stderr, /Available scripts are:/);
+    assert.match(child.stderr, /test: echo "Error: no test specified" && exit 1/);
+    assert.strictEqual(child.stdout, '');
+    assert.strictEqual(child.code, 9);
+  });
+
+  it('does not consume a following flag as the script name', async () => {
+    // `--run` followed by a flag lists scripts rather than treating the flag
+    // as a script name.
+    const child = await common.spawnPromisified(
+      process.execPath,
+      [ '--run', '--no-warnings'],
+      { cwd: fixtures.path('run-script') },
+    );
+    assert.match(child.stderr, /Available scripts are:/);
+    assert.strictEqual(child.code, 9);
+  });
+
+  it('errors when listing scripts without a package.json', async () => {
+    const child = await common.spawnPromisified(
+      process.execPath,
+      [ '--run'],
+      { cwd: __dirname },
+    );
+    assert.match(child.stderr, /Can't find package\.json/);
+    assert.strictEqual(child.stdout, '');
+    assert.strictEqual(child.code, 1);
+  });
+
+  it('skips node_modules directories that cannot be inspected', {
+    skip: common.isWindows || process.getuid() === 0,
+  }, async () => {
+    const projectDir = tmpdir.resolve('unreadable-node-modules');
+    const nodeModules = path.join(projectDir, 'node_modules');
+    fs.mkdirSync(nodeModules, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'package.json'), JSON.stringify({
+      scripts: { test: 'echo ok' },
+    }));
+    fs.chmodSync(nodeModules, 0o000);
+    try {
+      const child = await common.spawnPromisified(
+        process.execPath,
+        [ '--run', 'test'],
+        { cwd: projectDir },
+      );
+      assert.strictEqual(child.stdout.trim(), 'ok');
+      assert.strictEqual(child.stderr, '');
+      assert.strictEqual(child.code, 0);
+    } finally {
+      fs.chmodSync(nodeModules, 0o755);
+    }
+  });
+
+  it('returns error when the current working directory is removed', {
+    // Windows, SunOS, AIX and IBM i refuse to remove a directory that is in
+    // use as a cwd.
+    skip: common.isWindows || common.isSunOS || common.isAIX || common.isIBMi,
+  }, async () => {
+    const removedDir = tmpdir.resolve('removed-cwd');
+    fs.mkdirSync(removedDir);
+    const child = await common.spawnPromisified(
+      '/bin/sh',
+      [ '-c', 'rmdir "$PWD" && exec "$0" --run test', process.execPath],
+      { cwd: removedDir },
+    );
+    assert.match(child.stderr, /Can't determine the current working directory/);
     assert.strictEqual(child.stdout, '');
     assert.strictEqual(child.code, 1);
   });

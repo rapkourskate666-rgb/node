@@ -5,6 +5,7 @@
 #ifndef V8_COMPILER_TURBOSHAFT_REPRESENTATIONS_H_
 #define V8_COMPILER_TURBOSHAFT_REPRESENTATIONS_H_
 
+#include <compare>
 #include <cstdint>
 
 #include "include/v8-internal.h"
@@ -104,6 +105,7 @@ class MaybeRegisterRepresentation {
       case Enum::kNone:
         return false;
     }
+    UNREACHABLE();
   }
 
   constexpr bool IsFloat() const {
@@ -120,6 +122,7 @@ class MaybeRegisterRepresentation {
       case Enum::kNone:
         return false;
     }
+    UNREACHABLE();
   }
 
   constexpr bool IsTaggedOrCompressed() const {
@@ -136,6 +139,7 @@ class MaybeRegisterRepresentation {
       case Enum::kNone:
         return false;
     }
+    UNREACHABLE();
   }
 
   uint64_t MaxUnsignedValue() const {
@@ -153,6 +157,7 @@ class MaybeRegisterRepresentation {
       case Enum::kNone:
         UNREACHABLE();
     }
+    UNREACHABLE();
   }
 
   MachineRepresentation machine_representation() const {
@@ -176,6 +181,7 @@ class MaybeRegisterRepresentation {
       case None():
         UNREACHABLE();
     }
+    UNREACHABLE();
   }
 
   constexpr uint16_t bit_width() const {
@@ -199,6 +205,7 @@ class MaybeRegisterRepresentation {
       case None():
         UNREACHABLE();
     }
+    UNREACHABLE();
   }
 
  private:
@@ -300,7 +307,7 @@ class RegisterRepresentation : public MaybeRegisterRepresentation {
         // Turboshaft does not support map packing.
         DCHECK(!V8_MAP_PACKING_BOOL);
         return RegisterRepresentation::Tagged();
-      case MachineRepresentation::kIndirectPointer:
+      case MachineRepresentation::kTrustedPointer:
       case MachineRepresentation::kSandboxedPointer:
         // TODO(saelo/jkummerow): This is suspicious: after resolving the
         // indirection, we have a Tagged pointer.
@@ -309,6 +316,7 @@ class RegisterRepresentation : public MaybeRegisterRepresentation {
       case MachineRepresentation::kFloat16RawBits:
         UNREACHABLE();
     }
+    UNREACHABLE();
   }
 
   static constexpr RegisterRepresentation FromMachineType(MachineType type) {
@@ -354,6 +362,10 @@ V8_INLINE constexpr bool operator==(MaybeRegisterRepresentation a,
 V8_INLINE constexpr bool operator!=(MaybeRegisterRepresentation a,
                                     MaybeRegisterRepresentation b) {
   return a.value() != b.value();
+}
+V8_INLINE constexpr auto operator<=>(MaybeRegisterRepresentation a,
+                                     MaybeRegisterRepresentation b) {
+  return a.value() <=> b.value();
 }
 
 V8_INLINE size_t hash_value(MaybeRegisterRepresentation rep) {
@@ -467,6 +479,7 @@ class WordRepresentation : public RegisterRepresentation {
       case Word64():
         return std::numeric_limits<uint64_t>::max();
     }
+    UNREACHABLE();
   }
   constexpr int64_t MinSignedValue() const {
     switch (this->value()) {
@@ -475,6 +488,7 @@ class WordRepresentation : public RegisterRepresentation {
       case Word64():
         return std::numeric_limits<int64_t>::min();
     }
+    UNREACHABLE();
   }
   constexpr int64_t MaxSignedValue() const {
     switch (this->value()) {
@@ -483,6 +497,7 @@ class WordRepresentation : public RegisterRepresentation {
       case Word64():
         return std::numeric_limits<int64_t>::max();
     }
+    UNREACHABLE();
   }
 };
 
@@ -536,7 +551,7 @@ class MemoryRepresentation {
     kUncompressedTaggedPointer,
     kUncompressedTaggedSigned,
     kProtectedPointer,
-    kIndirectPointer,
+    kTrustedPointer,
     kSandboxedPointer,
     kSimd128,
     kSimd256
@@ -614,8 +629,8 @@ class MemoryRepresentation {
   static constexpr MemoryRepresentation ProtectedPointer() {
     return MemoryRepresentation(Enum::kProtectedPointer);
   }
-  static constexpr MemoryRepresentation IndirectPointer() {
-    return MemoryRepresentation(Enum::kIndirectPointer);
+  static constexpr MemoryRepresentation TrustedPointer() {
+    return MemoryRepresentation(Enum::kTrustedPointer);
   }
   static constexpr MemoryRepresentation SandboxedPointer() {
     return MemoryRepresentation(Enum::kSandboxedPointer);
@@ -649,16 +664,17 @@ class MemoryRepresentation {
       case UncompressedTaggedPointer():
       case UncompressedTaggedSigned():
       case ProtectedPointer():
-      case IndirectPointer():
+      case TrustedPointer():
       case SandboxedPointer():
       case Simd128():
       case Simd256():
         UNREACHABLE();
     }
+    UNREACHABLE();
   }
 
   // This predicate is used in particular to decide which load/store ops
-  // have to deal with pointer compression. Indirect/sandboxed pointers,
+  // have to deal with pointer compression. Sandbox/trusted pointers,
   // while they resolve to tagged pointers, return {false} because they
   // use incompatible compression schemes.
   bool IsCompressibleTagged() const {
@@ -681,13 +697,14 @@ class MemoryRepresentation {
       case AnyUncompressedTagged():
       case UncompressedTaggedPointer():
       case UncompressedTaggedSigned():
-      case IndirectPointer():
+      case TrustedPointer():
       case ProtectedPointer():
       case SandboxedPointer():
       case Simd128():
       case Simd256():
         return false;
     }
+    UNREACHABLE();
   }
 
   RegisterRepresentation ToRegisterRepresentation() const {
@@ -713,7 +730,7 @@ class MemoryRepresentation {
       case AnyUncompressedTagged():
       case UncompressedTaggedPointer():
       case UncompressedTaggedSigned():
-      case IndirectPointer():
+      case TrustedPointer():
       case ProtectedPointer():
         return RegisterRepresentation::Tagged();
       case SandboxedPointer():
@@ -723,6 +740,7 @@ class MemoryRepresentation {
       case Simd256():
         return RegisterRepresentation::Simd256();
     }
+    UNREACHABLE();
   }
 
   static MemoryRepresentation FromRegisterRepresentation(
@@ -745,6 +763,7 @@ class MemoryRepresentation {
       case RegisterRepresentation::Compressed():
         UNREACHABLE();
     }
+    UNREACHABLE();
   }
 
   // The required register representation for storing a value. When pointer
@@ -798,8 +817,8 @@ class MemoryRepresentation {
         return MachineType::TaggedSigned();
       case ProtectedPointer():
         return MachineType::ProtectedPointer();
-      case IndirectPointer():
-        return MachineType::IndirectPointer();
+      case TrustedPointer():
+        return MachineType::TrustedPointer();
       case SandboxedPointer():
         return MachineType::SandboxedPointer();
       case Simd128():
@@ -807,6 +826,7 @@ class MemoryRepresentation {
       case Simd256():
         return MachineType::Simd256();
     }
+    UNREACHABLE();
   }
 
   static MemoryRepresentation FromMachineType(MachineType type) {
@@ -829,8 +849,8 @@ class MemoryRepresentation {
         return TaggedPointer();
       case MachineRepresentation::kProtectedPointer:
         return ProtectedPointer();
-      case MachineRepresentation::kIndirectPointer:
-        return IndirectPointer();
+      case MachineRepresentation::kTrustedPointer:
+        return TrustedPointer();
       case MachineRepresentation::kTagged:
         return AnyTagged();
       case MachineRepresentation::kFloat16:
@@ -852,6 +872,7 @@ class MemoryRepresentation {
       case MachineRepresentation::kFloat16RawBits:
         UNREACHABLE();
     }
+    UNREACHABLE();
   }
 
   static constexpr MemoryRepresentation FromMachineRepresentation(
@@ -889,10 +910,11 @@ class MemoryRepresentation {
       case MachineRepresentation::kCompressedPointer:
       case MachineRepresentation::kCompressed:
       case MachineRepresentation::kProtectedPointer:
-      case MachineRepresentation::kIndirectPointer:
+      case MachineRepresentation::kTrustedPointer:
       case MachineRepresentation::kFloat16RawBits:
         UNREACHABLE();
     }
+    UNREACHABLE();
   }
 
   constexpr uint8_t SizeInBytes() const {
@@ -911,7 +933,7 @@ class MemoryRepresentation {
       case Int32():
       case Uint32():
       case Float32():
-      case IndirectPointer():
+      case TrustedPointer():
         return 2;
       case Int64():
       case Uint64():
@@ -932,6 +954,7 @@ class MemoryRepresentation {
       case Simd256():
         return 5;
     }
+    UNREACHABLE();
   }
 
  private:
@@ -947,6 +970,10 @@ V8_INLINE constexpr bool operator==(MemoryRepresentation a,
 V8_INLINE constexpr bool operator!=(MemoryRepresentation a,
                                     MemoryRepresentation b) {
   return a.value() != b.value();
+}
+V8_INLINE constexpr auto operator<=>(MemoryRepresentation a,
+                                     MemoryRepresentation b) {
+  return a.value() <=> b.value();
 }
 
 V8_INLINE size_t hash_value(MemoryRepresentation rep) {

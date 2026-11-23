@@ -15,16 +15,20 @@
 #include "src/compiler/backend/instruction.h"
 #include "src/compiler/linkage.h"
 #include "src/execution/isolate.h"
+#include "src/execution/simulator.h"
 #include "src/objects/heap-number-inl.h"
+#include "src/objects/object-conversions-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/codegen-tester.h"
 #include "test/cctest/compiler/function-tester.h"
 #include "test/common/code-assembler-tester.h"
+#include "test/common/flag-utils.h"
 
 #if V8_ENABLE_WEBASSEMBLY
 #include "src/compiler/wasm-compiler.h"
+#include "src/wasm/function-compiler.h"
 #include "src/wasm/wasm-code-pointer-table-inl.h"
 #include "src/wasm/wasm-engine.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -312,7 +316,7 @@ void PrintStateValue(std::ostream& os, Isolate* isolate,
   os << ")";
 }
 
-bool TestSimd128Moves() { return CpuFeatures::SupportsWasmSimd128(); }
+bool TestSimd128Moves() { return CpuFeatures::SupportsSimd128(); }
 
 }  // namespace
 
@@ -690,8 +694,9 @@ class TestEnvironment : public HandleAndZoneScope {
   // environment.
   Handle<FixedArray> GenerateInitialState() {
     Handle<FixedArray> state = main_isolate()->factory()->NewFixedArray(
-        static_cast<int>(setup_layout_.size()));
-    for (int i = 0; i < state->length(); i++) {
+        static_cast<uint32_t>(setup_layout_.size()));
+    const uint32_t state_len = state->length().value();
+    for (uint32_t i = 0; i < state_len; i++) {
       switch (setup_layout_[i].representation()) {
         case MachineRepresentation::kTagged:
           state->set(i, Smi::FromInt(rng_->NextInt(Smi::kMaxValue)));
@@ -733,7 +738,7 @@ class TestEnvironment : public HandleAndZoneScope {
   DirectHandle<FixedArray> Run(Handle<Code> test, Handle<FixedArray> state_in) {
     DirectHandle<FixedArray> state_out =
         main_isolate()->factory()->NewFixedArray(
-            static_cast<int>(TeardownLayout().size()));
+            static_cast<uint32_t>(TeardownLayout().size()));
     {
 #ifdef ENABLE_SLOW_DCHECKS
       // The "setup" and "teardown" functions are relatively big, and with
@@ -754,9 +759,10 @@ class TestEnvironment : public HandleAndZoneScope {
       FunctionTester ft(setup, 2);
       DirectHandle<FixedArray> result =
           ft.CallChecked<FixedArray>(test, state_in);
-      CHECK_EQ(result->length(), state_in->length());
+      const uint32_t result_len = result->length().value();
+      CHECK_EQ(result_len, state_in->length().value());
       FixedArray::CopyElements(main_isolate(), *state_out, 0, *result, 0,
-                               result->length());
+                               result_len);
     }
     return state_out;
   }
@@ -827,11 +833,12 @@ class TestEnvironment : public HandleAndZoneScope {
       ParallelMove* moves, DirectHandle<FixedArray> state_in) {
     DirectHandle<FixedArray> state_out =
         main_isolate()->factory()->NewFixedArray(
-            static_cast<int>(setup_layout_.size()));
+            static_cast<uint32_t>(setup_layout_.size()));
     // We do not want to modify `state_in` in place so perform the moves on a
     // copy.
+    const uint32_t state_in_len = state_in->length().value();
     FixedArray::CopyElements(main_isolate(), *state_out, 0, *state_in, 0,
-                             state_in->length());
+                             state_in_len);
     DCHECK_EQ(kPreserveLayout, layout_mode_);
     for (auto move : *moves) {
       int to_index = OperandToStatePosition(
@@ -848,7 +855,7 @@ class TestEnvironment : public HandleAndZoneScope {
       ParallelMove* moves, DirectHandle<FixedArray> state_in) {
     DirectHandle<FixedArray> state_out =
         main_isolate()->factory()->NewFixedArray(
-            static_cast<int>(teardown_layout_.size()));
+            static_cast<uint32_t>(teardown_layout_.size()));
     for (auto move : *moves) {
       int to_index = OperandToStatePosition(
           TeardownLayout(), AllocatedOperand::cast(move->destination()));
@@ -873,11 +880,12 @@ class TestEnvironment : public HandleAndZoneScope {
                                          DirectHandle<FixedArray> state_in) {
     DirectHandle<FixedArray> state_out =
         main_isolate()->factory()->NewFixedArray(
-            static_cast<int>(setup_layout_.size()));
+            static_cast<uint32_t>(setup_layout_.size()));
     // We do not want to modify `state_in` in place so perform the swaps on a
     // copy.
+    const uint32_t state_in_len = state_in->length().value();
     FixedArray::CopyElements(main_isolate(), *state_out, 0, *state_in, 0,
-                             state_in->length());
+                             state_in_len);
     for (auto swap : *swaps) {
       int lhs_index = OperandToStatePosition(
           setup_layout_, AllocatedOperand::cast(swap->destination()));
@@ -1119,10 +1127,10 @@ constexpr int TestEnvironment::kDoubleConstantCount;
 class CodeGeneratorTester {
  public:
   explicit CodeGeneratorTester(TestEnvironment* environment,
-                               int extra_stack_space = 0)
+                               int extra_stack_space = 0,
+                               int scratch_spill_slots = 0)
       : zone_(environment->main_zone()),
-        info_(base::ArrayVector("test"), environment->main_zone(),
-              CodeKind::FOR_TESTING),
+        info_("test", environment->main_zone(), CodeKind::FOR_TESTING),
         linkage_(environment->test_descriptor()),
         frame_(environment->test_descriptor()->CalculateFixedFrameSize(
                    CodeKind::FOR_TESTING),
@@ -1154,6 +1162,11 @@ class CodeGeneratorTester {
         i++;
       }
     }
+    if (scratch_spill_slots > 0) {
+      int end_slot = frame_.AllocateSpillSlot(
+          scratch_spill_slots * kSystemPointerSize, kSimd128Size);
+      first_scratch_spill_slot_ = end_slot - scratch_spill_slots + 1;
+    }
 
     constexpr size_t kMaxUnoptimizedFrameHeight = 0;
     constexpr size_t kMaxPushedArgumentCount = 0;
@@ -1180,6 +1193,12 @@ class CodeGeneratorTester {
   }
 
   ~CodeGeneratorTester() { delete generator_; }
+
+  static void AssembleConstructFrameForTest(CodeGenerator* generator) {
+    generator->masm()->CodeEntry();
+    generator->frame_access_state()->MarkHasFrame(true);
+    generator->AssembleConstructFrame();
+  }
 
   std::vector<std::pair<LocationOperand, LocationOperand>>::iterator
   GetSpillSlot(InstructionOperand* op) {
@@ -1329,6 +1348,8 @@ class CodeGeneratorTester {
     return Finalize();
   }
 
+  int first_scratch_spill_slot() const { return first_scratch_spill_slot_; }
+
  private:
   Zone* zone_;
   OptimizedCompilationInfo info_;
@@ -1337,6 +1358,7 @@ class CodeGeneratorTester {
   CodeGenerator* generator_;
   // List of operands to be moved from stack parameters to spill slots.
   std::vector<std::pair<LocationOperand, LocationOperand>> spill_slots_;
+  int first_scratch_spill_slot_ = 0;
 };
 
 // The following fuzz tests will assemble a lot of moves, wrap them in
@@ -1454,15 +1476,16 @@ TEST(FuzzAssembleMoveAndSwap) {
   TestEnvironment env;
 
   Handle<FixedArray> state_in = env.GenerateInitialState();
+  const uint32_t state_in_len = state_in->length().value();
   DirectHandle<FixedArray> expected =
-      env.main_isolate()->factory()->NewFixedArray(state_in->length());
+      env.main_isolate()->factory()->NewFixedArray(state_in_len);
 
   // Test small and potentially large ranges separately.
   for (int extra_space : {0, kExtraSpace}) {
     CodeGeneratorTester c(&env, extra_space);
 
     FixedArray::CopyElements(env.main_isolate(), *expected, 0, *state_in, 0,
-                             state_in->length());
+                             state_in_len);
 
     for (int i = 0; i < 1000; i++) {
       // Randomly alternate between swaps and moves.
@@ -1625,6 +1648,372 @@ TEST(AssembleTailCallGap) {
   }
 }
 
+TEST(PopTempStackSlots) {
+  if (kSystemPointerSize == 8 && !TestSimd128Moves()) return;
+
+  constexpr MachineRepresentation kTwoSlotRep =
+      kSystemPointerSize == 8 ? MachineRepresentation::kSimd128
+                              : MachineRepresentation::kFloat64;
+
+  TestEnvironment env;
+  Handle<FixedArray> state_in = env.GenerateInitialState();
+
+  // Test both a small number of temporary stack slots and a larger count whose
+  // byte size exceeds 4095 and is not a multiple of 4096.
+  for (int num_cycles : {4, 260}) {
+    const int scratch_slots = num_cycles * 4;
+    CodeGeneratorTester c(&env, 0, scratch_slots);
+    ParallelMove* moves = env.main_zone()->New<ParallelMove>(env.main_zone());
+
+    for (int i = 0; i < num_cycles; i++) {
+      int base = c.first_scratch_spill_slot() + i * 4;
+      AllocatedOperand pair_lo(LocationOperand::STACK_SLOT, kTwoSlotRep,
+                               base + 1);
+      AllocatedOperand pair_hi(LocationOperand::STACK_SLOT, kTwoSlotRep,
+                               base + 3);
+      AllocatedOperand slot_0(LocationOperand::STACK_SLOT,
+                              MachineRepresentation::kTagged, base + 0);
+      AllocatedOperand slot_1(LocationOperand::STACK_SLOT,
+                              MachineRepresentation::kTagged, base + 1);
+      AllocatedOperand slot_2(LocationOperand::STACK_SLOT,
+                              MachineRepresentation::kTagged, base + 2);
+      AllocatedOperand slot_3(LocationOperand::STACK_SLOT,
+                              MachineRepresentation::kTagged, base + 3);
+      moves->AddMove(pair_lo, pair_hi);
+      moves->AddMove(slot_2, slot_0);
+      moves->AddMove(slot_3, slot_1);
+    }
+
+    c.CheckAssembleMoves(moves);
+
+    Handle<Code> test = c.FinalizeForExecuting();
+    if (v8_flags.print_code) {
+      Print(*test);
+    }
+
+    DirectHandle<FixedArray> actual = env.Run(test, state_in);
+    env.CheckState(actual, state_in);
+  }
+}
+
+#if V8_TARGET_ARCH_X64
+TEST(TurboFanFrameSlotAlignment) {
+  TestEnvironment env;
+  Isolate* isolate = env.main_isolate();
+  Linkage linkage(env.test_descriptor());
+
+  // Test both odd fixed headers (JSFunction = 5 slots, Stub = 3 slots)
+  // and even fixed headers (CFunction = 2 slots, Wasm = 4 slots).
+  for (int fixed_slots : {2, 3, 4, 5}) {
+    for (int spill_slots : {0, 1, 2, 3, 4}) {
+      for (int return_slots : {0, 1, 2, 3}) {
+        Zone zone(isolate->allocator(), ZONE_NAME);
+        Frame frame(fixed_slots, &zone);
+
+        for (int s = 0; s < spill_slots; ++s) {
+          frame.AllocateSpillSlot(kSystemPointerSize);
+        }
+        frame.EnsureReturnSlots(return_slots);
+
+        OptimizedCompilationInfo info("test", &zone, CodeKind::FOR_TESTING);
+        CodeGenerator codegen(
+            &zone, &frame, &linkage, env.instructions(), &info, isolate,
+            std::optional<OsrHelper>(), kNoSourcePosition, nullptr,
+            AssemblerOptions::Default(isolate), Builtin::kNoBuiltinId, 0, 0);
+
+        // FinishFrame() has now run via CodeGenerator's constructor.
+        if (V8_X64_16BYTE_STACK_ALIGNMENT_BOOL) {
+          CHECK_EQ(0, frame.GetTotalFrameSlotCount() % 2);
+          CHECK_EQ(0, frame.GetReturnSlotCount() % 2);
+        } else {
+          CHECK_EQ(fixed_slots + spill_slots + return_slots,
+                   frame.GetTotalFrameSlotCount());
+          CHECK_EQ(return_slots, frame.GetReturnSlotCount());
+        }
+
+        CodeGeneratorTester::AssembleConstructFrameForTest(&codegen);
+      }
+    }
+  }
+}
+#endif
+
+#if V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64
+TEST(GapMoveCycleMixedRep) {
+  enum class CycleKind {
+    kRegDstWithStackTemp,
+    kStackDstWithStackTemp,
+    kStackDstWithScratchReg,
+    kMixedStackToStack,
+    kMixedStackToReg,
+    kMixedTwoMoveCycle,
+  };
+
+#if V8_TARGET_ARCH_64_BIT
+  static constexpr intptr_t kCanary0 =
+      static_cast<intptr_t>(0x123456789ABCDEF0ULL);
+  static constexpr intptr_t kCanary1 =
+      static_cast<intptr_t>(0x23456789ABCDEF01ULL);
+  static constexpr intptr_t kCanary2 =
+      static_cast<intptr_t>(0x3456789ABCDEF012ULL);
+  static constexpr intptr_t kPayload =
+      static_cast<intptr_t>(0x5555555555555555ULL);
+  static constexpr intptr_t kPayload2 =
+      static_cast<intptr_t>(0x6666666666666666ULL);
+#else
+  static constexpr intptr_t kCanary0 = static_cast<intptr_t>(0x12345678U);
+  static constexpr intptr_t kCanary1 = static_cast<intptr_t>(0x23456789U);
+  static constexpr intptr_t kCanary2 = static_cast<intptr_t>(0x3456789AU);
+  static constexpr intptr_t kPayload = static_cast<intptr_t>(0x55555555U);
+  static constexpr intptr_t kPayload2 = static_cast<intptr_t>(0x66666666U);
+#endif
+
+  HandleAndZoneScope scope;
+  Isolate* isolate = scope.main_isolate();
+
+  auto RunCycleCheck = [isolate](MachineRepresentation src_rep,
+                                 MachineRepresentation dst_rep, CycleKind kind,
+                                 int check_slot_idx) {
+    HandleScope handles(isolate);
+    Zone local_zone(isolate->allocator(), ZONE_NAME);
+    Zone* zone = &local_zone;
+
+    MachineSignature::Builder sig_builder(zone, 1, 0);
+    sig_builder.AddReturn(MachineType::IntPtr());
+    CallDescriptor* desc = Linkage::GetSimplifiedCDescriptor(
+        zone, sig_builder.Get(), CallDescriptor::kInitializeRootRegister);
+    Linkage linkage(desc);
+
+    ZoneVector<InstructionBlock*> blocks(zone);
+    InstructionBlock* block = zone->New<InstructionBlock>(
+        zone, RpoNumber::FromInt(0), RpoNumber::Invalid(), RpoNumber::Invalid(),
+        RpoNumber::Invalid(), false, false);
+    block->mark_needs_frame();
+    block->mark_must_construct_frame();
+    blocks.push_back(block);
+
+    InstructionSequence sequence(isolate, zone, &blocks);
+    Frame frame(desc->CalculateFixedFrameSize(CodeKind::FOR_TESTING), zone);
+
+    // Bracket s1 and s2 with canary slots. Multi-slot stores grow toward
+    // smaller slot indices (higher addresses), so an over-wide store into
+    // narrow s2_dst overwrites pad_slot1.
+    const int s2_bytes =
+        std::max(kSystemPointerSize, ElementSizeInBytes(dst_rep));
+    int pad_slot0 = frame.AllocateSpillSlot(kSystemPointerSize);
+    int s1_index = frame.AllocateSpillSlot(kSimd128Size);
+    int pad_slot1 = frame.AllocateSpillSlot(kSystemPointerSize);
+    int s2_index = frame.AllocateSpillSlot(s2_bytes);
+    int pad_slot2 = frame.AllocateSpillSlot(kSystemPointerSize);
+
+    const int s1_slots = kSimd128Size / kSystemPointerSize;
+    const int s2_slots = s2_bytes / kSystemPointerSize;
+    const int s1_hi_slot = s1_index - s1_slots + 1;
+
+    const RegisterConfiguration* config = RegisterConfiguration::Default();
+    BitVector* allocated_regs =
+        zone->New<BitVector>(config->num_general_registers(), zone);
+    for (Register reg : desc->CalleeSavedRegisters()) {
+      if (config->IsAllocatableGeneralCode(reg.code())) {
+        allocated_regs->Add(reg.code());
+        break;
+      }
+    }
+    frame.SetAllocatedRegisters(allocated_regs);
+
+    BitVector* allocated_double_regs =
+        zone->New<BitVector>(config->num_double_registers(), zone);
+    allocated_double_regs->Add(config->GetAllocatableDoubleCode(0));
+    allocated_double_regs->Add(config->GetAllocatableDoubleCode(1));
+    frame.SetAllocatedDoubleRegisters(allocated_double_regs);
+
+    sequence.StartBlock(RpoNumber::FromInt(0));
+
+    auto AddPtrConstant = [&](intptr_t val) {
+      int vreg = sequence.NextVirtualRegister();
+#if V8_TARGET_ARCH_64_BIT
+      sequence.AddConstant(vreg, Constant(static_cast<int64_t>(val)));
+#else
+      sequence.AddConstant(vreg, Constant(static_cast<int32_t>(val)));
+#endif
+      return ConstantOperand(vreg);
+    };
+
+    ConstantOperand canary0_op = AddPtrConstant(kCanary0);
+    ConstantOperand canary1_op = AddPtrConstant(kCanary1);
+    ConstantOperand canary2_op = AddPtrConstant(kCanary2);
+    ConstantOperand payload_op = AddPtrConstant(kPayload);
+    ConstantOperand payload2_op = AddPtrConstant(kPayload2);
+
+    int zero_fp_vreg = sequence.NextVirtualRegister();
+    sequence.AddConstant(zero_fp_vreg, Constant(0.0));
+
+    AllocatedOperand fp0_s128(LocationOperand::REGISTER,
+                              MachineRepresentation::kSimd128,
+                              config->GetAllocatableDoubleCode(0));
+    AllocatedOperand fp0_src(LocationOperand::REGISTER, src_rep,
+                             config->GetAllocatableDoubleCode(0));
+    AllocatedOperand fp1_f64(LocationOperand::REGISTER,
+                             MachineRepresentation::kFloat64,
+                             config->GetAllocatableDoubleCode(1));
+    AllocatedOperand fp1_s128(LocationOperand::REGISTER,
+                              MachineRepresentation::kSimd128,
+                              config->GetAllocatableDoubleCode(1));
+    AllocatedOperand fp1_dst(LocationOperand::REGISTER, dst_rep,
+                             config->GetAllocatableDoubleCode(1));
+    AllocatedOperand s1_op(LocationOperand::STACK_SLOT,
+                           MachineRepresentation::kSimd128, s1_index);
+    AllocatedOperand s2_dst(LocationOperand::STACK_SLOT, dst_rep, s2_index);
+
+    Instruction* init_nop = Instruction::New(zone, kArchNop);
+    ParallelMove* init_moves =
+        init_nop->GetOrCreateParallelMove(Instruction::START, zone);
+    init_moves->AddMove(
+        canary0_op,
+        AllocatedOperand(LocationOperand::STACK_SLOT,
+                         MachineType::PointerRepresentation(), pad_slot0));
+    init_moves->AddMove(
+        canary1_op,
+        AllocatedOperand(LocationOperand::STACK_SLOT,
+                         MachineType::PointerRepresentation(), pad_slot1));
+    init_moves->AddMove(
+        canary2_op,
+        AllocatedOperand(LocationOperand::STACK_SLOT,
+                         MachineType::PointerRepresentation(), pad_slot2));
+    for (int i = 0; i < s1_slots; ++i) {
+      init_moves->AddMove(
+          payload_op,
+          AllocatedOperand(LocationOperand::STACK_SLOT,
+                           MachineType::PointerRepresentation(), s1_index - i));
+    }
+    for (int i = 0; i < s2_slots; ++i) {
+      init_moves->AddMove(
+          payload2_op,
+          AllocatedOperand(LocationOperand::STACK_SLOT,
+                           MachineType::PointerRepresentation(), s2_index - i));
+    }
+    init_moves->AddMove(ConstantOperand(zero_fp_vreg), fp1_f64);
+
+    ParallelMove* init_fp0 =
+        init_nop->GetOrCreateParallelMove(Instruction::END, zone);
+    init_fp0->AddMove(s1_op, fp0_s128);
+    sequence.AddInstruction(init_nop);
+
+    Instruction* cycle_nop = Instruction::New(zone, kArchNop);
+    ParallelMove* cycle_moves =
+        cycle_nop->GetOrCreateParallelMove(Instruction::START, zone);
+    switch (kind) {
+      case CycleKind::kRegDstWithStackTemp:
+        cycle_moves->AddMove(s1_op, fp0_s128);
+        cycle_moves->AddMove(s2_dst, s1_op);
+        cycle_moves->AddMove(fp1_s128, s2_dst);
+        cycle_moves->AddMove(fp0_src, fp1_dst);
+        break;
+      case CycleKind::kStackDstWithStackTemp:
+        cycle_moves->AddMove(s1_op, fp0_s128);
+        cycle_moves->AddMove(s2_dst, s1_op);
+        cycle_moves->AddMove(fp0_src, s2_dst);
+        break;
+      case CycleKind::kStackDstWithScratchReg:
+        cycle_moves->AddMove(fp1_s128, fp0_s128);
+        cycle_moves->AddMove(s2_dst, fp1_s128);
+        cycle_moves->AddMove(fp0_src, s2_dst);
+        break;
+      case CycleKind::kMixedStackToStack:
+        cycle_moves->AddMove(s2_dst, fp0_s128);
+        cycle_moves->AddMove(s1_op, s2_dst);
+        cycle_moves->AddMove(fp0_src, s1_op);
+        break;
+      case CycleKind::kMixedStackToReg:
+        cycle_moves->AddMove(s1_op, fp1_dst);
+        cycle_moves->AddMove(fp0_src, s1_op);
+        cycle_moves->AddMove(fp1_s128, fp0_s128);
+        break;
+      case CycleKind::kMixedTwoMoveCycle:
+        cycle_moves->AddMove(s2_dst, fp0_src);
+        cycle_moves->AddMove(fp0_src, s2_dst);
+        break;
+    }
+
+    if (check_slot_idx == 3) {
+      ParallelMove* spill_fp1 =
+          cycle_nop->GetOrCreateParallelMove(Instruction::END, zone);
+      spill_fp1->AddMove(fp1_s128, s1_op);
+    }
+    sequence.AddInstruction(cycle_nop);
+
+    const std::pair<int, intptr_t> checks[] = {
+        {pad_slot0, kCanary0},
+        {pad_slot1, kCanary1},
+        {pad_slot2, kCanary2},
+        {s1_hi_slot, kPayload},
+    };
+    const auto [slot_to_read, expected_val] = checks[check_slot_idx];
+
+    InstructionOperand ret_inputs[] = {
+        ImmediateOperand(ImmediateOperand::INLINE_INT32, 0),
+        AllocatedOperand(LocationOperand::REGISTER,
+                         MachineType::PointerRepresentation(),
+                         kReturnRegister0.code())};
+    Instruction* ret_instr =
+        Instruction::New(zone, kArchRet, 0, nullptr, arraysize(ret_inputs),
+                         ret_inputs, 0, nullptr);
+    ParallelMove* pre_ret =
+        ret_instr->GetOrCreateParallelMove(Instruction::START, zone);
+    pre_ret->AddMove(
+        AllocatedOperand(LocationOperand::STACK_SLOT,
+                         MachineType::PointerRepresentation(), slot_to_read),
+        AllocatedOperand(LocationOperand::REGISTER,
+                         MachineType::PointerRepresentation(),
+                         kReturnRegister0.code()));
+
+    sequence.AddInstruction(ret_instr);
+    sequence.EndBlock(RpoNumber::FromInt(0));
+
+    OptimizedCompilationInfo info("gap_cycle_mixed_rep", zone,
+                                  CodeKind::FOR_TESTING);
+    CodeGenerator codegen(zone, &frame, &linkage, &sequence, &info, isolate,
+                          std::optional<OsrHelper>(), kNoSourcePosition,
+                          nullptr, AssemblerOptions::Default(isolate),
+                          Builtin::kNoBuiltinId, 0, 0);
+    codegen.AssembleCode();
+    DirectHandle<Code> code = codegen.FinalizeCode().ToHandleChecked();
+    auto fn = GeneratedCode<intptr_t>::FromCode(isolate, *code);
+    CHECK_EQ(expected_val, fn.Call());
+  };
+
+  auto RunCycleTest = [&](MachineRepresentation src_rep,
+                          MachineRepresentation dst_rep, CycleKind kind) {
+    const bool check_fp1_upper = kind == CycleKind::kMixedStackToReg ||
+                                 (kind == CycleKind::kRegDstWithStackTemp &&
+                                  src_rep == MachineRepresentation::kSimd128);
+    const int num_checks = check_fp1_upper ? 4 : 3;
+    for (int i = 0; i < num_checks; ++i) {
+      RunCycleCheck(src_rep, dst_rep, kind, i);
+    }
+  };
+
+  for (CycleKind kind :
+       {CycleKind::kRegDstWithStackTemp, CycleKind::kStackDstWithStackTemp,
+        CycleKind::kStackDstWithScratchReg, CycleKind::kMixedStackToStack,
+        CycleKind::kMixedStackToReg, CycleKind::kMixedTwoMoveCycle}) {
+    // Narrower source to wider destination (f32 -> s128, f64 -> s128).
+    RunCycleTest(MachineRepresentation::kFloat32,
+                 MachineRepresentation::kSimd128, kind);
+    RunCycleTest(MachineRepresentation::kFloat64,
+                 MachineRepresentation::kSimd128, kind);
+    // Wider source to narrower destination (s128 -> f32, s128 -> f64).
+    RunCycleTest(MachineRepresentation::kSimd128,
+                 MachineRepresentation::kFloat32, kind);
+    RunCycleTest(MachineRepresentation::kSimd128,
+                 MachineRepresentation::kFloat64, kind);
+    // Same representation baseline (s128 -> s128).
+    RunCycleTest(MachineRepresentation::kSimd128,
+                 MachineRepresentation::kSimd128, kind);
+  }
+}
+#endif
+
 #if V8_ENABLE_WEBASSEMBLY
 namespace {
 
@@ -1679,19 +2068,18 @@ TEST(Regress_1171759) {
 
   m.Return(m.Int32Constant(0));
 
-  OptimizedCompilationInfo info(base::ArrayVector("testing"),
-                                handles.main_zone(), CodeKind::WASM_FUNCTION);
-  DirectHandle<Code> code =
-      Pipeline::GenerateCodeForTesting(
-          &info, handles.main_isolate(), desc, m.graph(),
-          AssemblerOptions::Default(handles.main_isolate()), m.ExportForTest())
-          .ToHandleChecked();
+  OptimizedCompilationInfo info("testing", handles.main_zone(),
+                                CodeKind::WASM_FUNCTION);
+  wasm::WasmCompilationResult result = Pipeline::GenerateWasmCodeForTesting(
+      &info, handles.main_isolate(), desc, m.graph(),
+      AssemblerOptions::Default(handles.main_isolate()), m.ExportForTest());
+  CHECK(result.succeeded());
 
   std::shared_ptr<wasm::NativeModule> module =
-      AllocateNativeModule(handles.main_isolate(), code->instruction_size());
+      AllocateNativeModule(handles.main_isolate(), result.code_desc.instr_size);
   wasm::WasmCodeRefScope wasm_code_ref_scope;
   wasm::WasmCode* wasm_code =
-      module->AddCodeForTesting(code, desc->signature_hash());
+      module->AddCodeForTesting(result, desc->signature_hash());
   WasmCodePointer code_pointer =
       wasm::GetProcessWideWasmCodePointerTable()->AllocateAndInitializeEntry(
           wasm_code->instruction_start(), wasm_code->signature_hash());
@@ -1732,6 +2120,7 @@ TEST(Regress_1171759) {
 
   wasm::GetProcessWideWasmCodePointerTable()->FreeEntry(code_pointer);
 }
+
 #endif  // V8_ENABLE_WEBASSEMBLY
 
 }  // namespace compiler

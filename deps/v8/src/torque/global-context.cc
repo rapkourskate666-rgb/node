@@ -13,6 +13,9 @@ GlobalContext::GlobalContext(Ast ast)
       collect_kythe_data_(false),
       force_assert_statements_(false),
       annotate_ir_(false),
+      torque_dwarf_(false),
+      has_kythe_inline_metadata_(false),
+      kythe_default_corpus_(""),
       ast_(std::move(ast)) {
   CurrentScope::Scope current_scope(nullptr);
   CurrentSourcePosition::Scope current_source_position(

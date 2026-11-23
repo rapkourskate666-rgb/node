@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#include <array>
 #include <cmath>
 
 #include "src/base/bits.h"
@@ -308,10 +309,10 @@ void MipsDebugger::Debug() {
       disasm::NameConverter converter;
       disasm::Disassembler dasm(converter);
       // Use a reasonably large buffer.
-      v8::base::EmbeddedVector<char, 256> buffer;
+      std::array<char, 256> buffer;
       dasm.InstructionDecode(buffer,
                              reinterpret_cast<uint8_t*>(sim_->get_pc()));
-      PrintF("  0x%016" PRIx64 "   %s\n", sim_->get_pc(), buffer.begin());
+      PrintF("  0x%016" PRIx64 "   %s\n", sim_->get_pc(), buffer.data());
       last_pc = sim_->get_pc();
     }
     char* line = ReadLine("sim> ");
@@ -470,7 +471,7 @@ void MipsDebugger::Debug() {
         disasm::NameConverter converter;
         disasm::Disassembler dasm(converter);
         // Use a reasonably large buffer.
-        v8::base::EmbeddedVector<char, 256> buffer;
+        std::array<char, 256> buffer;
 
         uint8_t* cur = nullptr;
         uint8_t* end = nullptr;
@@ -509,7 +510,7 @@ void MipsDebugger::Debug() {
         while (cur < end) {
           dasm.InstructionDecode(buffer, cur);
           PrintF("  0x%08" PRIxPTR "   %s\n", reinterpret_cast<intptr_t>(cur),
-                 buffer.begin());
+                 buffer.data());
           cur += kInstrSize;
         }
       } else if (strcmp(cmd, "gdb") == 0) {
@@ -599,7 +600,7 @@ void MipsDebugger::Debug() {
         disasm::NameConverter converter;
         disasm::Disassembler dasm(converter);
         // Use a reasonably large buffer.
-        v8::base::EmbeddedVector<char, 256> buffer;
+        std::array<char, 256> buffer;
 
         uint8_t* cur = nullptr;
         uint8_t* end = nullptr;
@@ -626,7 +627,7 @@ void MipsDebugger::Debug() {
         while (cur < end) {
           dasm.InstructionDecode(buffer, cur);
           PrintF("  0x%08" PRIxPTR "   %s\n", reinterpret_cast<intptr_t>(cur),
-                 buffer.begin());
+                 buffer.data());
           cur += kInstrSize;
         }
       } else if ((strcmp(cmd, "h") == 0) || (strcmp(cmd, "help") == 0)) {
@@ -2373,7 +2374,6 @@ void Simulator::CallAnyCTypeFunction(Address target_address,
   static_assert(20 == kMaxCParameters,
                 "If you've changed kMaxCParameters, please change the "
                 "GEN_MAX_PARAM_COUNT macro.");
-  printf("CallAnyCTypeFunction end result \n");
 
 #undef CALL_TARGET_VARARG
 #undef CALL_ARGS
@@ -4028,23 +4028,22 @@ void Simulator::DecodeTypeRegisterSPECIAL() {
       SetResult(rd_reg(), rt() >> sa() >> 32);
       break;
     case SLLV:
-      SetResult(rd_reg(), (int32_t)rt() << rs());
+      SetResult(rd_reg(), (int32_t)rt() << shift_amount_w());
       break;
     case DSLLV:
-      SetResult(rd_reg(), rt() << rs());
+      SetResult(rd_reg(), rt() << shift_amount_d());
       break;
     case SRLV:
       if (sa() == 0) {
         // Regular logical right-shift of a word by a variable number of
         // bits instruction. SA field is always equal to 0.
-        alu_out = static_cast<int32_t>((uint32_t)rt_u() >> rs());
+        alu_out = static_cast<int32_t>((uint32_t)rt_u() >> shift_amount_w());
       } else {
         // Logical right-rotate of a word by a variable number of bits.
         // This is special case od SRLV instruction, added in MIPS32
         // Release 2. SA field is equal to 00001.
-        alu_out = static_cast<int32_t>(
-            base::bits::RotateRight32(static_cast<const uint32_t>(rt_u()),
-                                      static_cast<const uint32_t>(rs_u())));
+        alu_out = static_cast<int32_t>(base::bits::RotateRight32(
+            static_cast<const uint32_t>(rt_u()), shift_amount_w()));
       }
       SetResult(rd_reg(), alu_out);
       break;
@@ -4052,21 +4051,21 @@ void Simulator::DecodeTypeRegisterSPECIAL() {
       if (sa() == 0) {
         // Regular logical right-shift of a word by a variable number of
         // bits instruction. SA field is always equal to 0.
-        alu_out = static_cast<int64_t>(rt_u() >> rs());
+        alu_out = static_cast<int64_t>(rt_u() >> shift_amount_d());
       } else {
         // Logical right-rotate of a word by a variable number of bits.
         // This is special case od SRLV instruction, added in MIPS32
         // Release 2. SA field is equal to 00001.
-        alu_out =
-            static_cast<int64_t>(base::bits::RotateRight64(rt_u(), rs_u()));
+        alu_out = static_cast<int64_t>(
+            base::bits::RotateRight64(rt_u(), shift_amount_d()));
       }
       SetResult(rd_reg(), alu_out);
       break;
     case SRAV:
-      SetResult(rd_reg(), (int32_t)rt() >> rs());
+      SetResult(rd_reg(), (int32_t)rt() >> shift_amount_w());
       break;
     case DSRAV:
-      SetResult(rd_reg(), rt() >> rs());
+      SetResult(rd_reg(), rt() >> shift_amount_d());
       break;
     case LSA: {
       DCHECK_EQ(kArchVariant, kMips64r6);
@@ -7545,7 +7544,7 @@ void Simulator::InstructionDecode(Instruction* instr) {
   }
   pc_modified_ = false;
 
-  v8::base::EmbeddedVector<char, 256> buffer;
+  std::array<char, 256> buffer;
 
   if (v8_flags.trace_sim) {
     base::SNPrintF(trace_buf_, " ");
@@ -7572,8 +7571,7 @@ void Simulator::InstructionDecode(Instruction* instr) {
 
   if (v8_flags.trace_sim) {
     PrintF("  0x%08" PRIxPTR "   %-44s   %s\n",
-           reinterpret_cast<intptr_t>(instr), buffer.begin(),
-           trace_buf_.begin());
+           reinterpret_cast<intptr_t>(instr), buffer.data(), trace_buf_.data());
   }
 
   if (!pc_modified_) {

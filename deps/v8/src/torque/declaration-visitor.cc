@@ -147,8 +147,9 @@ Builtin* DeclarationVisitor::CreateBuiltin(
   }
 
   Builtin::Flags flags = Builtin::Flag::kNone;
-  if (has_custom_interface_descriptor)
+  if (has_custom_interface_descriptor) {
     flags |= Builtin::Flag::kCustomInterfaceDescriptor;
+  }
   if (supports_tsa) flags |= Builtin::Flag::kSupportsTSA;
   Builtin* builtin = Declarations::CreateBuiltin(
       std::move(external_name), std::move(readable_name), kind, flags,
@@ -232,6 +233,9 @@ void DeclarationVisitor::Visit(TorqueBuiltinDeclaration* decl) {
                                signature, decl->use_counter_name, decl->body);
   builtin->SetIdentifierPosition(decl->name->pos);
   builtin->SetPosition(decl->pos);
+  if (GlobalContext::collect_kythe_data()) {
+    KytheData::AddFunctionDefinition(builtin);
+  }
   Declarations::Declare(decl->name->value, builtin);
 }
 
@@ -454,6 +458,13 @@ Callable* DeclarationVisitor::Specialize(
     callable = CreateBuiltin(
         builtin, GlobalContext::MakeUniqueName(generated_name),
         readable_name.str(), type_signature, use_counter_name, *body);
+  }
+  callable->SetIdentifierPosition(explicit_specialization
+                                      ? (*explicit_specialization)->name->pos
+                                      : declaration->name->pos);
+  if (GlobalContext::collect_kythe_data() &&
+      Intrinsic::DynamicCast(callable) == nullptr) {
+    KytheData::AddFunctionDefinition(callable);
   }
   key.generic->AddSpecialization(key.specialized_types, callable);
   return callable;

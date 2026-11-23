@@ -10,10 +10,10 @@
 #include <vector>
 
 #include "src/base/macros.h"
+#include "src/builtins/builtins.h"
 #include "src/objects/heap-object.h"
 #include "src/objects/objects.h"
 #include "src/roots/roots.h"
-#include "src/sandbox/code-pointer-table.h"
 #include "src/sandbox/js-dispatch-table.h"
 
 namespace v8 {
@@ -79,14 +79,15 @@ class ReadOnlyHeap final {
 
   ReadOnlySpace* read_only_space() const { return read_only_space_; }
 
-#ifdef V8_ENABLE_SANDBOX
-  CodePointerTable::Space* code_pointer_space() { return &code_pointer_space_; }
-#endif  // V8_ENABLE_SANDBOX
-
-  void InitializeIsolateRoots(Isolate* isolate);
+  void InitializeIsolateRootsAndBuiltins(Isolate* isolate);
   void InitializeFromIsolateRoots(Isolate* isolate);
 
   bool roots_init_complete() const { return roots_init_complete_; }
+
+  // Decommits the payloads of WasmNull and the holes so that any access to
+  // them faults. The pages are shared by all isolates of the group, so this
+  // only needs to happen once per read-only heap.
+  void DecommitGuardRegions(Isolate* isolate);
 
  protected:
   friend class ReadOnlyArtifacts;
@@ -109,15 +110,14 @@ class ReadOnlyHeap final {
   bool roots_init_complete_ = false;
   ReadOnlySpace* read_only_space_ = nullptr;
 
-#ifdef V8_ENABLE_SANDBOX
-  // The read-only heap has its own code pointer space. Entries in this space
-  // are never deallocated.
-  CodePointerTable::Space code_pointer_space_;
-#endif  // V8_ENABLE_SANDBOX
+#if V8_ENABLE_WEBASSEMBLY
+  Address wasm_null_ = kNullAddress;
+#endif
 
  private:
   friend ReadOnlyRoots GetReadOnlyRoots();
   Address read_only_roots_[kEntriesCount];
+  Address read_only_builtins_[Builtins::kBuiltinCount];
 };
 
 enum class SkipFreeSpaceOrFiller {

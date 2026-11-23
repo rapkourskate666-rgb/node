@@ -182,8 +182,8 @@ On the client connection, a custom `checkServerIdentity` should be passed
 because the default one will fail in the absence of a certificate.
 
 According to the [RFC 4279][], PSK identities up to 128 bytes in length and
-PSKs up to 64 bytes in length must be supported. As of OpenSSL 1.1.0
-maximum identity size is 128 bytes, and maximum PSK length is 256 bytes.
+PSKs up to 64 bytes in length must be supported. In OpenSSL the maximum
+identity size is 128 bytes, and the maximum PSK length is 256 bytes.
 
 The current implementation doesn't support asynchronous PSK callbacks due to the
 limitations of the underlying OpenSSL API.
@@ -231,9 +231,14 @@ threshold is exceeded. The limits are configurable:
   in seconds. **Default:** `600` (10 minutes).
 
 The default renegotiation limits should not be modified without a full
-understanding of the implications and risks.
+understanding of the implications and risks. Reading or writing either
+property emits a deprecation warning (see [DEP0213][]).
 
 TLSv1.3 does not support renegotiation.
+
+Renegotiation is deprecated (see [DEP0213][]) and is disabled by default, for
+servers and clients. The `allowRenegotiation` option of [`tls.createServer()`][]
+and [`tls.connect()`][] can be set to `true` to enable it.
 
 ### Session resumption
 
@@ -468,34 +473,63 @@ to set the security level to 0 while using the default OpenSSL cipher list, you 
 
 ```mjs
 import { createServer, connect } from 'node:tls';
-const port = 443;
+import { readFileSync } from 'node:fs';
+const port = 8000;
 
-createServer({ ciphers: 'DEFAULT@SECLEVEL=0', minVersion: 'TLSv1' }, function(socket) {
+createServer({
+  key: readFileSync('server-key.pem'),
+  cert: readFileSync('server-cert.pem'),
+  ciphers: 'DEFAULT@SECLEVEL=0',
+  minVersion: 'TLSv1',
+}, function(socket) {
   console.log('Client connected with protocol:', socket.getProtocol());
   socket.end();
   this.close();
 })
 .listen(port, () => {
-  connect(port, { ciphers: 'DEFAULT@SECLEVEL=0', maxVersion: 'TLSv1' });
+  connect(port, {
+    ciphers: 'DEFAULT@SECLEVEL=0',
+    minVersion: 'TLSv1',
+    maxVersion: 'TLSv1',
+    ca: [ readFileSync('server-cert.pem') ],
+  });
 });
 ```
 
 ```cjs
 const { createServer, connect } = require('node:tls');
-const port = 443;
+const { readFileSync } = require('node:fs');
+const port = 8000;
 
-createServer({ ciphers: 'DEFAULT@SECLEVEL=0', minVersion: 'TLSv1' }, function(socket) {
+createServer({
+  key: readFileSync('server-key.pem'),
+  cert: readFileSync('server-cert.pem'),
+  ciphers: 'DEFAULT@SECLEVEL=0',
+  minVersion: 'TLSv1',
+}, function(socket) {
   console.log('Client connected with protocol:', socket.getProtocol());
   socket.end();
   this.close();
 })
 .listen(port, () => {
-  connect(port, { ciphers: 'DEFAULT@SECLEVEL=0', maxVersion: 'TLSv1' });
+  connect(port, {
+    ciphers: 'DEFAULT@SECLEVEL=0',
+    minVersion: 'TLSv1',
+    maxVersion: 'TLSv1',
+    ca: [ readFileSync('server-cert.pem') ],
+  });
 });
 ```
 
 This approach sets the security level to 0, allowing the use of legacy features while still
 leveraging the default OpenSSL ciphers.
+
+To generate the certificate and key for this example, run:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -subj '/CN=localhost' \
+  -keyout server-key.pem -out server-cert.pem
+```
 
 ### Using [`--tls-cipher-list`][]
 
@@ -872,6 +906,12 @@ connection is open.
 <!-- YAML
 added: v0.11.4
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67618
+    description: The `allowRenegotiation` option now defaults to `false`.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67532
+    description: The `allowRenegotiation` option is now supported.
   - version: v12.2.0
     pr-url: https://github.com/nodejs/node/pull/27497
     description: The `enableTrace` option is now supported.
@@ -898,6 +938,7 @@ changes:
   * `ALPNProtocols`: See [`tls.createServer()`][]
   * `SNICallback`: See [`tls.createServer()`][]
   * `ALPNCallback`: See [`tls.createServer()`][]
+  * `allowRenegotiation`: See [`tls.createServer()`][]
   * `session` {Buffer} A `Buffer` instance containing a TLS session.
   * `requestOCSP` {boolean} If `true`, specifies that the OCSP status request
     extension will be added to the client hello and an `'OCSPResponse'` event
@@ -1065,6 +1106,13 @@ property is set only when `tlsSocket.authorized === false`.
 
 <!-- YAML
 added: v0.11.4
+changes:
+  - version:
+    - v26.8.0
+    - v24.22.0
+    pr-url: https://github.com/nodejs/node/pull/64677
+    description: On TLS 1.3, a resumed session where the client presented no
+                 certificate is no longer reported as authorized.
 -->
 
 * Type: {boolean}
@@ -1074,24 +1122,26 @@ specified when creating the `tls.TLSSocket` instance, otherwise `false`.
 
 The peer certificate is only verified during a full TLS handshake. When a
 connection is established by resuming a previous session (see
-[Session Resumption][]), verification is not repeated. If the client
-presented a certificate in the original handshake, `authorized` and
+[Session Resumption][]), verification is not repeated: `authorized` and
 `authorizationError` carry the result stored with the session, including
-any verification error. On TLS 1.3, a client that sent no certificate at
-all can resume a session and report `authorized` as `true`, while
-[`tls.TLSSocket.getPeerCertificate()`][] returns an empty object. Servers
-that authorize clients manually with `rejectUnauthorized: false` should
-therefore also check [`tls.TLSSocket.isSessionReused()`][] and that a peer
-certificate is present.
+any verification error and the case where the client presented no
+certificate at all.
 
 ### `tlsSocket.disableRenegotiation()`
 
 <!-- YAML
 added: v8.4.0
+deprecated: REPLACEME
 -->
+
+> Stability: 0 - Deprecated. See [DEP0213][].
 
 Disables TLS renegotiation for this `TLSSocket` instance. Once called, attempts
 to renegotiate will trigger an `'error'` event on the `TLSSocket`.
+
+Renegotiation is disabled by default, and the peer's attempts to renegotiate
+are then refused without an error. This method only has an effect on a
+connection created with `allowRenegotiation: true`.
 
 ### `tlsSocket.enableTrace()`
 
@@ -1207,7 +1257,7 @@ For example, a TLSv1.2 protocol with AES256-SHA cipher:
 ```
 
 See
-[SSL\_CIPHER\_get\_name](https://www.openssl.org/docs/man1.1.1/man3/SSL_CIPHER_get_name.html)
+[SSL\_CIPHER\_get\_name](https://www.openssl.org/docs/man3.0/man3/SSL_CIPHER_get_name.html)
 for more information.
 
 ### `tlsSocket.getEphemeralKeyInfo()`
@@ -1459,7 +1509,7 @@ added: v12.11.0
   the client in the order of decreasing preference.
 
 See
-[SSL\_get\_shared\_sigalgs](https://www.openssl.org/docs/man1.1.1/man3/SSL_get_shared_sigalgs.html)
+[SSL\_get\_shared\_sigalgs](https://www.openssl.org/docs/man3.0/man3/SSL_get_shared_sigalgs.html)
 for more information.
 
 ### `tlsSocket.getTLSTicket()`
@@ -1555,13 +1605,20 @@ Returns the numeric representation of the remote port. For example, `443`.
 
 <!-- YAML
 added: v0.11.8
+deprecated: REPLACEME
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67618
+    description: Runtime deprecation. This method now fails unless the
+                 connection was created with the `allowRenegotiation` option.
   - version: v18.0.0
     pr-url: https://github.com/nodejs/node/pull/41678
     description: Passing an invalid callback to the `callback` argument
                  now throws `ERR_INVALID_ARG_TYPE` instead of
                  `ERR_INVALID_CALLBACK`.
 -->
+
+> Stability: 0 - Deprecated. See [DEP0213][].
 
 * `options` {Object}
   * `rejectUnauthorized` {boolean} If not `false`, the server certificate is
@@ -1590,6 +1647,10 @@ When running as the server, the socket will be destroyed with an error after
 
 For TLSv1.3, renegotiation cannot be initiated, it is not supported by the
 protocol.
+
+Unless the connection was created with `allowRenegotiation: true`, this method
+returns `false` and `callback` is called with an
+[`ERR_TLS_RENEGOTIATION_DISABLED`][] error.
 
 ### `tlsSocket.servername`
 
@@ -1638,6 +1699,27 @@ and its integrity is verified; large fragments can span multiple roundtrips
 and their processing can be delayed due to packet loss or reordering. However,
 smaller fragments add extra TLS framing bytes and CPU overhead, which may
 decrease overall server throughput.
+
+### `tlsSocket.socket`
+
+<!-- YAML
+added: v27.0.0-alpha.0.0.0
+-->
+
+* Type: {net.Socket|stream.Duplex|null}
+
+The underlying socket or stream that this socket reads and writes TLS data
+through. This is the `socket` passed to [`new tls.TLSSocket()`][] or
+[`tls.connect()`][], or the connection given to a [`tls.Server`][] by its
+`'connection'` event.
+
+This is only `null` for client sockets that manage their own connection,
+created by [`tls.connect()`][] with a `port` or `path` rather than a `socket`.
+Connection details such as `remoteAddress` are then available directly on this
+socket. Server sockets always have an underlying socket.
+
+This remains available after the socket has been destroyed, for example to
+identify the underlying connection from a [`'tlsClientError'`][] listener.
 
 ## `tls.checkServerIdentity(hostname, cert)`
 
@@ -1688,6 +1770,12 @@ was present (see [CVE-2021-44531][]). Applications that wish to accept
 <!-- YAML
 added: v0.11.3
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67618
+    description: The `allowRenegotiation` option now defaults to `false`.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67532
+    description: The `allowRenegotiation` option is now supported.
   - version:
       - v15.1.0
       - v14.18.0
@@ -1785,6 +1873,9 @@ changes:
     TLS connection. When a server offers a DH parameter with a size less
     than `minDHSize`, the TLS connection is destroyed and an error is thrown.
     **Default:** `1024`.
+  * `allowRenegotiation` {boolean} If `true`, the client accepts renegotiation
+    requested by the server. Renegotiation is deprecated (see [DEP0213][]).
+    **Default:** `false`.
   * `highWaterMark` {number} Consistent with the readable stream `highWaterMark` parameter.
     **Default:** `16 * 1024`.
   * `timeout`: {number} If set and if a socket is created internally, will call
@@ -1936,10 +2027,11 @@ argument.
 <!-- YAML
 added: v0.11.13
 changes:
-  - version: REPLACEME
-    pr-url: https://github.com/nodejs/node/pull/63966
-    description: The `clientCertEngine`, `privateKeyEngine` and
-                 `privateKeyIdentifier` options are runtime deprecated.
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/64777
+    description: Using the `clientCertEngine`, `privateKeyEngine`, or
+                 `privateKeyIdentifier` option now throws
+                 `ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED`.
   - version:
      - v26.4.0
      - v24.19.0
@@ -2048,14 +2140,12 @@ changes:
     The list can contain digest algorithms (`SHA256`, `MD5` etc.), public key
     algorithms (`RSA-PSS`, `ECDSA` etc.), combination of both (e.g
     'RSA+SHA384') or TLS v1.3 scheme names (e.g. `rsa_pss_pss_sha512`).
-    See [OpenSSL man pages](https://www.openssl.org/docs/man1.1.1/man3/SSL_CTX_set1_sigalgs_list.html)
+    See [OpenSSL man pages](https://www.openssl.org/docs/man3.0/man3/SSL_CTX_set1_sigalgs_list.html)
     for more info.
   * `ciphers` {string} Cipher suite specification, replacing the default. For
     more information, see [Modifying the default TLS cipher suite][]. Permitted
     ciphers can be obtained via [`tls.getCiphers()`][]. Cipher names must be
     uppercased in order for OpenSSL to accept them.
-  * `clientCertEngine` {string} Name of an OpenSSL engine which can provide the
-    client certificate. **Deprecated.**
   * `crl` {string|string\[]|Buffer|Buffer\[]} PEM formatted CRLs (Certificate
     Revocation Lists).
   * `dhparam` {string|Buffer} `'auto'` or custom Diffie-Hellman parameters,
@@ -2086,12 +2176,6 @@ changes:
     occur in an array. `object.passphrase` is optional. Encrypted keys will be
     decrypted with `object.passphrase` if provided, or `options.passphrase` if
     it is not.
-  * `privateKeyEngine` {string} Name of an OpenSSL engine to get private key
-    from. Should be used together with `privateKeyIdentifier`. **Deprecated.**
-  * `privateKeyIdentifier` {string} Identifier of a private key managed by
-    an OpenSSL engine. Should be used together with `privateKeyEngine`.
-    Should not be set together with `key`, because both options define a
-    private key in different ways. **Deprecated.**
   * `maxVersion` {string} Optionally set the maximum TLS version to allow. One
     of `'TLSv1.3'`, `'TLSv1.2'`, `'TLSv1.1'`, or `'TLSv1'`. Cannot be specified
     along with the `secureProtocol` option; use one or the other.
@@ -2165,8 +2249,15 @@ permissible, use 2048 bits or larger for stronger security.
 added: v0.3.2
 changes:
   - version: REPLACEME
-    pr-url: https://github.com/nodejs/node/pull/63966
-    description: The `clientCertEngine` option is runtime deprecated.
+    pr-url: https://github.com/nodejs/node/pull/67618
+    description: The `allowRenegotiation` option now defaults to `false`.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67532
+    description: The `allowRenegotiation` option is now supported.
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/64777
+    description: Using the `clientCertEngine` option now throws
+                 `ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED`.
   - version:
     - v22.4.0
     - v20.16.0
@@ -2200,13 +2291,21 @@ changes:
 -->
 
 * `options` {Object}
+  * `allowRenegotiation` {boolean} If `true`, connections to the server may be
+    renegotiated, either when requested by the client or through local calls to
+    [`tlsSocket.renegotiate()`][]. Renegotiation is deprecated (see
+    [DEP0213][]), and setting this to `true` emits a deprecation warning.
+    Setting this to `true` throws [`ERR_TLS_RENEGOTIATION_UNSUPPORTED`][]
+    where the TLS library does not support renegotiation on servers.
+    **Default:** `false`.
   * `ALPNProtocols` {string\[]|Buffer|TypedArray|DataView} An array of strings,
     or a single `Buffer`, `TypedArray`, or `DataView` containing the supported
     ALPN protocols. Buffers should have the format `[len][name][len][name]...`
     e.g. `0x05hello0x05world`, where the first byte is the length of the next
     protocol name. Passing an array is usually much simpler, e.g.
     `['hello', 'world']`. (Protocols should be ordered by their priority.)
-  * `ALPNCallback` {Function} If set, this will be called when a
+  * `ALPNCallback` {Function} If set, this will be called
+    (with `this` set to the `tls.TLSSocket` instance) when a
     client opens a connection using the ALPN extension. One argument will
     be passed to the callback: an object containing `servername` and
     `protocols` fields, respectively containing the server name from
@@ -2217,8 +2316,6 @@ changes:
     If a string is returned that does not match one of the client's ALPN
     protocols, an error will be thrown. This option cannot be used with the
     `ALPNProtocols` option, and setting both options will throw an error.
-  * `clientCertEngine` {string} Name of an OpenSSL engine which can provide the
-    client certificate. **Deprecated.**
   * `enableTrace` {boolean} If `true`, [`tls.TLSSocket.enableTrace()`][] will be
     called on new connections. Tracing can be enabled after the secure
     connection is established, but this option must be used to trace the secure
@@ -2238,7 +2335,8 @@ changes:
     [Session Resumption][] for more information. **Default:** `300`.
   * `SNICallback(servername, callback)` {Function} A function that will be
     called if the client supports SNI TLS extension. Two arguments will be
-    passed when called: `servername` and `callback`. `callback` is an
+    passed when called: `servername` and `callback`, with `this` set to the
+    `tls.TLSSocket` instance associated with the connection. `callback` is an
     error-first callback that takes two optional arguments: `error` and `ctx`.
     `ctx`, if provided, is a `SecureContext` instance.
     [`tls.createSecureContext()`][] can be used to get a proper `SecureContext`.
@@ -2539,6 +2637,7 @@ added: v0.11.3
 
 [CVE-2021-44531]: https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-44531
 [Chrome's 'modern cryptography' setting]: https://www.chromium.org/Home/chromium-security/education/tls#TOC-Cipher-Suites
+[DEP0213]: deprecations.md#dep0213-tls-renegotiation
 [DHE]: https://en.wikipedia.org/wiki/Diffie%E2%80%93Hellman_key_exchange
 [ECDHE]: https://en.wikipedia.org/wiki/Elliptic_curve_Diffie%E2%80%93Hellman
 [IANA TLS Supported Groups registry]: https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-8
@@ -2555,7 +2654,7 @@ added: v0.11.3
 [RFC 5077]: https://tools.ietf.org/html/rfc5077
 [RFC 5929]: https://tools.ietf.org/html/rfc5929
 [RFC 8879]: https://tools.ietf.org/html/rfc8879
-[SSL_METHODS]: https://www.openssl.org/docs/man1.1.1/man7/ssl.html#Dealing-with-Protocol-Methods
+[SSL_METHODS]: https://www.openssl.org/docs/man3.0/man7/ssl.html#Dealing-with-Protocol-Methods
 [Session Resumption]: #session-resumption
 [Stream]: stream.md#stream
 [TLS recommendations]: https://wiki.mozilla.org/Security/Server_Side_TLS
@@ -2565,21 +2664,25 @@ added: v0.11.3
 [`'secureConnect'`]: #event-secureconnect
 [`'secureConnection'`]: #event-secureconnection
 [`'session'`]: #event-session
+[`'tlsClientError'`]: #event-tlsclienterror
 [`--tls-cipher-list`]: cli.md#--tls-cipher-listlist
 [`--use-bundled-ca`]: cli.md#--use-bundled-ca---use-openssl-ca
 [`--use-openssl-ca`]: cli.md#--use-bundled-ca---use-openssl-ca
 [`--use-system-ca`]: cli.md#--use-system-ca
 [`Duplex`]: stream.md#class-streamduplex
+[`ERR_TLS_RENEGOTIATION_DISABLED`]: errors.md#err_tls_renegotiation_disabled
+[`ERR_TLS_RENEGOTIATION_UNSUPPORTED`]: errors.md#err_tls_renegotiation_unsupported
 [`NODE_EXTRA_CA_CERTS`]: cli.md#node_extra_ca_certsfile
 [`NODE_OPTIONS`]: cli.md#node_optionsoptions
-[`SSL_export_keying_material`]: https://www.openssl.org/docs/man1.1.1/man3/SSL_export_keying_material.html
-[`SSL_get_version`]: https://www.openssl.org/docs/man1.1.1/man3/SSL_get_version.html
+[`SSL_export_keying_material`]: https://www.openssl.org/docs/man3.0/man3/SSL_export_keying_material.html
+[`SSL_get_version`]: https://www.openssl.org/docs/man3.0/man3/SSL_get_version.html
 [`crypto.getCurves()`]: crypto.md#cryptogetcurves
 [`import()`]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import
 [`net.Server.address()`]: net.md#serveraddress
 [`net.Server`]: net.md#class-netserver
 [`net.Socket`]: net.md#class-netsocket
 [`net.createServer()`]: net.md#netcreateserveroptions-connectionlistener
+[`new tls.TLSSocket()`]: #new-tlstlssocketsocket-options
 [`server.addContext()`]: #serveraddcontexthostname-context
 [`server.getTicketKeys()`]: #servergetticketkeys
 [`server.listen()`]: net.md#serverlisten
@@ -2596,7 +2699,6 @@ added: v0.11.3
 [`tls.TLSSocket.getProtocol()`]: #tlssocketgetprotocol
 [`tls.TLSSocket.getSession()`]: #tlssocketgetsession
 [`tls.TLSSocket.getTLSTicket()`]: #tlssocketgettlsticket
-[`tls.TLSSocket.isSessionReused()`]: #tlssocketissessionreused
 [`tls.TLSSocket.servername`]: #tlssocketservername
 [`tls.TLSSocket`]: #class-tlstlssocket
 [`tls.connect()`]: #tlsconnectoptions-callback
@@ -2605,9 +2707,10 @@ added: v0.11.3
 [`tls.getCACertificates()`]: #tlsgetcacertificatestype
 [`tls.getCiphers()`]: #tlsgetciphers
 [`tls.rootCertificates`]: #tlsrootcertificates
+[`tlsSocket.renegotiate()`]: #tlssocketrenegotiateoptions-callback
 [`x509.checkHost()`]: crypto.md#x509checkhostname-options
 [asn1.js]: https://www.npmjs.com/package/asn1.js
 [certificate object]: #certificate-object
-[cipher list format]: https://www.openssl.org/docs/man1.1.1/man1/ciphers.html#CIPHER-LIST-FORMAT
+[cipher list format]: https://www.openssl.org/docs/man3.0/man1/ciphers.html#CIPHER-LIST-FORMAT
 [forward secrecy]: https://en.wikipedia.org/wiki/Perfect_forward_secrecy
 [perfect forward secrecy]: #perfect-forward-secrecy

@@ -9,15 +9,18 @@
 #include "src/common/assert-scope.h"
 #include "src/common/globals.h"
 #include "src/objects/tagged-field.h"
+#include "src/sandbox/cppheap-pointer.h"
 #include "src/sandbox/external-pointer-table.h"
 #include "src/sandbox/external-pointer.h"
-#include "src/sandbox/indirect-pointer-tag.h"
 #include "src/sandbox/isolate.h"
+#include "src/sandbox/trusted-pointer-tag.h"
 
 namespace v8::internal {
 
 class Object;
 class ExposedTrustedObject;
+template <typename T, TrustedPointerTagRange kTagRange>
+class TrustedPointerMember;
 using TaggedBase = TaggedImpl<HeapObjectReferenceType::STRONG, Address>;
 
 template <typename Subclass, typename Data,
@@ -317,9 +320,16 @@ class ExternalPointerSlot
   ExternalPointerSlot(Address ptr, ExternalPointerTagRange tag_range)
       : SlotBase(ptr), tag_range_(tag_range) {}
 
-  template <ExternalPointerTag tag>
-  explicit ExternalPointerSlot(ExternalPointerMember<tag>* member)
-      : SlotBase(member->storage_address()), tag_range_(tag) {}
+  template <ExternalPointerTagRange kTagRange>
+  explicit ExternalPointerSlot(ExternalPointerMember<kTagRange>* member)
+      : SlotBase(member->storage_address()), tag_range_(kTagRange) {}
+
+  template <ExternalPointerTagRange kTagRange>
+  ExternalPointerSlot(ExternalPointerMember<kTagRange>* member,
+                      ExternalPointerTagRange tag_range)
+      : SlotBase(member->storage_address()), tag_range_(tag_range) {
+    DCHECK(kTagRange.Contains(tag_range));
+  }
 
   inline void init_lazily_initialized();
 
@@ -337,8 +347,7 @@ class ExternalPointerSlot
   // TODO(wingo): Remove if we switch to use the EPT for all external pointers
   // when pointer compression is enabled.
   bool HasExternalPointerHandle() const {
-    return V8_ENABLE_SANDBOX_BOOL || tag_range() == kArrayBufferExtensionTag ||
-           tag_range() == kWaiterQueueNodeTag;
+    return V8_ENABLE_SANDBOX_BOOL || tag_range() == kArrayBufferExtensionTag;
   }
   inline ExternalPointerHandle Relaxed_LoadHandle() const;
   inline void Relaxed_StoreHandle(ExternalPointerHandle handle) const;
@@ -401,6 +410,9 @@ class CppHeapPointerSlot
  public:
   explicit CppHeapPointerSlot(Address ptr) : SlotBase(ptr) {}
 
+  explicit CppHeapPointerSlot(CppHeapPointerMember* member)
+      : SlotBase(member->storage_address()) {}
+
   inline void init() const;
 
 #ifdef V8_COMPRESS_POINTERS
@@ -412,7 +424,10 @@ class CppHeapPointerSlot
   // should generally be accessed atomically as they may be accessed from other
   // threads, for example GC marking threads.
   inline CppHeapPointerHandle Relaxed_LoadHandle() const;
+
   inline void Release_StoreHandle(CppHeapPointerHandle handle) const;
+
+  inline void Relaxed_StoreHandle(CppHeapPointerHandle handle) const;
 
 #else
 
@@ -420,18 +435,24 @@ class CppHeapPointerSlot
   inline Address load() const;
 
 #endif  // V8_COMPRESS_POINTERS
+
+  using RawContent = CppHeapPointer_t;
+  inline RawContent GetAndClearContentForSerialization(
+      const DisallowGarbageCollection& no_gc);
+  inline void RestoreContentAfterSerialization(
+      RawContent content, const DisallowGarbageCollection& no_gc);
 };
 
-// An IndirectPointerSlot instance describes a 32-bit field ("slot") containing
-// an IndirectPointerHandle, i.e. an index to an entry in a pointer table which
+// An TrustedPointerSlot instance describes a 32-bit field ("slot") containing
+// an TrustedPointerHandle, i.e. an index to an entry in a pointer table which
 // contains the "real" pointer to the referenced HeapObject. These slots are
 // used when the sandbox is enabled to securely reference HeapObjects outside
 // of the sandbox.
-class IndirectPointerSlot
-    : public SlotBase<IndirectPointerSlot, IndirectPointerHandle,
+class TrustedPointerSlot
+    : public SlotBase<TrustedPointerSlot, TrustedPointerHandle,
                       kTaggedSize /* slot alignment */> {
  public:
-  IndirectPointerSlot()
+  TrustedPointerSlot()
       : SlotBase(kNullAddress)
 #ifdef V8_ENABLE_SANDBOX
         ,
@@ -440,7 +461,7 @@ class IndirectPointerSlot
   {
   }
 
-  explicit IndirectPointerSlot(Address ptr, IndirectPointerTagRange tag_range)
+  explicit TrustedPointerSlot(Address ptr, TrustedPointerTagRange tag_range)
       : SlotBase(ptr)
 #ifdef V8_ENABLE_SANDBOX
         ,
@@ -449,8 +470,19 @@ class IndirectPointerSlot
   {
   }
 
-  // Even though only HeapObjects can be stored into an IndirectPointerSlot,
-  // these slots can be empty (containing kNullIndirectPointerHandle), in which
+  template <typename T, TrustedPointerTagRange kTagRange>
+  explicit TrustedPointerSlot(TrustedPointerMember<T, kTagRange>* member)
+#ifdef V8_ENABLE_SANDBOX
+      : SlotBase(member->storage_address()),
+        tag_range_(kTagRange)
+#else
+      : SlotBase(member->ptr_location())
+#endif
+  {
+  }
+
+  // Even though only HeapObjects can be stored into an TrustedPointerSlot,
+  // these slots can be empty (containing kNullTrustedPointerHandle), in which
   // case load() will return Smi::zero().
   inline Tagged<Object> load(IsolateForSandbox isolate) const;
   inline void store(Tagged<ExposedTrustedObject> value) const;
@@ -468,17 +500,15 @@ class IndirectPointerSlot
   inline void Relaxed_Store(Tagged<ExposedTrustedObject> value) const;
   inline void Release_Store(Tagged<ExposedTrustedObject> value) const;
 
-  inline IndirectPointerHandle Relaxed_LoadHandle() const;
-  inline IndirectPointerHandle Acquire_LoadHandle() const;
-  inline void Relaxed_StoreHandle(IndirectPointerHandle handle) const;
-  inline void Release_StoreHandle(IndirectPointerHandle handle) const;
+  inline TrustedPointerHandle Relaxed_LoadHandle() const;
+  inline TrustedPointerHandle Acquire_LoadHandle() const;
+  inline void Relaxed_StoreHandle(TrustedPointerHandle handle) const;
+  inline void Release_StoreHandle(TrustedPointerHandle handle) const;
 
 #ifdef V8_ENABLE_SANDBOX
-  IndirectPointerTagRange tag_range() const { return tag_range_; }
+  TrustedPointerTagRange tag_range() const { return tag_range_; }
 #else
-  IndirectPointerTagRange tag_range() const {
-    return IndirectPointerTagRange();
-  }
+  TrustedPointerTagRange tag_range() const { return TrustedPointerTagRange(); }
 #endif
 
   // Whether this slot is empty, i.e. contains a null handle.
@@ -492,7 +522,7 @@ class IndirectPointerSlot
   // tag specified by the slot.
   enum TagCheckStrictness { kRequireExactMatch, kAllowUnpublishedEntries };
   template <TagCheckStrictness allow_unpublished = kRequireExactMatch>
-  inline Tagged<Object> ResolveHandle(IndirectPointerHandle handle,
+  inline Tagged<Object> ResolveHandle(TrustedPointerHandle handle,
                                       IsolateForSandbox isolate) const;
 
  private:
@@ -501,14 +531,10 @@ class IndirectPointerSlot
   // from the trusted pointer table.
   template <TagCheckStrictness allow_unpublished = kRequireExactMatch>
   inline Tagged<Object> ResolveTrustedPointerHandle(
-      IndirectPointerHandle handle, IsolateForSandbox isolate) const;
-  // Retrieve the Code object referenced through the given code pointer handle
-  // from the code pointer table.
-  inline Tagged<Object> ResolveCodePointerHandle(
-      IndirectPointerHandle handle) const;
+      TrustedPointerHandle handle, IsolateForSandbox isolate) const;
 
   // The tag associated with this slot.
-  IndirectPointerTagRange tag_range_;
+  TrustedPointerTagRange tag_range_;
 #endif  // V8_ENABLE_SANDBOX
 };
 
@@ -537,7 +563,7 @@ class WriteProtectedSlot : public SlotT {
 
 // Copies tagged words from |src| to |dst|. The data spans must not overlap.
 // |src| and |dst| must be kTaggedSize-aligned.
-inline void CopyTagged(Address dst, const Address src, size_t num_tagged);
+inline void CopyTagged(Address dst, const Address src, uint32_t num_tagged);
 
 // Fills `start` with `count` `value`s.
 inline void MemsetTagged(Tagged_t* start, Tagged<MaybeObject> value,

@@ -4,7 +4,6 @@
 
 #include "src/execution/local-isolate.h"
 
-#include "src/base/fpu.h"
 #include "src/bigint/bigint.h"
 #include "src/execution/isolate.h"
 #include "src/execution/thread-id.h"
@@ -15,9 +14,10 @@
 namespace v8 {
 namespace internal {
 
-LocalIsolate::LocalIsolate(Isolate* isolate, ThreadKind kind)
+LocalIsolate::LocalIsolate(Isolate* isolate, ThreadKind kind,
+                           v8::base::Stack::StackSlot stack_start)
     : HiddenLocalFactory(isolate),
-      heap_(isolate->heap(), kind),
+      heap_(isolate->heap(), kind, nullptr, stack_start),
       isolate_(isolate),
       logger_(new LocalLogger(isolate)),
       thread_id_(ThreadId::Current()),
@@ -29,9 +29,6 @@ LocalIsolate::LocalIsolate(Isolate* isolate, ThreadKind kind)
       default_locale_(isolate->DefaultLocale())
 #endif
 {
-  // LocalIsolate owning threads need to make sure to match the isolate's FPU
-  // state.
-  DCHECK_EQ(base::FPU::GetFlushDenormals(), isolate->flush_denormals());
 #ifdef V8_RUNTIME_CALL_STATS
   if (kind == ThreadKind::kMain) {
     runtime_call_stats_ = isolate->counters()->runtime_call_stats();
@@ -58,10 +55,37 @@ bool LocalIsolate::has_active_deserializer() const {
 
 int LocalIsolate::GetNextScriptId() { return isolate_->GetNextScriptId(); }
 
+class LocalBigIntPlatform final : public bigint::Platform {
+ public:
+  using digit_t = bigint::digit_t;
+
+  bool InterruptRequested() final { return false; }
+
+  ~LocalBigIntPlatform() final = default;
+
+#if V8_ENABLE_SANDBOX
+  LocalBigIntPlatform()
+      : allocator_(IsolateGroup::current()->GetInSandboxAllocator()) {}
+
+  digit_t* Allocate(size_t count) final {
+    return static_cast<digit_t*>(
+        allocator_->AllocateUninitializedOrCrash(count * sizeof(digit_t)));
+  }
+  void Free(digit_t* ptr) final { allocator_->Free(ptr); }
+
+ private:
+  v8::Allocator* allocator_;
+#else
+  LocalBigIntPlatform() {}
+  digit_t* Allocate(size_t count) final { return new digit_t[count]; }
+  void Free(digit_t* ptr) final { delete[] ptr; }
+#endif  // V8_ENABLE_SANDBOX
+};
+
 // Used for lazy initialization, based on an assumption that most
 // LocalIsolates won't be used to parse any BigInt literals.
 void LocalIsolate::InitializeBigIntProcessor() {
-  bigint_processor_ = bigint::Processor::New(new bigint::Platform());
+  bigint_processor_ = bigint::Processor::New(new LocalBigIntPlatform());
 }
 
 // static

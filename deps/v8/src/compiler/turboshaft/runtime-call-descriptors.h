@@ -27,12 +27,16 @@ struct runtime : CallDescriptorBuilder {
 
   template <typename Derived>
   struct Descriptor {
+    // Default effects are CanCallAnything to be as safe as possible. Individual
+    // RuntimeCallDescriptor can declare their own kEffects fields with narrower
+    // effects if desired.
+    static constexpr OpEffects kEffects = OpEffects().CanCallAnything();
+
     static const TSCallDescriptor* Create(size_t actual_argument_count,
                                           Zone* zone,
                                           LazyDeoptOnThrow lazy_deopt_on_throw,
                                           bool caller_can_deopt = true) {
-      DCHECK_IMPLIES(lazy_deopt_on_throw == LazyDeoptOnThrow::kYes,
-                     Derived::kCanTriggerLazyDeopt);
+      DCHECK_IMPLIES(lazy_deopt_on_throw, Derived::kCanTriggerLazyDeopt);
       auto descriptor = Linkage::GetRuntimeCallDescriptor(
           zone, Derived::kFunction, static_cast<int>(actual_argument_count),
           Derived::kProperties,
@@ -43,8 +47,8 @@ struct runtime : CallDescriptorBuilder {
       Derived::Verify(descriptor, actual_argument_count, caller_can_deopt);
 #endif  // DEBUG
       CanThrow can_throw = (Derived::kProperties & Operator::kNoThrow)
-                               ? CanThrow::kNo
-                               : CanThrow::kYes;
+                               ? CanThrow{false}
+                               : CanThrow{true};
       return TSCallDescriptor::Create(descriptor, can_throw,
                                       lazy_deopt_on_throw, zone);
     }
@@ -221,6 +225,8 @@ struct runtime : CallDescriptorBuilder {
     using Arguments = NoArguments;
     using returns_t = V<Object>;
 
+    // Even though termination doesn't resume in JS, we need a frame state
+    // here so the stack walker can summarize the frame.
     static constexpr bool kCanTriggerLazyDeopt = true;
     static constexpr Operator::Properties kProperties = Operator::kNoDeopt;
   };
@@ -393,23 +399,11 @@ struct runtime : CallDescriptorBuilder {
     static constexpr Operator::Properties kProperties = Operator::kNoThrow;
   };
 
-  struct NewClosure_Tenured : public Descriptor<NewClosure_Tenured> {
-    static constexpr auto kFunction = Runtime::kNewClosure_Tenured;
-    struct Arguments : ArgumentsBase {
-      ARG(V<SharedFunctionInfo>, shared_function_info)
-      ARG(V<FeedbackCell>, feedback_cell)
-    };
-    using returns_t = V<JSFunction>;
-
-    static constexpr bool kCanTriggerLazyDeopt = false;
-    static constexpr Operator::Properties kProperties = Operator::kNoThrow;
-  };
-
   struct HasInPrototypeChain : public Descriptor<HasInPrototypeChain> {
     static constexpr auto kFunction = Runtime::kHasInPrototypeChain;
     struct Arguments : ArgumentsBase {
       ARG(V<Object>, object)
-      ARG(V<HeapObject>, prototype)
+      ARG(V<Object>, prototype)
     };
     using returns_t = V<Boolean>;
 
@@ -438,6 +432,8 @@ struct runtime : CallDescriptorBuilder {
     // frame.
     static constexpr bool kCanTriggerLazyDeopt = false;
     static constexpr Operator::Properties kProperties = Operator::kFoldable;
+    static constexpr OpEffects kEffects =
+        OpEffects().CanAllocate().RequiredWhenUnused();
   };
 
   struct ArrayIsArray : public Descriptor<ArrayIsArray> {
@@ -451,6 +447,21 @@ struct runtime : CallDescriptorBuilder {
     static constexpr bool kCanTriggerLazyDeopt = true;
     static constexpr Operator::Properties kProperties = Operator::kNoProperties;
   };
+
+#if V8_ENABLE_WEBASSEMBLY
+  struct WasmExternConvertAny : public Descriptor<WasmExternConvertAny> {
+    static constexpr auto kFunction = Runtime::kWasmExternConvertAny;
+    struct Arguments : ArgumentsBase {
+      ARG(V<Object>, object)
+    };
+    using returns_t = V<JSObject>;
+
+    static constexpr bool kCanTriggerLazyDeopt = false;
+    static constexpr Operator::Properties kProperties = Operator::kEliminatable;
+    static constexpr OpEffects kEffects =
+        OpEffects().CanAllocate().CanReadHeapMemory().CanWriteHeapMemory();
+  };
+#endif  // V8_ENABLE_WEBASSEMBLY
 };
 
 }  // namespace v8::internal::compiler::turboshaft

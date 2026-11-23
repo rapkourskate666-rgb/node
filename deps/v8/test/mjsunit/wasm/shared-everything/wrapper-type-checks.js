@@ -2,14 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --experimental-wasm-shared
-// Flags: --allow-natives-syntax --shared-string-table --harmony-struct
+// Flags: --wasm-shared --allow-natives-syntax
 
 d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
-let sharedJSStruct = new (new SharedStructType(["str"]));
-sharedJSStruct.str = "shared string";
-assertTrue(%IsSharedString(sharedJSStruct.str));
+let sharedStr = %ShareObject("shared string");
+assertTrue(%IsSharedString(sharedStr));
 
 let createHeapNumber = (x) => x + x;
 
@@ -22,8 +20,7 @@ let vHeapNumber = () => 1.5;
 let vHeapNumberSmi = () => createHeapNumber(5.5);
 let vStringLiteral = () => "test";
 let vStringDynamic = () => [1, 2, 3].join("-");
-let vSharedString = () => sharedJSStruct.str;
-let vSharedJSStruct = () => sharedJSStruct;
+let vSharedString = () => sharedStr;
 let vObject = () => ({object: "literal"});
 let vSharedWasmStruct = (instance) => instance.exports.createSharedStruct();
 let vSharedWasmArray = (instance) => instance.exports.createSharedArray();
@@ -43,8 +40,8 @@ let tests = [
     name: "shared externref",
     type: wasmRefNullType(kWasmExternRef).shared(),
     valid: [vNull, vUndefined, vTrue, vFalse, vSmi, vStringLiteral,
-      vSharedString, vSharedJSStruct, vSharedWasmStruct,
-      vSharedWasmArray, vHeapNumber, vHeapNumberSmi, vStringDynamic],
+      vSharedString, vSharedWasmStruct, vSharedWasmArray, vHeapNumber,
+      vHeapNumberSmi, vStringDynamic],
     invalid: [vUnsharedWasmStruct, vUnsharedWasmArray, vObject, vSymbol,
       vBigInt]
   },
@@ -52,8 +49,8 @@ let tests = [
     name: "shared anyref",
     type: wasmRefNullType(kWasmAnyRef).shared(),
     valid: [vNull, vUndefined, vTrue, vFalse, vSmi, vStringLiteral,
-      vSharedString, vSharedJSStruct, vSharedWasmStruct,
-      vSharedWasmArray, vHeapNumber, vHeapNumberSmi, vStringDynamic],
+      vSharedString, vSharedWasmStruct, vSharedWasmArray, vHeapNumber,
+      vHeapNumberSmi, vStringDynamic],
     invalid: [vUnsharedWasmStruct, vUnsharedWasmArray, vObject, vSymbol,
       vBigInt]
   },
@@ -62,8 +59,8 @@ let tests = [
     type: wasmRefNullType(kWasmExternRef),
     valid: [vNull, vUndefined, vTrue, vFalse, vSmi, vHeapNumber, vStringLiteral,
       vStringDynamic, vObject, vUnsharedWasmStruct, vUnsharedWasmArray,
-      vSharedString, vSharedJSStruct, vSharedWasmStruct, vSharedWasmArray,
-      vHeapNumberSmi, vSymbol, vBigInt],
+      vSharedString, vSharedWasmStruct, vSharedWasmArray, vHeapNumberSmi,
+      vSymbol, vBigInt],
     invalid: []
   },
   {
@@ -71,8 +68,8 @@ let tests = [
     type: wasmRefNullType(kWasmAnyRef),
     valid: [vNull, vUndefined, vTrue, vFalse, vSmi, vHeapNumber, vStringLiteral,
       vStringDynamic, vObject, vUnsharedWasmStruct, vUnsharedWasmArray,
-      vSharedString, vSharedJSStruct, vSharedWasmStruct, vSharedWasmArray,
-      vHeapNumberSmi, vSymbol, vBigInt],
+      vSharedString, vSharedWasmStruct, vSharedWasmArray, vHeapNumberSmi,
+      vSymbol, vBigInt],
     invalid: []
   },
   {
@@ -80,8 +77,8 @@ let tests = [
     type: wasmRefNullType(kWasmEqRef).shared(),
     valid: [vNull, vSmi, vHeapNumberSmi, vSharedWasmStruct, vSharedWasmArray],
     invalid: [vUndefined, vTrue, vFalse, vHeapNumber, vStringLiteral,
-      vStringDynamic, vSharedString, vSharedJSStruct, vObject,
-      vUnsharedWasmStruct, vUnsharedWasmArray, vSymbol, vBigInt]
+      vStringDynamic, vSharedString, vObject, vUnsharedWasmStruct,
+      vUnsharedWasmArray, vSymbol, vBigInt]
   },
   {
     name: "eqref",
@@ -89,92 +86,88 @@ let tests = [
     valid: [vNull, vSmi, vHeapNumberSmi, vUnsharedWasmStruct,
       vUnsharedWasmArray],
     invalid: [vUndefined, vTrue, vFalse, vHeapNumber, vStringLiteral,
-      vStringDynamic, vSharedString, vSharedJSStruct, vObject,
-      vSharedWasmStruct, vSharedWasmArray, vSymbol, vBigInt]
+      vStringDynamic, vSharedString, vObject, vSharedWasmStruct,
+      vSharedWasmArray, vSymbol, vBigInt]
   },
   {
     name: "shared i31ref",
     type: wasmRefNullType(kWasmI31Ref).shared(),
     valid: [vNull, vSmi, vHeapNumberSmi],
     invalid: [vUndefined, vTrue, vFalse, vHeapNumber, vStringLiteral,
-      vStringDynamic, vSharedString, vSharedJSStruct, vObject,
-      vSharedWasmStruct, vSharedWasmArray, vUnsharedWasmStruct,
-      vUnsharedWasmArray, vSymbol, vBigInt]
+      vStringDynamic, vSharedString, vObject, vSharedWasmStruct,
+      vSharedWasmArray, vUnsharedWasmStruct, vUnsharedWasmArray, vSymbol,
+      vBigInt]
   },
   {
     name: "i31ref",
     type: wasmRefNullType(kWasmI31Ref),
     valid: [vNull, vSmi, vHeapNumberSmi],
     invalid: [vUndefined, vTrue, vFalse, vHeapNumber, vStringLiteral,
-      vStringDynamic, vSharedString, vSharedJSStruct, vObject,
-      vSharedWasmStruct, vSharedWasmArray, vUnsharedWasmStruct,
-      vUnsharedWasmArray, vSymbol, vBigInt]
+      vStringDynamic, vSharedString, vObject, vSharedWasmStruct,
+      vSharedWasmArray, vUnsharedWasmStruct, vUnsharedWasmArray, vSymbol,
+      vBigInt]
   },
   {
     name: "shared arrayref",
     type: wasmRefNullType(kWasmArrayRef).shared(),
     valid: [vNull, vSharedWasmArray],
     invalid: [vUndefined, vTrue, vFalse, vSmi, vHeapNumberSmi, vHeapNumber,
-      vStringLiteral, vStringDynamic, vSharedString, vSharedJSStruct,
-      vObject, vSharedWasmStruct, vUnsharedWasmStruct,
-      vUnsharedWasmArray, vSymbol, vBigInt]
+      vStringLiteral, vStringDynamic, vSharedString, vObject,
+      vSharedWasmStruct, vUnsharedWasmStruct, vUnsharedWasmArray, vSymbol,
+      vBigInt]
   },
   {
     name: "arrayref",
     type: wasmRefNullType(kWasmArrayRef),
     valid: [vNull, vUnsharedWasmArray],
     invalid: [vUndefined, vTrue, vFalse, vSmi, vHeapNumberSmi, vHeapNumber,
-      vStringLiteral, vStringDynamic, vSharedString, vSharedJSStruct,
-      vObject, vSharedWasmStruct, vUnsharedWasmStruct,
-      vSharedWasmArray, vSymbol, vBigInt]
+      vStringLiteral, vStringDynamic, vSharedString, vObject, vSharedWasmStruct,
+      vUnsharedWasmStruct, vSharedWasmArray, vSymbol, vBigInt]
   },
   {
     name: "shared structref",
     type: wasmRefNullType(kWasmStructRef).shared(),
     valid: [vNull, vSharedWasmStruct],
     invalid: [vUndefined, vTrue, vFalse, vSmi, vHeapNumberSmi, vHeapNumber,
-      vStringLiteral, vStringDynamic, vSharedString, vSharedJSStruct,
-      vObject, vSharedWasmArray, vUnsharedWasmStruct,
-      vUnsharedWasmArray, vSymbol, vBigInt]
+      vStringLiteral, vStringDynamic, vSharedString, vObject, vSharedWasmArray,
+      vUnsharedWasmStruct, vUnsharedWasmArray, vSymbol, vBigInt]
   },
   {
     name: "structref",
     type: wasmRefNullType(kWasmStructRef),
     valid: [vNull, vUnsharedWasmStruct],
     invalid: [vUndefined, vTrue, vFalse, vSmi, vHeapNumberSmi, vHeapNumber,
-      vStringLiteral, vStringDynamic, vSharedString, vSharedJSStruct,
-      vObject, vSharedWasmStruct, vSharedWasmArray,
-      vUnsharedWasmArray, vSymbol, vBigInt]
+      vStringLiteral, vStringDynamic, vSharedString, vObject, vSharedWasmStruct,
+      vSharedWasmArray, vUnsharedWasmArray, vSymbol, vBigInt]
   },
   {
     name: "shared none",
     type: wasmRefNullType(kWasmNullRef).shared(),
     valid: [vNull],
     invalid: [vUndefined, vTrue, vFalse, vSmi, vHeapNumberSmi, vHeapNumber,
-      vStringLiteral, vStringDynamic, vSharedString, vSharedJSStruct,
-      vObject, vSharedWasmStruct, vSharedWasmArray, vUnsharedWasmStruct,
-      vUnsharedWasmArray, vSymbol, vBigInt]
+      vStringLiteral, vStringDynamic, vSharedString, vObject, vSharedWasmStruct,
+      vSharedWasmArray, vUnsharedWasmStruct, vUnsharedWasmArray, vSymbol,
+      vBigInt]
   },
   {
     name: "none",
     type: wasmRefNullType(kWasmNullRef),
     valid: [vNull],
     invalid: [vUndefined, vTrue, vFalse, vSmi, vHeapNumberSmi, vHeapNumber,
-      vStringLiteral, vStringDynamic, vSharedString, vSharedJSStruct,
-      vObject, vSharedWasmStruct, vSharedWasmArray, vUnsharedWasmStruct,
-      vUnsharedWasmArray, vSymbol, vBigInt]
+      vStringLiteral, vStringDynamic, vSharedString, vObject, vSharedWasmStruct,
+      vSharedWasmArray, vUnsharedWasmStruct, vUnsharedWasmArray, vSymbol,
+      vBigInt]
   },
 ];
 
 for (const {name, type, valid, invalid} of tests) {
   print(`test ${name}`);
   let builder = new WasmModuleBuilder();
-  let struct = builder.addStruct(
-    [makeField(kWasmI32, true)], kNoSuperType, false, false);
+  let struct = builder.addStruct({fields: [makeField(kWasmI32, true)]});
   let sharedStruct = builder.addStruct(
-    [makeField(kWasmI32, true)], kNoSuperType, false, true);
-  let array = builder.addArray(kWasmI32, true, kNoSuperType, false, false);
-  let sharedArray = builder.addArray(kWasmI32, true, kNoSuperType, false, true);
+      {fields: [makeField(kWasmI32, true)], shared: true});
+  let array = builder.addArray(kWasmI32);
+  let sharedArray = builder.addArray(kWasmI32, {shared: true});
 
   builder.addFunction("createUnsharedStruct",
     makeSig([], [wasmRefType(struct)]))
@@ -221,3 +214,50 @@ for (const {name, type, valid, invalid} of tests) {
     }
   }
 }
+
+(function SharedStructInDifferentIsolate() {
+  print(arguments.callee.name);
+
+  let builder = new WasmModuleBuilder();
+
+  let struct = builder.addStruct(
+      {fields: [makeField(kWasmI32, true)], shared: true});
+  let producer_sig = makeSig([kWasmI32], [wasmRefType(struct)]);
+  builder.addFunction("producer", producer_sig)
+    .addBody([kExprLocalGet, 0, kGCPrefix, kExprStructNew, struct])
+    .exportFunc();
+
+  let instance = builder.instantiate();
+
+  let worker = new Worker(function() {
+    onmessage = function({data:msg}) {
+      d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
+
+      let builder = new WasmModuleBuilder();
+
+      let struct = builder.addStruct(
+          {fields: [makeField(kWasmI32, true)], shared: true});
+      let id_sig =
+          makeSig([wasmRefNullType(struct)], [wasmRefNullType(struct)]);
+      builder.addFunction("id", id_sig)
+        .addBody([kExprLocalGet, 0])
+        .exportFunc();
+
+      let instance = builder.instantiate();
+      try {
+        instance.exports.id(msg.struct);
+        postMessage({success: 1});
+      } catch {
+        postMessage({success: 0});
+      }
+      return;
+    }
+  }, {type: 'function'});
+
+  let value = 42;
+  let struct_obj = instance.exports.producer(value);
+  worker.postMessage({struct: struct_obj});
+
+  let response = worker.getMessage();
+  assertEquals(1, response.success);
+})();

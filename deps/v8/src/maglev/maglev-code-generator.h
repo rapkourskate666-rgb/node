@@ -5,6 +5,7 @@
 #ifndef V8_MAGLEV_MAGLEV_CODE_GENERATOR_H_
 #define V8_MAGLEV_MAGLEV_CODE_GENERATOR_H_
 
+#include "src/base/small-vector.h"
 #include "src/codegen/maglev-safepoint-table.h"
 #include "src/codegen/source-position-table.h"
 #include "src/common/globals.h"
@@ -12,9 +13,12 @@
 #include "src/maglev/maglev-assembler.h"
 #include "src/maglev/maglev-code-gen-state.h"
 #include "src/utils/identity-map.h"
+#include "src/zone/zone-containers.h"
 
 namespace v8 {
 namespace internal {
+class TrustedObject;
+
 namespace maglev {
 
 class Graph;
@@ -29,17 +33,21 @@ class MaglevCodeGenerator final {
 
   MaybeHandle<Code> Generate(Isolate* isolate);
 
-  GlobalHandleVector<Map> RetainedMaps(Isolate* isolate);
+  base::Vector<const IndirectHandle<Map>> retained_maps() const {
+    return base::VectorOf(retained_maps_);
+  }
+
+  Graph* graph() const { return graph_; }
 
  private:
   V8_NODISCARD bool EmitCode();
   void EmitDeferredCode();
   V8_NODISCARD bool EmitDeopts();
   void EmitExceptionHandlerTrampolines();
+  void EmitRetainedObjects();
   void EmitMetadata();
   void RecordInlinedFunctions();
 
-  GlobalHandleVector<Map> CollectRetainedMaps(DirectHandle<Code> code);
   Handle<DeoptimizationData> GenerateDeoptimizationData(
       LocalIsolate* local_isolate);
   MaybeHandle<Code> BuildCodeObject(LocalIsolate* local_isolate);
@@ -62,6 +70,8 @@ class MaglevCodeGenerator final {
 
   IdentityMap<int, base::DefaultAllocationPolicy> protected_deopt_literals_;
   IdentityMap<int, base::DefaultAllocationPolicy> deopt_literals_;
+  ZoneVector<IndirectHandle<TrustedObject>> protected_deopt_literals_vector_;
+  ZoneVector<IndirectHandle<Object>> deopt_literals_vector_;
   int deopt_exit_start_offset_ = -1;
   int handler_table_offset_ = 0;
   int inlined_function_count_ = 0;
@@ -70,7 +80,7 @@ class MaglevCodeGenerator final {
 
   IndirectHandle<DeoptimizationData> deopt_data_;
   MaybeIndirectHandle<Code> code_;
-  GlobalHandleVector<Map> retained_maps_;
+  base::SmallVector<IndirectHandle<Map>, 8> retained_maps_;
   bool is_context_specialized_;
   Zone* zone_;
 };

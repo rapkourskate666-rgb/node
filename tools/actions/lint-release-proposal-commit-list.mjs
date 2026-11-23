@@ -30,7 +30,7 @@ if (commitListingStart === -1) {
 } else {
   // We can't assume the Commits section is the one for this release in case of
   // a release to transition to LTS (i.e. with no commits).
-  const releaseStart = /\n<a id="(\d+\.\d+\.\d+)"><\/a>\n\n## \d+-\d+-\d+, Version \1/.exec(changelog);
+  const releaseStart = /\n<a id="(\d+(?:\.0\.0-alpha\.\d+)?\.\d+\.\d+)"><\/a>\n\n## \d+-\d+-\d+, Version \1/.exec(changelog);
   assert.ok(releaseStart, 'Could not determine the start of the release section');
   const releaseEnd = changelog.indexOf('\n\n<a', releaseStart.index);
   assert.notStrictEqual(releaseEnd, -1, 'Could not determine the end of the release section');
@@ -39,25 +39,47 @@ if (commitListingStart === -1) {
 
 // Normalize for consistent comparison
 commitList = commitList
+  .replaceAll('**(SEMVER-MAJOR)** ', '')
   .replaceAll('**(SEMVER-MINOR)** ', '')
   .replaceAll(/(?<= - )\*\*\(CVE-\d{4}-\d+\)\*\* (?=\*\*)/g, '')
   .replaceAll('\\', '');
 
 let expectedNumberOfCommitsLeft = commitList.match(/\n\* \[/g)?.length ?? 0;
 
+function reportError(message, lineStart = -1) {
+  let annotation = `file=${CHANGELOG_PATH}`;
+  if (lineStart !== -1) {
+    let line = 1;
+    for (let i = 0; i < lineStart + commitListingStart; i = changelog.indexOf('\n', i + 1)) {
+      line++;
+    }
+    annotation += `,line=${line}`;
+  }
+  console.error(`::error ${annotation},title=Release proposal linter::${message}`);
+  process.exitCode ||= 1;
+}
+
 for await (const line of stdinLineByLine) {
   const { smallSha, title, prURL } = JSON.parse(line);
 
   if (smallSha === RELEASE_COMMIT_SHA.slice(0, 10)) {
-    assert.strictEqual(
-      expectedNumberOfCommitsLeft, 0,
-      'Some commits are listed without being included in the proposal, or are listed more than once',
-    );
+    if (expectedNumberOfCommitsLeft !== 0) {
+      reportError('Some commits are listed without being included in the proposal, or are listed more than once');
+      // Avoid reporting the same discrepancy again after the loop.
+      expectedNumberOfCommitsLeft = 0;
+    }
     continue;
   }
 
+  // Used by the wrapping shell (in lint-release-proposal.yml) to check to labels
+  console.log(prURL);
+
   const lineStart = commitList.indexOf(`\n* [[\`${smallSha}\`]`);
-  assert.notStrictEqual(lineStart, -1, `Cannot find ${smallSha} on the list`);
+  if (lineStart === -1) {
+    reportError(`Cannot find ${smallSha} on the list`);
+    continue;
+  }
+  expectedNumberOfCommitsLeft--;
   const lineEnd = commitList.indexOf('\n', lineStart + 1);
 
   try {
@@ -79,15 +101,10 @@ for await (const line of stdinLineByLine) {
     if (e?.code !== 'ERR_ASSERTION') {
       throw e;
     }
-    let line = 1;
-    for (let i = 0; i < lineStart + commitListingStart; i = changelog.indexOf('\n', i + 1)) {
-      line++;
-    }
-    console.error(`::error file=${CHANGELOG_PATH},line=${line},title=Release proposal linter::${e.message}`);
+    reportError(e.message, lineStart);
     console.error(e);
-    process.exitCode ||= 1;
   }
-  expectedNumberOfCommitsLeft--;
-  console.log(prURL);
 }
-assert.strictEqual(expectedNumberOfCommitsLeft, 0, 'Release commit is not the last commit in the proposal');
+if (expectedNumberOfCommitsLeft !== 0) {
+  reportError('Release commit is not the last commit in the proposal');
+}

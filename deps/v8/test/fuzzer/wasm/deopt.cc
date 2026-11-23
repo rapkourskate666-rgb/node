@@ -6,6 +6,7 @@
 #include "include/v8-exception.h"
 #include "include/v8-isolate.h"
 #include "include/v8-local-handle.h"
+#include "src/base/unique-array.h"
 #include "src/base/vector.h"
 #include "src/execution/isolate.h"
 #include "src/objects/property-descriptor.h"
@@ -13,7 +14,6 @@
 #include "src/wasm/fuzzing/random-module-generation.h"
 #include "src/wasm/module-compiler.h"
 #include "src/wasm/wasm-engine.h"
-#include "src/wasm/wasm-feature-flags.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-objects-inl.h"
 #include "src/wasm/wasm-subtyping.h"
@@ -146,7 +146,7 @@ std::vector<ExecutionResult> PerformReferenceRun(
 
   DirectHandle<WasmInstanceObject> instance;
   if (!GetWasmEngine()
-           ->SyncInstantiate(isolate, &thrower, module_object, {}, {})
+           ->SyncInstantiate(isolate, &thrower, module_object, {})
            .ToHandle(&instance)) {
     CHECK(thrower.error());
     // The only reason to fail the second instantiation should be OOM. This can
@@ -274,8 +274,18 @@ int FuzzIt(base::Vector<const uint8_t> data) {
   // optimizing an inner wasm function, there can be a large amount of
   // parameters and returns with all kinds of types.
   const bool optimize_main_function =
-      inlinees.empty() || data.empty() || !(data.last() & 1);
-  const bool assert_types = !data.empty() && (data.last() & 2);
+      inlinees.empty() || data.empty() || !(data.back() & 1);
+#if defined(DEBUG) && defined(V8_USE_ADDRESS_SANITIZER)
+  // Disable register allocator verification on slow builds (Debug + ASan) to
+  // avoid timeouts in TurboFan/Turboshaft compilation on pathological inputs
+  // (see crbug.com/527760872).
+  FlagScope<bool> no_verify_allocator(&v8_flags.turbo_verify_allocation, false);
+  // Disable type assertions on slow builds (Debug + ASan) to avoid timeouts in
+  // TurboFan compilation (see crbug.com/520317061).
+  const bool assert_types = false;
+#else
+  const bool assert_types = !data.empty() && (data.back() & 2);
+#endif
   FlagScope<bool> assert_types_scope(&v8_flags.wasm_assert_types, assert_types);
 
   if (v8_flags.wasm_fuzzer_gen_test) {
@@ -315,7 +325,7 @@ int FuzzIt(base::Vector<const uint8_t> data) {
   ErrorThrower thrower(i_isolate, "WasmFuzzerSyncCompile");
   MaybeDirectHandle<WasmModuleObject> compiled = GetWasmEngine()->SyncCompile(
       i_isolate, enabled_features, CompileTimeImportsForFuzzing(), &thrower,
-      base::OwnedCopyOf(buffer));
+      base::UniqueCopyOf(buffer));
   if (!valid) {
     FATAL("Generated module should validate, but got: %s\n",
           thrower.error_msg());
@@ -324,9 +334,11 @@ int FuzzIt(base::Vector<const uint8_t> data) {
   std::vector<ExecutionResult> reference_results = PerformReferenceRun(
       callees, wire_bytes, enabled_features, valid, i_isolate);
 
-  if (reference_results.empty()) {
-    // If the first run already included non-determinism, there isn't any value
-    // in even compiling it (as this fuzzer focuses on executing deopts).
+  if (reference_results.size() < 2) {
+    // If the first run already included non-determinism or aborted before
+    // executing at least 2 callees (e.g. due to reaching max steps or stack
+    // overflow), there isn't any value in compiling it as we need at least 2
+    // callees to trigger a deopt.
     // Return -1 to not add this case to the corpus.
     return -1;
   }
@@ -334,7 +346,7 @@ int FuzzIt(base::Vector<const uint8_t> data) {
   DirectHandle<WasmModuleObject> module_object = compiled.ToHandleChecked();
   DirectHandle<WasmInstanceObject> instance;
   if (!GetWasmEngine()
-           ->SyncInstantiate(i_isolate, &thrower, module_object, {}, {})
+           ->SyncInstantiate(i_isolate, &thrower, module_object, {})
            .ToHandle(&instance)) {
     DCHECK(thrower.error());
     // The only reason to fail the second instantiation should be OOM. This can
@@ -412,7 +424,7 @@ V8_SYMBOL_USED extern "C" int LLVMFuzzerInitialize(int* argc, char*** argv) {
   // shared-everything-threads fuzzing.
   i::v8_flags.shared_heap = true;
   i::v8_flags.shared_strings = true;
-  i::v8_flags.experimental_wasm_shared = true;
+  i::v8_flags.wasm_shared = true;
 
   v8_fuzzer::FuzzerSupport::InitializeFuzzerSupport(argc, argv);
   return 0;

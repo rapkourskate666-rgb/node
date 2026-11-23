@@ -10,6 +10,7 @@ V8 correctness fuzzer launcher script.
 import argparse
 import hashlib
 import json
+import random
 import re
 import sys
 import traceback
@@ -141,9 +142,13 @@ SOURCE_FILE_TEMPLATE = """
 
 FUZZ_TEST_RE = re.compile(r'.*fuzz(-\d+\.js)')
 
-# The number of hex digits used from the hash of the original source file path.
+# The number of hex digits used from the hash of the original source label.
 # Keep the number small to avoid duplicate explosion.
 SOURCE_HASH_LENGTH = 2
+
+# Keep regexp-fuzzer failures in a distinct ClusterFuzz key namespace.
+REGEXP_FUZZER_SOURCE_PREFIX = 'regexp-fuzzer:'
+REGEXP_FUZZER_KEY_PREFIX = 'regexp-'
 
 # Placeholder string if no original source file could be determined.
 ORIGINAL_SOURCE_DEFAULT = 'none'
@@ -188,9 +193,6 @@ DISALLOWED_FLAGS = [
     '--expose-statistics',
     '--log',
     '--rcs',
-
-    # https://crbug.com/430624025
-    '--flush-denormals',
 ]
 
 # The same as above, but prefixes that either match multiple flags or flags
@@ -333,14 +335,21 @@ class ExecutionConfig(object):
     return '--simulate-errors' in self.flags
 
 
+def random_seed():
+  """Returns a random, non-zero seed."""
+  seed = 0
+  while not seed:
+    seed = random.SystemRandom().randint(-2147483648, 2147483647)
+  return seed
+
+
 def parse_args(args):
   first_config_arguments = ExecutionArgumentsConfig('first')
   second_config_arguments = ExecutionArgumentsConfig('second')
 
   parser = argparse.ArgumentParser()
   parser.add_argument(
-    '--random-seed', type=int, required=True,
-    help='random seed passed to both runs')
+      '--random-seed', type=int, help='random seed passed to both runs')
   parser.add_argument(
       '--skip-suppressions', default=False, action='store_true',
       help='skip suppressions to reproduce known issues')
@@ -355,8 +364,11 @@ def parse_args(args):
   parser.add_argument('testcase', help='path to test case')
   options = parser.parse_args(args)
 
+  if options.random_seed is None:
+    options.random_seed = random_seed()
+
   # Ensure we have a test case.
-  options.testcase = Path(options.testcase)
+  options.testcase = Path(options.testcase).resolve()
   assert options.testcase.is_file(), (
       f"Test case {options.testcase} doesn't exist")
 
@@ -432,7 +444,7 @@ def cluster_failures(source, known_failures=None):
   """Returns a string key for clustering duplicate failures.
 
   Args:
-    source: The original source path where the failure happened.
+    source: The source label preceding the failure.
     known_failures: Mapping from original source path to failure key.
   """
   known_failures = known_failures or KNOWN_FAILURES
@@ -452,8 +464,11 @@ def cluster_failures(source, known_failures=None):
     return 'smoke test failed'
 
   # We map all remaining failures to a short hash of the original source.
+  key_prefix = (
+      REGEXP_FUZZER_KEY_PREFIX
+      if source.startswith(REGEXP_FUZZER_SOURCE_PREFIX) else '')
   long_key = hashlib.sha1(source.encode('utf-8')).hexdigest()
-  return long_key[:SOURCE_HASH_LENGTH]
+  return key_prefix + long_key[:SOURCE_HASH_LENGTH]
 
 
 class RepeatedRuns(object):

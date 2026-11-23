@@ -33,6 +33,8 @@ T Nabs(T a) {
 #if defined(USE_SIMULATOR)
 // Running with a simulator.
 
+#include <array>
+
 #include "src/base/hashmap.h"
 #include "src/base/strings.h"
 #include "src/codegen/assembler.h"
@@ -211,9 +213,11 @@ class Simulator : public SimulatorBase {
   float ceil(float value);
   float floor(float value);
   float trunc(float value);
+  float roundeven(float value);
   double ceil(double value);
   double floor(double value);
   double trunc(double value);
+  double roundeven(double value);
 
   // Accessors for register state. Reading the pc value adheres to the LOONG64
   // architecture specification and is off by a 8 from the currently executing
@@ -417,7 +421,7 @@ class Simulator : public SimulatorBase {
   // signal which was then handled by the trap handler (also see
   // {trap_handler::ProbeMemory}). If the access raises a signal which is not
   // handled by the trap handler (e.g. because the current PC is not registered
-  // as a protected instruction), the signal will propagate and make the process
+  // as a trapping instruction), the signal will propagate and make the process
   // crash. If no trap handler is available, this always returns true.
   bool ProbeMemory(uintptr_t address, uintptr_t access_size);
 
@@ -625,7 +629,7 @@ class Simulator : public SimulatorBase {
   bool pc_modified_;
   int64_t icount_;
   int break_count_;
-  base::EmbeddedVector<char, 128> trace_buf_;
+  std::array<char, 128> trace_buf_;
 
   // Debugger input.
   char* last_debugger_input_;

@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#include <array>
 #include <cmath>
 
 #include "src/base/bits.h"
@@ -192,10 +193,10 @@ void PPCDebugger::Debug() {
       disasm::NameConverter converter;
       disasm::Disassembler dasm(converter);
       // use a reasonably large buffer
-      v8::base::EmbeddedVector<char, 256> buffer;
+      std::array<char, 256> buffer;
       dasm.InstructionDecode(buffer,
                              reinterpret_cast<uint8_t*>(sim_->get_pc()));
-      PrintF("  0x%08" V8PRIxPTR "  %s\n", sim_->get_pc(), buffer.begin());
+      PrintF("  0x%08" V8PRIxPTR "  %s\n", sim_->get_pc(), buffer.data());
       last_pc = sim_->get_pc();
     }
     char* line = ReadLine("sim> ");
@@ -233,11 +234,10 @@ void PPCDebugger::Debug() {
             disasm::NameConverter converter;
             disasm::Disassembler dasm(converter);
             // use a reasonably large buffer
-            v8::base::EmbeddedVector<char, 256> buffer;
+            std::array<char, 256> buffer;
             dasm.InstructionDecode(buffer,
                                    reinterpret_cast<uint8_t*>(sim_->get_pc()));
-            PrintF("  0x%08" V8PRIxPTR "  %s\n", sim_->get_pc(),
-                   buffer.begin());
+            PrintF("  0x%08" V8PRIxPTR "  %s\n", sim_->get_pc(), buffer.data());
             sim_->ExecuteInstruction(
                 reinterpret_cast<Instruction*>(sim_->get_pc()));
           }
@@ -414,7 +414,7 @@ void PPCDebugger::Debug() {
         disasm::NameConverter converter;
         disasm::Disassembler dasm(converter);
         // use a reasonably large buffer
-        v8::base::EmbeddedVector<char, 256> buffer;
+        std::array<char, 256> buffer;
 
         uint8_t* prev = nullptr;
         uint8_t* cur = nullptr;
@@ -455,7 +455,7 @@ void PPCDebugger::Debug() {
           prev = cur;
           cur += dasm.InstructionDecode(buffer, cur);
           PrintF("  0x%08" V8PRIxPTR "  %s\n", reinterpret_cast<intptr_t>(prev),
-                 buffer.begin());
+                 buffer.data());
         }
       } else if (strcmp(cmd, "gdb") == 0) {
         PrintF("relinquishing control to gdb\n");
@@ -1798,6 +1798,16 @@ void Simulator::ExecuteGeneric(Instruction* instr) {
       set_pc(get_pc() + (2 * kInstrSize));
       break;
     }
+    case ADDPCIS: {
+      int rt = instr->RTValue();
+      int d0 = instr->Bits(15, 6);
+      int d1 = instr->Bits(20, 16);
+      int d2 = instr->Bit(0);
+      int32_t imm_val = static_cast<int16_t>(((d0 << 6) | (d1 << 1) | d2));
+      imm_val <<= 16;
+      set_register(rt, get_pc() + kInstrSize + static_cast<int64_t>(imm_val));
+      break;
+    }
     case SUBFIC: {
       int rt = instr->RTValue();
       int ra = instr->RAValue();
@@ -3031,12 +3041,16 @@ void Simulator::ExecuteGeneric(Instruction* instr) {
       int rb = instr->RBValue();
       int64_t ra_val = get_register(ra);
       int64_t rb_val = get_register(rb);
-      int64_t alu_out = ra_val * rb_val;
+      int64_t alu_out;
+      bool is_overflow = __builtin_mul_overflow(ra_val, rb_val, &alu_out);
       set_register(rt, alu_out);
-      if (instr->Bit(0)) {  // RC bit set
-        SetCR0(alu_out);
+      if (instr->Bit(10)) {  // OE bit set
+        SetOV(is_overflow);
+        SetOV32(is_overflow);
       }
-      // todo - handle OE bit
+      if (instr->Bit(0)) {  // RC bit set
+        SetCR0(alu_out, special_reg_xer_.fields.SO);
+      }
       break;
     }
     case DIVW: {
@@ -3886,6 +3900,9 @@ void Simulator::ExecuteGeneric(Instruction* instr) {
         invalid_convert = true;
       } else {
         switch (mode) {
+          case kRoundToNearest:
+            frb_val = std::nearbyint(frb_val);
+            break;
           case kRoundToZero:
             frb_val = std::trunc(frb_val);
             break;
@@ -5562,10 +5579,10 @@ void Simulator::Trace(Instruction* instr) {
   disasm::NameConverter converter;
   disasm::Disassembler dasm(converter);
   // use a reasonably large buffer
-  v8::base::EmbeddedVector<char, 256> buffer;
+  std::array<char, 256> buffer;
   dasm.InstructionDecode(buffer, reinterpret_cast<uint8_t*>(instr));
   PrintF("%05d  %08" V8PRIxPTR "  %s\n", icount_,
-         reinterpret_cast<intptr_t>(instr), buffer.begin());
+         reinterpret_cast<intptr_t>(instr), buffer.data());
 }
 
 // Executes the current instruction.

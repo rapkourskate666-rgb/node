@@ -376,6 +376,19 @@ class BranchEliminationReducer : public Next {
       goto no_change;
     }
 
+    if (__ data()->is_wasm()) {
+      // Wasm cannot handle it if too many deoptimization exits are created
+      // (kTooManyDeoptimizationBailouts in the CodeGenerator). In Wasm,
+      // DeoptimizeIfOps are rare and cloning them is probably not worth the
+      // metadata overhead.
+      for (const Operation& op :
+           __ input_graph().operations(*destination_origin)) {
+        if (op.Is<DeoptimizeIfOp>()) {
+          goto no_change;
+        }
+      }
+    }
+
     if (const BranchOp* branch = last_op.template TryCast<BranchOp>()) {
       V<Word32> condition =
           __ template MapToNewGraph<true>(branch->condition());
@@ -448,8 +461,8 @@ class BranchEliminationReducer : public Next {
     goto no_change;
   }
 
-  V<None> REDUCE(DeoptimizeIf)(V<Word32> condition, V<FrameState> frame_state,
-                               bool negated,
+  V<None> REDUCE(DeoptimizeIf)(V<Word32> condition,
+                               V<EagerFrameState> frame_state, bool negated,
                                const DeoptimizeParameters* parameters) {
     LABEL_BLOCK(no_change) {
       return Next::ReduceDeoptimizeIf(condition, frame_state, negated,
@@ -477,8 +490,9 @@ class BranchEliminationReducer : public Next {
   }
 
 #if V8_ENABLE_WEBASSEMBLY
-  V<None> REDUCE(TrapIf)(V<Word32> condition, OptionalV<FrameState> frame_state,
-                         bool negated, const TrapId trap_id) {
+  V<None> REDUCE(TrapIf)(V<Word32> condition,
+                         OptionalV<EagerFrameState> frame_state, bool negated,
+                         const TrapId trap_id) {
     LABEL_BLOCK(no_change) {
       return Next::ReduceTrapIf(condition, frame_state, negated, trap_id);
     }

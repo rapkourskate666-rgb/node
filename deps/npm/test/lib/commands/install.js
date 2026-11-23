@@ -16,6 +16,7 @@ const {
   loadNpmWithRegistry: loadMockNpm,
   workspaceMock,
 } = require('../../fixtures/mock-npm')
+const orphanFixture = require('../../fixtures/allow-scripts-orphan.js')
 
 // tspawk calls preventUnmatched which assures that no scripts run if we don't mock any
 const spawk = tspawk(t)
@@ -99,6 +100,118 @@ t.test('exec commands', async t => {
 
     await npm.exec('install')
     t.strictSame(lifecycleScripts, runOrder, 'all script ran in the correct order')
+  })
+
+  // Regression test: root `preinstall` must run before any dependency is fetched/unpacked, while `install` and `postinstall` run after reify has populated node_modules.
+  await t.test('preinstall runs before reify, post-reify scripts run after', async t => {
+    const events = []
+    const { npm, registry } = await loadMockNpm(t, {
+      config: { audit: false },
+      prefixDir: {
+        'package.json': JSON.stringify({
+          ...packageJson,
+          scripts: {
+            preinstall: 'echo preinstall',
+            install: 'echo install',
+            postinstall: 'echo postinstall',
+          },
+        }),
+        abbrev,
+      },
+      mocks: {
+        '@npmcli/run-script': async (opts) => {
+          // Only record scripts targeted at the project root, not any that arborist may run for dependencies during reify.
+          if (opts.path === npm.prefix) {
+            const abbrevPkg = path.join(npm.prefix, 'node_modules', 'abbrev', 'package.json')
+            events.push({ event: opts.event, depInstalled: fs.existsSync(abbrevPkg) })
+          }
+        },
+      },
+    })
+    const manifest = registry.manifest({ name: 'abbrev' })
+    await registry.package({ manifest })
+    await registry.tarball({
+      manifest: manifest.versions['1.0.0'],
+      tarball: path.join(npm.prefix, 'abbrev'),
+    })
+
+    await npm.exec('install')
+
+    const pre = events.find(e => e.event === 'preinstall')
+    const post = events.find(e => e.event === 'postinstall')
+    t.ok(pre, 'preinstall ran')
+    t.ok(post, 'postinstall ran')
+    t.equal(pre.depInstalled, false, 'preinstall runs before dependencies are installed')
+    t.equal(post.depInstalled, true, 'postinstall runs after dependencies are installed')
+  })
+
+  await t.test('without args, --ignore-scripts skips preinstall entirely', async t => {
+    const events = []
+    const { npm, registry } = await loadMockNpm(t, {
+      config: { audit: false, 'ignore-scripts': true },
+      prefixDir: {
+        'package.json': JSON.stringify({
+          ...packageJson,
+          scripts: {
+            preinstall: 'echo preinstall',
+            postinstall: 'echo postinstall',
+          },
+        }),
+        abbrev,
+      },
+      mocks: {
+        '@npmcli/run-script': async (opts) => {
+          if (opts.path === npm.prefix) {
+            events.push(opts.event)
+          }
+        },
+      },
+    })
+    const manifest = registry.manifest({ name: 'abbrev' })
+    await registry.package({ manifest })
+    await registry.tarball({
+      manifest: manifest.versions['1.0.0'],
+      tarball: path.join(npm.prefix, 'abbrev'),
+    })
+
+    await npm.exec('install')
+    t.strictSame(events, [], 'no root lifecycle scripts run when --ignore-scripts is set')
+  })
+
+  // Regression test: a failing root `preinstall` must short-circuit before reify runs, so dependencies never reach disk on failure. This is the cleaner failure mode the PR was motivated by; future refactors that swallow the rejection and still call reify must fail here.
+  await t.test('a failing preinstall prevents reify', async t => {
+    const events = []
+    const { npm } = await loadMockNpm(t, {
+      config: { audit: false },
+      prefixDir: {
+        'package.json': JSON.stringify({
+          ...packageJson,
+          scripts: {
+            preinstall: 'exit 1',
+            postinstall: 'echo postinstall',
+          },
+        }),
+        abbrev,
+      },
+      mocks: {
+        '@npmcli/run-script': async (opts) => {
+          if (opts.path === npm.prefix) {
+            events.push(opts.event)
+            if (opts.event === 'preinstall') {
+              throw Object.assign(new Error('preinstall failed'), { code: 'ELIFECYCLE' })
+            }
+          }
+        },
+      },
+    })
+
+    await t.rejects(npm.exec('install'), /preinstall failed/, 'install rejects when preinstall fails')
+    t.strictSame(events, ['preinstall'], 'only preinstall ran; no post-reify scripts')
+    t.equal(
+      fs.existsSync(path.join(npm.prefix, 'node_modules', 'abbrev', 'package.json')),
+      false,
+      'no dependency reached disk after preinstall failure'
+    )
   })
 
   await t.test('should ignore scripts with --ignore-scripts', async t => {
@@ -255,6 +368,20 @@ t.test('exec commands', async t => {
     )
   })
 
+  t.test('allow-git default rejects git deps', async t => {
+    const { npm } = await loadMockNpm(t, {
+      config: { audit: false },
+    })
+    await t.rejects(
+      npm.exec('install', ['npm/npm']),
+      {
+        code: 'EALLOWGIT',
+        package: 'github:npm/npm',
+      },
+      'no explicit allow-git config still blocks git installs'
+    )
+  })
+
   t.test('allow-git=root refuses non-root git dependency', async t => {
     const { npm } = await loadMockNpm(t, {
       config: {
@@ -395,6 +522,24 @@ t.test('exec commands', async t => {
       'user-supplied remote URL is still blocked'
     )
   })
+
+  t.test('allow-remote default rejects a user-supplied remote URL', async t => {
+    const { npm } = await loadMockNpm(t, {
+      config: { audit: false },
+      prefixDir: {
+        'package.json': JSON.stringify({
+          name: '@npmcli/test-package',
+          version: '1.0.0',
+          dependencies: { abbrev: 'https://registry.npmjs.org/abbrev/-/abbrev-2.0.0.tgz' },
+        }),
+      },
+    })
+    await t.rejects(
+      npm.exec('install', []),
+      { code: 'EALLOWREMOTE' },
+      'no explicit allow-remote config still blocks user-supplied tarball URLs'
+    )
+  })
 })
 
 t.test('completion', async t => {
@@ -450,6 +595,132 @@ t.test('completion', async t => {
     const { install } = await mockComp(t)
     const res = await install.completion({ partialWord: '/' })
     t.strictSame(res, [])
+  })
+})
+
+t.test('install with an extraneous local link', async t => {
+  const setup = (t, config = {}) => loadMockNpm(t, {
+    config: { audit: false, fund: false, 'package-lock': false, ...config },
+    prefixDir: {
+      'package.json': JSON.stringify({ name: 'host', version: '1.0.0' }),
+      foo: {
+        'package.json': JSON.stringify({
+          name: 'foo',
+          version: '1.0.0',
+          scripts: { install: 'echo linked-install' },
+        }),
+      },
+      node_modules: { foo: t.fixture('symlink', '../foo') },
+    },
+  })
+
+  await t.test('strict mode rejects a retained link target', async t => {
+    const { npm, assert } = await setup(t, { 'strict-allow-scripts': true })
+    await t.rejects(npm.exec('install', []), {
+      code: 'ESTRICTALLOWSCRIPTS',
+      message: /foo@1\.0\.0/,
+    })
+    assert.fileShouldExist('node_modules/foo/package.json')
+  })
+
+  await t.test('normal mode keeps the blocked-script warning', async t => {
+    const { npm, logs } = await setup(t)
+    await npm.exec('install', [])
+    const warnings = logs.warn.byTitle('install-scripts').join('\n')
+    t.match(warnings, /1 package had install scripts blocked/)
+    t.match(warnings, /foo@1\.0\.0/)
+  })
+
+  await t.test('JSON keeps the blocked-script entry', async t => {
+    const { npm, joinedOutput } = await setup(t, { json: true })
+    await npm.exec('install', [])
+    t.strictSame(JSON.parse(joinedOutput()).unreviewedScripts, [{
+      name: 'foo',
+      version: '1.0.0',
+      path: path.join(npm.prefix, 'foo'),
+      scripts: { install: 'echo linked-install' },
+    }])
+  })
+
+  await t.test('the bypass still rebuilds the retained link', async t => {
+    const { npm } = await setup(t, {
+      'strict-allow-scripts': true,
+      'dangerously-allow-all-scripts': true,
+    })
+    let calls = 0
+    spawk.spawn(/.*/, args => {
+      calls++
+      return args.includes('echo linked-install')
+    })
+    await npm.exec('install', [])
+    t.equal(calls, 1, 'ran the linked package install script')
+  })
+
+  await t.test('pruning the link does not reject or warn about its detached target', async t => {
+    const { npm, logs, assert } = await setup(t, {
+      'strict-allow-scripts': true,
+      'package-lock': true,
+    })
+    await npm.exec('install', [])
+    assert.fileShouldNotExist('node_modules/foo')
+    assert.fileShouldExist('foo/package.json')
+    t.strictSame(logs.warn.byTitle('install-scripts'), [])
+  })
+})
+
+t.test('install with lockfile-only orphans', async t => {
+  const testOrphan = async (t, {
+    workspace = true,
+    allowScripts,
+    strict = true,
+    json = false,
+  } = {}) => {
+    const { npm, registry, assert, logs, clearOutput, joinedOutput } = await loadMockNpm(t, {
+      config: { audit: false, fund: false, 'strict-allow-scripts': strict, json },
+      prefixDir: orphanFixture(t, { workspace, allowScripts }),
+    })
+    const manifest = registry.manifest({ name: 'abbrev' })
+    await registry.tarball({
+      manifest: manifest.versions['1.0.0'],
+      tarball: path.join(npm.prefix, 'tarballs/abbrev@1.0.0'),
+    })
+
+    await npm.exec('install', [])
+
+    assert.packageInstalled('node_modules/abbrev@1.0.0')
+    assert.fileShouldNotExist('app/node_modules/abbrev/node_modules/orphan')
+    t.strictSame(logs.warn.byTitle('install-scripts'), [], 'no orphan warning')
+    if (json) {
+      t.notOk(Object.hasOwn(JSON.parse(joinedOutput()), 'unreviewedScripts'), 'no orphan entry')
+    } else {
+      clearOutput()
+      await npm.exec('install-scripts', ['ls'])
+      t.match(joinedOutput(), /No packages with unreviewed install scripts/)
+    }
+  }
+
+  for (const workspace of [true, false]) {
+    for (const allowScripts of [undefined, { orphan: false }]) {
+      const source = workspace ? 'workspace' : 'file link'
+      const policy = allowScripts ? 'denied' : 'unreviewed'
+      for (const strict of [false, true]) {
+        await t.test(`${source}, ${policy} orphan, strict=${strict}`,
+          t => testOrphan(t, { workspace, allowScripts, strict }))
+      }
+    }
+  }
+
+  await t.test('JSON excludes the orphan', t => testOrphan(t, { json: true }))
+
+  await t.test('still rejects a required unreviewed package', async t => {
+    const { npm } = await loadMockNpm(t, {
+      config: { audit: false, 'strict-allow-scripts': true },
+      prefixDir: orphanFixture(t, { requiredScripts: true }),
+    })
+    await t.rejects(npm.exec('install', []), {
+      code: 'ESTRICTALLOWSCRIPTS',
+      message: /1 package\(s\) have install scripts not covered by allowScripts:\n {2}abbrev@1\.0\.0/,
+    })
   })
 })
 

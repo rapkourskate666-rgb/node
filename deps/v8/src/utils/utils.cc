@@ -229,8 +229,7 @@ uintptr_t GetCurrentStackPosition() {
 //   "name"   only the function "name"
 //   "name*"  only functions starting with "name"
 //   "~"      none; the tilde is not an identifier
-bool PassesFilter(base::Vector<const char> name,
-                  base::Vector<const char> filter) {
+bool PassesFilter(std::string_view name, std::string_view filter) {
   if (filter.empty()) return name.empty();
   auto filter_it = filter.begin();
   bool positive_filter = true;
@@ -249,9 +248,7 @@ bool PassesFilter(base::Vector<const char> name,
 
   if (name.size() < min_match_length) return !positive_filter;
 
-  // TODO(sigurds): Use the new version of std::mismatch here, once we
-  // can assume C++14.
-  auto res = std::mismatch(filter_it, filter.end(), name.begin());
+  auto res = std::mismatch(filter_it, filter.end(), name.begin(), name.end());
   if (res.first == filter.end()) {
     if (res.second == name.end()) {
       // The strings match, so {name} passes if we have a {positive_filter}.

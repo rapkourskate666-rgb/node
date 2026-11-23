@@ -9,6 +9,7 @@
 #include "include/v8-platform.h"
 #include "include/v8config.h"
 #include "src/base/bounds.h"
+#include "src/base/platform/platform.h"
 #include "src/common/globals.h"
 
 #if V8_ENABLE_WEBASSEMBLY
@@ -74,6 +75,16 @@ class V8_EXPORT_PRIVATE Sandbox {
   // The name for the virtual address space reservation backing the sandbox.
   static constexpr const char* kSandboxAddressSpaceName = "v8-sandbox";
 
+  // A heuristic used by the sandbox crash filter to identify crashes on
+  // unaddressable accesses (e.g. on ARM64). Note that this is only a testing
+  // heuristic and does not reflect the actual virtual address space size,
+  // which is determined dynamically during sandbox initialization.
+#if V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57
+  static constexpr int kMaxVirtualAddressBitsForCrashFilter = 57;
+#else   // !(V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57)
+  static constexpr int kMaxVirtualAddressBitsForCrashFilter = 48;
+#endif  // !(V8_TARGET_ARCH_X64 && V8_SUPPORT_LA57)
+
   /**
    * Initializes this sandbox.
    *
@@ -86,7 +97,7 @@ class V8_EXPORT_PRIVATE Sandbox {
    * address space can be allocated for even a partially-reserved sandbox, then
    * this method will fail with an OOM crash.
    */
-  void Initialize(v8::VirtualAddressSpace* vas);
+  void Initialize(v8::Platform* platform, v8::VirtualAddressSpace* vas);
 
   /**
    * Tear down this sandbox.
@@ -115,14 +126,12 @@ class V8_EXPORT_PRIVATE Sandbox {
   /**
    * Returns true if the first four GB of the address space are inaccessible.
    *
-   * During initialization, the sandbox will also attempt to create an
-   * inaccessible mapping in the first four GB of the address space. This is
-   * useful to mitigate Smi<->HeapObject confusion issues, in which a (32-bit)
-   * Smi is treated as a pointer and dereferenced.
+   * During initialization, the sandbox checks whether the platform/allocator
+   * has reserved an inaccessible zero segment covering the first four GB of the
+   * address space. This is useful to mitigate Smi<->HeapObject confusion
+   * issues, in which a (32-bit) Smi is treated as a pointer and dereferenced.
    */
-  bool smi_address_range_is_inaccessible() const {
-    return first_four_gb_of_address_space_are_reserved_;
-  }
+  bool has_zero_segment() const { return has_zero_segment_; }
 
   /**
    * The base address of the sandbox.
@@ -233,13 +242,14 @@ class V8_EXPORT_PRIVATE Sandbox {
   Address end_address() const { return reinterpret_cast<Address>(&end_); }
   Address size_address() const { return reinterpret_cast<Address>(&size_); }
 
-  static void InitializeDefaultOncePerProcess(v8::VirtualAddressSpace* vas);
+  static void InitializeDefaultOncePerProcess(v8::Platform* platform,
+                                              v8::VirtualAddressSpace* vas);
   static void TearDownDefault();
 
   // Create a new sandbox allocating a fresh pointer cage.
   // If new sandboxes cannot be created in this build configuration, abort.
   //
-  static Sandbox* New(v8::VirtualAddressSpace* vas);
+  static Sandbox* New(v8::Platform* platform, v8::VirtualAddressSpace* vas);
 
 #ifdef V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES
 #ifdef USING_V8_SHARED_PRIVATE
@@ -256,6 +266,15 @@ class V8_EXPORT_PRIVATE Sandbox {
 #endif  // !V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES
 
   V8_INLINE static Sandbox* GetDefault() { return default_sandbox_; }
+
+  // Allocator that can be used for in-sandbox allocations. The sandbox will
+  // provide a default allocator which can be overridden with
+  // `set_in_sandbox_allocator()`.
+  Allocator* in_sandbox_allocator() { return in_sandbox_allocator_.get(); }
+
+  // Sets a custom in-sandbox allocator that can be retrieved with
+  // `in_sandbox_allocator()`.
+  void set_in_sandbox_allocator(std::shared_ptr<Allocator> allocator);
 
  private:
   // The SequentialUnmapperTest calls the private Initialize method to create a
@@ -275,21 +294,22 @@ class V8_EXPORT_PRIVATE Sandbox {
   // regions. The provided virtual address space must be able to allocate
   // subspaces. The size must be a multiple of the allocation granularity of the
   // virtual memory space.
-  bool Initialize(v8::VirtualAddressSpace* vas, size_t size,
-                  bool use_guard_regions);
+  bool Initialize(v8::Platform* platform, v8::VirtualAddressSpace* vas,
+                  size_t size, bool use_guard_regions);
 
   // Used when reserving virtual memory is too expensive. A partially reserved
   // sandbox does not reserve all of its virtual memory and so doesn't have the
   // desired security properties as unrelated mappings could end up inside of
   // it and be corrupted. The size and size_to_reserve parameters must be
   // multiples of the allocation granularity of the virtual address space.
-  bool InitializeAsPartiallyReservedSandbox(v8::VirtualAddressSpace* vas,
+  bool InitializeAsPartiallyReservedSandbox(v8::Platform* platform,
+                                            v8::VirtualAddressSpace* vas,
                                             size_t size,
                                             size_t size_to_reserve);
 
   // Performs final initialization steps after the sandbox address space has
   // been initialized. Called from the two Initialize variants above.
-  void FinishInitialization();
+  void FinishInitialization(v8::Platform* platform);
 
   // Initialize the constant objects for this sandbox.
   void InitializeConstants();
@@ -323,14 +343,18 @@ class V8_EXPORT_PRIVATE Sandbox {
   // The page allocator instance for this sandbox.
   std::shared_ptr<v8::PageAllocator> sandbox_page_allocator_;
 
+  // An allocator that can be used to allocate in-sandbox memory.
+  std::shared_ptr<v8::Allocator> in_sandbox_allocator_;
+
   // Constant objects inside this sandbox.
   SandboxedPointerConstants constants_;
 
-  // Besides the address space reservation for the sandbox, we also try to
-  // reserve the first four gigabytes of the virtual address space (with an
-  // inaccessible mapping). This for example mitigates Smi<->HeapObject
-  // confusion bugs in which we treat a Smi value as a pointer and access it.
-  static bool first_four_gb_of_address_space_are_reserved_;
+  // Besides the address space reservation for the sandbox, the first four
+  // gigabytes of the virtual address space may be reserved by the
+  // platform/allocator as an inaccessible zero segment. This for example
+  // mitigates Smi<->HeapObject confusion bugs in which we treat a Smi value as
+  // a pointer and access it.
+  bool has_zero_segment_ = false;
 
 #ifdef V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES
   thread_local static Sandbox* current_;
@@ -370,6 +394,13 @@ V8_INLINE void* EmptyBackingStoreBuffer() {
 #else
   return nullptr;
 #endif
+}
+
+// Hardware address tagging features on x64 (such as Intel LAM or AMD UAI)
+// mask out upper pointer bits during memory accesses. Returns true if the OS
+// untag mask does not clash with the given tagging mask.
+V8_INLINE bool IsTaggingMaskCompatible(uint64_t mask) {
+  return (base::OS::GetAddressUntagMask() & mask) == mask;
 }
 
 }  // namespace internal

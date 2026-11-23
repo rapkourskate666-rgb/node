@@ -1,15 +1,10 @@
 'use strict';
+
 const common = require('../common');
+const { isBoringSSL } = require('../common/crypto');
 if (!common.hasCrypto) {
   common.skip('missing crypto');
 }
-
-common.expectWarning({
-  DeprecationWarning: [
-    ['crypto.Hash constructor is deprecated.',
-     'DEP0179'],
-  ]
-});
 
 const assert = require('assert');
 const crypto = require('crypto');
@@ -119,6 +114,21 @@ assert.throws(function() {
   crypto.createHash('xyzzy');
 }, /Digest method not supported/);
 
+for (const [option, value] of [
+  ['functionName', 'KMAC'],
+  ['customization', 'Node.js'],
+  ['functionName', Buffer.alloc(0)],
+  ['customization', new Uint8Array(0)],
+]) {
+  const options = { [option]: value };
+  const expected = {
+    code: 'ERR_INVALID_ARG_VALUE',
+    message: `The property 'options.${option}' is not supported by digest sha256`,
+  };
+  assert.throws(() => crypto.createHash('sha256', options), expected);
+  assert.throws(() => crypto.hash('sha256', 'abc', options), expected);
+}
+
 // Issue https://github.com/nodejs/node/issues/9819: throwing encoding used to
 // segfault.
 assert.throws(
@@ -181,15 +191,8 @@ assert.throws(
   }
 );
 
-{
-  const Hash = crypto.Hash;
-  const instance = crypto.Hash('sha256');
-  assert(instance instanceof Hash, 'Hash is expected to return a new instance' +
-                                   ' when called without `new`');
-}
-
 // Test XOF hash functions and the outputLength option.
-if (!process.features.openssl_is_boringssl) {
+if (!isBoringSSL) {
   const invalidXofLength = {
     code: 'ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH',
     name: 'Error',
@@ -298,8 +301,4 @@ if (!process.features.openssl_is_boringssl) {
   const d = crypto.createHash('sha512').update('abcdef');
   assert.strictEqual(a.digest('hex'), b.digest('hex'));
   assert.strictEqual(c.digest('hex'), d.digest('hex'));
-}
-
-{
-  crypto.Hash('sha256');
 }

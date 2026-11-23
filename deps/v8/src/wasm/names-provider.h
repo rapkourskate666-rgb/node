@@ -12,6 +12,7 @@
 #include <map>
 #include <string>
 
+#include "src/base/unique-array.h"
 #include "src/base/vector.h"
 #include "src/utils/utils.h"
 #include "src/wasm/wasm-module.h"
@@ -106,7 +107,6 @@ class CanonicalTypeNamesProvider {
  public:
   CanonicalTypeNamesProvider() = default;
 
-  void DecodeNameSections();
   void DecodeNames(NativeModule* native_module);
 
   void PrintTypeName(StringBuilder& out, CanonicalTypeIndex type_index,
@@ -120,10 +120,10 @@ class CanonicalTypeNamesProvider {
   size_t EstimateCurrentMemoryConsumption() const;
 
  private:
-  // TODO(jkummerow): Use Zone allocation for the character payloads?
-  using StringT = base::OwnedVector<char>;
+  void DecodeNameSections();
 
-  size_t DetectInlineStringThreshold();
+  // TODO(jkummerow): Use Zone allocation for the character payloads?
+  using StringT = base::UniqueArray<char>;
 
   std::vector<StringT> type_names_;
   std::map<uint32_t, std::vector<StringT>> field_names_;

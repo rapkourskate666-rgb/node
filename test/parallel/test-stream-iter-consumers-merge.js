@@ -4,14 +4,16 @@
 const common = require('../common');
 const assert = require('assert');
 const {
+  dump,
   from,
   fromSync,
-  push,
   merge,
+  push,
   text,
   toAsyncStreamable,
   toStreamable,
 } = require('stream/iter');
+const { setTimeout, setImmediate } = require('timers/promises');
 
 // =============================================================================
 // merge
@@ -89,7 +91,7 @@ async function testMergeSourceError() {
     const enc = new TextEncoder();
     yield [enc.encode('a')];
     // Slow so the bad source errors first
-    await new Promise((r) => setTimeout(r, 50));
+    await setTimeout(50);
     yield [enc.encode('b')];
   }
 
@@ -99,13 +101,113 @@ async function testMergeSourceError() {
   }
   await assert.rejects(
     async () => {
-      // eslint-disable-next-line no-unused-vars
-      for await (const _ of merge(goodSource(), badSource())) {
-        /* consume */
-      }
+      await dump(merge(goodSource(), badSource()));
     },
     { message: 'merge source boom' },
   );
+}
+
+async function testMergeFalsySourceErrors() {
+  const reasons = [undefined, null, false, 0, '', NaN];
+
+  for (const reason of reasons) {
+    const noError = { __proto__: null };
+    let actual = noError;
+    try {
+      await text(merge(rejectedSource(reason), from('other')));
+    } catch (error) {
+      actual = error;
+    }
+    assert.strictEqual(Object.is(actual, reason), true);
+  }
+}
+
+function rejectedSource(reason) {
+  return {
+    __proto__: null,
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next() {
+      return Promise.reject(reason);
+    },
+  };
+}
+
+function pendingSource() {
+  return {
+    __proto__: null,
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next() {
+      return new Promise(() => {});
+    },
+    return() {
+      return new Promise(() => {});
+    },
+  };
+}
+
+async function testMergeSourceErrorDoesNotAwaitCleanup() {
+  const reason = new Error('source failed');
+
+  const timedOut = { __proto__: null };
+  const outcome = await Promise.race([
+    text(merge(rejectedSource(reason), pendingSource())).then(
+      () => ({ __proto__: null, status: 'fulfilled' }),
+      (error) => ({ __proto__: null, status: 'rejected', error }),
+    ),
+    setImmediate(timedOut),
+  ]);
+
+  assert.notStrictEqual(outcome, timedOut);
+  assert.strictEqual(outcome.status, 'rejected');
+  assert.strictEqual(outcome.error, reason);
+}
+
+async function testMergeBreakDoesNotAwaitCleanup() {
+  async function* readySource() {
+    yield [Uint8Array.of(1)];
+  }
+
+  const timedOut = { __proto__: null };
+  const outcome = await Promise.race([
+    (async () => {
+      for await (const batch of merge(readySource(), pendingSource())) {
+        assert.deepStrictEqual(batch, [Uint8Array.of(1)]);
+        break;
+      }
+      return true;
+    })(),
+    setImmediate(timedOut),
+  ]);
+
+  assert.strictEqual(outcome, true);
+}
+
+async function testMergeNaNAbortDoesNotAwaitCleanup() {
+  const ac = new AbortController();
+  const iterator = merge(pendingSource(), pendingSource(), {
+    __proto__: null,
+    signal: ac.signal,
+  })[Symbol.asyncIterator]();
+  const next = iterator.next();
+  await setImmediate();
+  ac.abort(NaN);
+
+  const timedOut = { __proto__: null };
+  const outcome = await Promise.race([
+    next.then(
+      () => ({ __proto__: null, status: 'fulfilled' }),
+      (error) => ({ __proto__: null, status: 'rejected', error }),
+    ),
+    setImmediate(timedOut),
+  ]);
+
+  assert.notStrictEqual(outcome, timedOut);
+  assert.strictEqual(outcome.status, 'rejected');
+  assert.strictEqual(Object.is(outcome.error, NaN), true);
 }
 
 async function testMergeConsumerBreak() {
@@ -131,7 +233,7 @@ async function testMergeConsumerBreak() {
     break; // Break after first batch
   }
   // Give async cleanup a tick to complete
-  await new Promise(setImmediate);
+  await setImmediate();
   // Both sources should be cleaned up
   assert.strictEqual(source1Return && source2Return, true);
 }
@@ -141,7 +243,7 @@ async function testMergeSignalMidIteration() {
   async function* slowSource() {
     const enc = new TextEncoder();
     yield [enc.encode('a')];
-    await new Promise((r) => setTimeout(r, 100));
+    await setTimeout(100);
     yield [enc.encode('b')];
   }
   const merged = merge(slowSource(), { signal: ac.signal });
@@ -194,7 +296,7 @@ async function testMergeSignalDuringPendingSingleSourceRead() {
   })[Symbol.asyncIterator]();
 
   const next = iter.next();
-  await new Promise(setImmediate);
+  await setImmediate();
   ac.abort();
 
   await assert.rejects(next, { name: 'AbortError' });
@@ -219,7 +321,7 @@ async function testMergeDoesNotDrainSourcesWhileIdle() {
   const iterator = merge(a, b)[Symbol.asyncIterator]();
 
   await iterator.next();
-  await new Promise(setImmediate);
+  await setImmediate();
 
   assert.strictEqual(a.pulls, 1);
   assert.strictEqual(b.pulls, 1);
@@ -287,18 +389,14 @@ async function testMergeCleanupErrorOnly() {
 
   await assert.rejects(
     async () => {
-      // eslint-disable-next-line no-unused-vars
-      for await (const _ of merge(source(), failingReturnSource())) {
-        // Consume all - no primary error
-      }
+      await dump(merge(source(), failingReturnSource()));
     },
     { message: 'cleanup boom' },
   );
 }
 
-// Primary error + cleanup error: a source throws during iteration AND
-// iterator.return() also throws. Should get a SuppressedError.
-async function testMergePrimaryAndCleanupError() {
+// A primary source error must not wait for asynchronous cleanup failures.
+async function testMergePrimaryErrorPrecedesCleanupError() {
   async function* badSource() {
     yield [new TextEncoder().encode('x')];
     throw new Error('primary boom');
@@ -314,20 +412,9 @@ async function testMergePrimaryAndCleanupError() {
 
   await assert.rejects(
     async () => {
-      // eslint-disable-next-line no-unused-vars
-      for await (const _ of merge(badSource(), failingReturnSource())) {
-        // Consume until error
-      }
+      await dump(merge(badSource(), failingReturnSource()));
     },
-    (err) => {
-      assert.ok(
-        err instanceof SuppressedError,
-        `Expected SuppressedError, got ${err.constructor.name}`,
-      );
-      assert.strictEqual(err.error.message, 'primary boom');
-      assert.strictEqual(err.suppressed.message, 'cleanup boom');
-      return true;
-    },
+    { message: 'primary boom' },
   );
 }
 
@@ -353,13 +440,110 @@ async function testMergeBreakWithCleanupError() {
   );
 }
 
+async function testMergeMultiSourceBreakWithCleanupError() {
+  async function* failingReturnSource() {
+    try {
+      yield [new TextEncoder().encode('data')];
+    } finally {
+      await Promise.resolve();
+      throwInFinally('async cleanup on break');
+    }
+  }
+
+  await assert.rejects(
+    async () => {
+      // eslint-disable-next-line no-unused-vars
+      for await (const _ of merge(failingReturnSource(), from('other'))) {
+        break;
+      }
+    },
+    { message: 'async cleanup on break' },
+  );
+}
+
+// merge() of a single source behaves as an async generator reading it:
+// an abort rejects the pending read, closes the source and ends the
+// iteration; an abort before the first read does not open the source;
+// return() is queued behind pending reads.
+async function testMergeSingleSourceProtocol() {
+  const log = [];
+  function source(name, values, { hang = false } = {}) {
+    let i = 0;
+    return {
+      [Symbol.asyncIterator]() {
+        log.push(`${name} iterator`);
+        return {
+          next() {
+            log.push(`${name} next ${i}`);
+            if (hang && i === values.length) return new Promise(() => {});
+            return Promise.resolve(i < values.length ?
+              { done: false, value: values[i++] } : { done: true });
+          },
+          return() {
+            log.push(`${name} return`);
+            return Promise.resolve({ done: true });
+          },
+        };
+      },
+    };
+  }
+
+  async function settle(label, promise) {
+    try {
+      const result = await promise;
+      log.push(`${label}: ${result.done ? 'done' : result.value[0][0]}`);
+    } catch (error) {
+      log.push(`${label}: ${error.name}`);
+    }
+  }
+  const chunk = (n) => [Uint8Array.of(n)];
+
+  const aborted = AbortSignal.abort();
+  let it = merge(source('a', [chunk(1)]), { signal: aborted })[
+    Symbol.asyncIterator]();
+  await settle('a 1', it.next());
+  await settle('a 2', it.next());
+
+  const ac = new AbortController();
+  it = merge(source('b', [chunk(1)], { hang: true }), { signal: ac.signal })[
+    Symbol.asyncIterator]();
+  await settle('b 1', it.next());
+  const pending = it.next();
+  await setImmediate();
+  ac.abort();
+  await settle('b 2', pending);
+  await settle('b 3', it.next());
+
+  it = merge(source('c', [chunk(1), 'x', chunk(3)]))[Symbol.asyncIterator]();
+  const results = [it.next(), it.next(), it.return(), it.next()];
+  for (let i = 0; i < results.length; i++) await settle(`c ${i}`, results[i]);
+
+  it = merge(source('d', [chunk(1)]))[Symbol.asyncIterator]();
+  await settle('d return', it.return());
+  await assert.rejects(it.throw(new Error('thrown')), { message: 'thrown' });
+
+  assert.deepStrictEqual(log, [
+    'a 1: AbortError', 'a 2: done',
+    'b iterator', 'b next 0', 'b 1: 1', 'b next 1', 'b return',
+    'b 2: AbortError', 'b 3: done',
+    'c iterator', 'c next 0', 'c next 1', 'c 0: 1', 'c 1: 120', 'c return',
+    'c 2: done', 'c 3: done',
+    'd return: done',
+  ]);
+}
+
 Promise.all([
+  testMergeSingleSourceProtocol(),
   testMergeTwoSources(),
   testMergeSingleSource(),
   testMergeEmpty(),
   testMergeWithAbortSignal(),
   testMergeSyncSources(),
   testMergeSourceError(),
+  testMergeFalsySourceErrors(),
+  testMergeSourceErrorDoesNotAwaitCleanup(),
+  testMergeBreakDoesNotAwaitCleanup(),
+  testMergeNaNAbortDoesNotAwaitCleanup(),
   testMergeConsumerBreak(),
   testMergeSignalMidIteration(),
   testMergeSignalDuringPendingMultiSourceRead(),
@@ -368,6 +552,7 @@ Promise.all([
   testMergeStringSources(),
   testMergeObjectLikeSources(),
   testMergeCleanupErrorOnly(),
-  testMergePrimaryAndCleanupError(),
+  testMergePrimaryErrorPrecedesCleanupError(),
   testMergeBreakWithCleanupError(),
+  testMergeMultiSourceBreakWithCleanupError(),
 ]).then(common.mustCall());

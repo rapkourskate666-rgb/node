@@ -33,6 +33,7 @@
 #include <openssl/ssl.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace node {
@@ -54,6 +55,23 @@ class TLSWrap : public AsyncWrap,
 
   enum class UnderlyingStreamWriteStatus { kHasActive, kVacancy };
 
+  // The SSL library's state machine is not reentrant. Node holds this scope
+  // across every call into it, so that JS the SSL library invokes on its own
+  // stack is recognised and kept from re-entering.
+  class SSLLibraryCallScope {
+   public:
+    explicit SSLLibraryCallScope(TLSWrap* wrap) : wrap_(wrap) {
+      wrap_->ssl_library_call_depth_++;
+    }
+    ~SSLLibraryCallScope() { wrap_->ssl_library_call_depth_--; }
+
+    SSLLibraryCallScope(const SSLLibraryCallScope&) = delete;
+    SSLLibraryCallScope& operator=(const SSLLibraryCallScope&) = delete;
+
+   private:
+    TLSWrap* wrap_;
+  };
+
   static void Initialize(v8::Local<v8::Object> target,
                          v8::Local<v8::Value> unused,
                          v8::Local<v8::Context> context,
@@ -62,22 +80,31 @@ class TLSWrap : public AsyncWrap,
 
   ~TLSWrap() override;
 
-  inline bool is_cert_cb_running() const { return cert_cb_running_; }
+  inline bool is_cert_cb_running() const { return flags_.cert_cb_running; }
   inline bool is_waiting_cert_cb() const { return cert_cb_ != nullptr; }
-  inline bool has_session_callbacks() const { return session_callbacks_; }
+  inline bool has_session_callbacks() const { return flags_.session_callbacks; }
   // We need to suspend the ClientHello only for server session id
   // callbacks, and only on the first pass.
   inline bool should_suspend_for_client_hello() const {
-    return is_server() && session_callbacks_ && !hello_answered_;
+    return is_server() && flags_.session_callbacks && !flags_.hello_answered;
   }
-  inline void set_cert_cb_running(bool on = true) { cert_cb_running_ = on; }
+  inline void set_cert_cb_running(bool on = true) {
+    flags_.cert_cb_running = on;
+  }
   inline void set_awaiting_new_session(bool on = true) {
-    awaiting_new_session_ = on;
+    flags_.awaiting_new_session = on;
   }
-  inline void enable_session_callbacks() { session_callbacks_ = true; }
+  inline void enable_session_callbacks() { flags_.session_callbacks = true; }
+  inline bool is_resumption_disabled() const {
+    return flags_.resumption_disabled;
+  }
+  bool BindSessionsToServerName(std::string_view servername);
+  bool PinServerName(std::string_view servername);
   inline bool is_server() const { return kind_ == Kind::kServer; }
   inline bool is_client() const { return kind_ == Kind::kClient; }
-  inline bool is_awaiting_new_session() const { return awaiting_new_session_; }
+  inline bool is_awaiting_new_session() const {
+    return flags_.awaiting_new_session;
+  }
 
   // Implement StreamBase:
   bool IsAlive() override;
@@ -125,8 +152,16 @@ class TLSWrap : public AsyncWrap,
 
   std::string diagnostic_name() const override;
 
+  bool get_alpn_callback_enabled() const {
+    return flags_.alpn_callback_enabled;
+  }
+
+  const std::vector<unsigned char>& get_alpn_protos() const {
+    return alpn_protos_;
+  }
+
  private:
-  // OpenSSL structures are opaque. Estimate SSL memory size for OpenSSL 1.1.1b:
+  // OpenSSL structures are opaque. Estimate SSL memory usage:
   //   SSL: 6224
   //   SSL->SSL3_STATE: 1040
   //   ...some buffers: 42 * 1024
@@ -182,6 +217,16 @@ class TLSWrap : public AsyncWrap,
   // underlying stream even if there is no clear text to read or write.
   void Cycle();
 
+  inline bool in_ssl_library_call() const {
+    return ssl_library_call_depth_ > 0;
+  }
+
+  // Setup Cycle() after a library call, to flush anything DoWrite() held back
+  void ScheduleDeferredCycle();
+
+  // Flush a shutdown held back by DoShutdown(), if there is one.
+  void FlushPendingShutdown();
+
   // Implement StreamListener:
   // Returns buf that points into enc_in_.
   uv_buf_t OnStreamAlloc(size_t size) override;
@@ -190,11 +235,11 @@ class TLSWrap : public AsyncWrap,
 
   int SetCACerts(SecureContext* sc);
 
-  static int SelectSNIContextCallback(SSL* s, int* ad, void* arg);
-
   static void CertCbDone(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void ClientHelloDone(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void DestroySSL(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void DisableRenegotiation(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
   static void EnableCertCb(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void EnableALPNCb(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void EnableKeylogCallback(
@@ -216,6 +261,8 @@ class TLSWrap : public AsyncWrap,
   static void GetPeerCertificate(
       const v8::FunctionCallbackInfo<v8::Value>& args);
   static void GetPeerX509Certificate(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void HasPeerCertificate(
       const v8::FunctionCallbackInfo<v8::Value>& args);
   static void GetPeerFinished(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void GetProtocol(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -273,6 +320,7 @@ class TLSWrap : public AsyncWrap,
   v8::Global<v8::ArrayBufferView> ocsp_response_;
   BaseObjectPtr<SecureContext> sni_context_;
   BaseObjectPtr<SecureContext> sc_;
+  std::string servername_;
 
   // BIO buffers hold encrypted data.
   BIO* enc_in_ = nullptr;   // StreamListener fills this for SSL_read().
@@ -282,19 +330,10 @@ class TLSWrap : public AsyncWrap,
   size_t write_size_ = 0;
   BaseObjectPtr<AsyncWrap> current_write_;
   BaseObjectPtr<AsyncWrap> current_empty_write_;
+  // Set when DoShutdown() was called while the SSL library was on the stack,
+  // and so has yet to send close_notify.
+  BaseObjectPtr<AsyncWrap> pending_shutdown_;
   std::string error_;
-
-  bool session_callbacks_ = false;
-  bool awaiting_new_session_ = false;
-  // 'onclienthello' has been emitted for this connection.
-  bool hello_emitted_ = false;
-  // JS has answered it by calling clientHelloDone().
-  bool hello_answered_ = false;
-  bool in_dowrite_ = false;
-  bool started_ = false;
-  bool shutdown_ = false;
-  bool cert_cb_running_ = false;
-  bool eof_ = false;
 
   // TODO(@jasnell): These state flags should be revisited.
   // The established_ flag indicates that the handshake is
@@ -302,10 +341,35 @@ class TLSWrap : public AsyncWrap,
   // clear -- once it is set to true, it is never set to
   // false and it is only set to true after established_
   // is set to true, so it's likely redundant.
-  bool established_ = false;
-  bool write_callback_scheduled_ = false;
+  struct Flags {
+    bool session_callbacks : 1;
+    bool awaiting_new_session : 1;
+    bool resumption_disabled : 1;
+    // 'onclienthello' has been emitted for this connection.
+    bool hello_emitted : 1;
+    // JS has answered it by calling clientHelloDone().
+    bool hello_answered : 1;
+    bool in_dowrite : 1;
+    bool started : 1;
+    bool shutdown : 1;
+    bool cert_cb_running : 1;
+    bool eof : 1;
+    bool deferred_cycle_scheduled : 1;
+    bool established : 1;
+    bool write_callback_scheduled : 1;
+    bool has_active_write_issued_by_prev_listener : 1;
+    bool alpn_callback_enabled : 1;
+    bool servername_pinned : 1;
+    // The handshake in progress is the peer's attempt to renegotiate, which
+    // the TLS library is refusing.
+    bool renegotiation_refused : 1;
+  };
+  Flags flags_{};
 
   int cycle_depth_ = 0;
+
+  // Nesting depth of calls into the SSL library. See SSLLibraryCallScope.
+  int ssl_library_call_depth_ = 0;
 
   // SSL_set_cert_cb
   CertCb cert_cb_ = nullptr;
@@ -313,11 +377,7 @@ class TLSWrap : public AsyncWrap,
 
   ncrypto::BIOPointer bio_trace_;
 
-  bool has_active_write_issued_by_prev_listener_ = false;
-
- public:
   std::vector<unsigned char> alpn_protos_;  // Accessed by SelectALPNCallback.
-  bool alpn_callback_enabled_ = false;      // Accessed by SelectALPNCallback.
 };
 
 }  // namespace crypto

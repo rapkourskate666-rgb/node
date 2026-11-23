@@ -4,6 +4,7 @@
 
 #include "src/codegen/machine-type.h"
 #include "src/common/globals.h"
+#include "src/compiler/backend/instruction-codes.h"
 #include "src/compiler/turboshaft/assembler.h"
 #include "src/compiler/turboshaft/operations.h"
 #include "src/compiler/turboshaft/representations.h"
@@ -156,7 +157,7 @@ const MachInst2 kDPFlagSetInstructions[] = {
      MachineType::Int32()},
     {TSBinop::kWord32Add, "Word32Add", kArm64Cmn32, MachineType::Int32()},
     {TSBinop::kWord32Sub, "Int32Sub", kArm64Cmp32, MachineType::Int32()},
-    {TSBinop::kWord64BitwiseAnd, "Word64BitwiseAnd", kArm64Tst,
+    {TSBinop::kWord64BitwiseAnd, "Word64BitwiseAnd", kArm64Tst32,
      MachineType::Int64()}};
 
 // ARM64 arithmetic with overflow instructions.
@@ -476,6 +477,10 @@ TEST_P(TurboshaftInstructionSelectorAddSubTest, ImmediateOnRight) {
     StreamBuilder m(this, type, type);
     m.Return(m.Emit(dpi.mi.op, m.Parameter(0), BuildConstant(&m, type, imm)));
     Stream s = m.Build();
+    if (imm == 0) {
+      ASSERT_EQ(0U, s.size());
+      continue;
+    }
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(dpi.mi.arch_opcode, s[0]->arch_opcode());
     ASSERT_EQ(2U, s[0]->InputCount());
@@ -644,6 +649,10 @@ TEST_F(TurboshaftInstructionSelectorTest, AddImmediateOnLeft) {
     StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
     m.Return(m.Word32Add(m.Int32Constant(imm), m.Parameter(0)));
     Stream s = m.Build();
+    if (imm == 0) {
+      ASSERT_EQ(0U, s.size());
+      continue;
+    }
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64Add32, s[0]->arch_opcode());
     ASSERT_EQ(2U, s[0]->InputCount());
@@ -657,6 +666,10 @@ TEST_F(TurboshaftInstructionSelectorTest, AddImmediateOnLeft) {
     StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
     m.Return(m.Word64Add(m.Int64Constant(imm), m.Parameter(0)));
     Stream s = m.Build();
+    if (imm == 0) {
+      ASSERT_EQ(0U, s.size());
+      continue;
+    }
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64Add, s[0]->arch_opcode());
     ASSERT_EQ(2U, s[0]->InputCount());
@@ -1087,9 +1100,9 @@ TEST_F(TurboshaftInstructionSelectorTest, Word32AndBranchWithImmediateOnRight) {
 }
 
 TEST_F(TurboshaftInstructionSelectorTest, Word64AndBranchWithImmediateOnRight) {
-  TRACED_FOREACH(int64_t, imm, kLogical64Immediates) {
+  TRACED_FOREACH(int32_t, imm, kLogical32Immediates) {
     // Skip the cases where the instruction selector would use tbz/tbnz.
-    if (base::bits::CountPopulation(static_cast<uint64_t>(imm)) == 1) continue;
+    if (base::bits::CountPopulation(static_cast<uint32_t>(imm)) == 1) continue;
 
     StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
     Block *a = m.NewBlock(), *b = m.NewBlock();
@@ -1102,9 +1115,10 @@ TEST_F(TurboshaftInstructionSelectorTest, Word64AndBranchWithImmediateOnRight) {
     m.Return(m.Int32Constant(0));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64Tst, s[0]->arch_opcode());
+    EXPECT_EQ(kArm64Tst32, s[0]->arch_opcode());
     EXPECT_EQ(4U, s[0]->InputCount());
     EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(imm, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(kFlags_branch, s[0]->flags_mode());
     EXPECT_EQ(kNotEqual, s[0]->flags_condition());
   }
@@ -1121,7 +1135,8 @@ TEST_F(TurboshaftInstructionSelectorTest, AddBranchWithImmediateOnRight) {
     m.Return(m.Int32Constant(0));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64Cmn32, s[0]->arch_opcode());
+    EXPECT_EQ((imm == 0) ? kArm64CompareAndBranch32 : kArm64Cmn32,
+              s[0]->arch_opcode());
     EXPECT_EQ(kFlags_branch, s[0]->flags_mode());
     EXPECT_EQ(kNotEqual, s[0]->flags_condition());
   }
@@ -1169,9 +1184,9 @@ TEST_F(TurboshaftInstructionSelectorTest, Word32AndBranchWithImmediateOnLeft) {
 }
 
 TEST_F(TurboshaftInstructionSelectorTest, Word64AndBranchWithImmediateOnLeft) {
-  TRACED_FOREACH(int64_t, imm, kLogical64Immediates) {
+  TRACED_FOREACH(int32_t, imm, kLogical32Immediates) {
     // Skip the cases where the instruction selector would use tbz/tbnz.
-    if (base::bits::CountPopulation(static_cast<uint64_t>(imm)) == 1) continue;
+    if (base::bits::CountPopulation(static_cast<uint32_t>(imm)) == 1) continue;
 
     StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
     Block *a = m.NewBlock(), *b = m.NewBlock();
@@ -1184,9 +1199,10 @@ TEST_F(TurboshaftInstructionSelectorTest, Word64AndBranchWithImmediateOnLeft) {
     m.Return(m.Int32Constant(0));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64Tst, s[0]->arch_opcode());
+    EXPECT_EQ(kArm64Tst32, s[0]->arch_opcode());
     EXPECT_EQ(4U, s[0]->InputCount());
     EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(imm, s.ToInt32(s[0]->InputAt(1)));
     ASSERT_LE(1U, s[0]->InputCount());
     EXPECT_EQ(kFlags_branch, s[0]->flags_mode());
     EXPECT_EQ(kNotEqual, s[0]->flags_condition());
@@ -1204,7 +1220,8 @@ TEST_F(TurboshaftInstructionSelectorTest, AddBranchWithImmediateOnLeft) {
     m.Return(m.Int32Constant(0));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64Cmn32, s[0]->arch_opcode());
+    EXPECT_EQ((imm == 0) ? kArm64CompareAndBranch32 : kArm64Cmn32,
+              s[0]->arch_opcode());
     ASSERT_LE(1U, s[0]->InputCount());
     EXPECT_EQ(kFlags_branch, s[0]->flags_mode());
     EXPECT_EQ(kNotEqual, s[0]->flags_condition());
@@ -1307,7 +1324,7 @@ const TestAndBranch kTestAndBranchMatchers64[] = {
         return m.TruncateWord64ToWord32(
             m.Word64BitwiseAnd(x, m.Int64Constant(mask)));
       },
-      "if (x and mask)", kArm64TestAndBranch, MachineType::Int64()},
+      "if (x and mask)", kArm64TestAndBranch32, MachineType::Int64()},
      kNotEqual},
     {{[](TurboshaftInstructionSelectorTest::StreamBuilder& m, OpIndex x,
          uint64_t mask) -> V<Word32> {
@@ -1377,11 +1394,20 @@ TEST_F(TurboshaftInstructionSelectorTest,
     m.Return(m.Int32Constant(0));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64TestAndBranch, s[0]->arch_opcode());
-    EXPECT_EQ(kNotEqual, s[0]->flags_condition());
-    EXPECT_EQ(4U, s[0]->InputCount());
-    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
-    EXPECT_EQ(bit, s.ToInt64(s[0]->InputAt(1)));
+    // Only bits 0-31 can be encoded as an immediate to tbz/tbnz instructions.
+    // For higher bits the bit will never be set. As this eliminates the branch,
+    // such optimization should have happened prior to instruction selection.
+    if (bit < 32) {
+      EXPECT_EQ(kArm64TestAndBranch32, s[0]->arch_opcode());
+      EXPECT_EQ(kNotEqual, s[0]->flags_condition());
+      EXPECT_EQ(4U, s[0]->InputCount());
+      EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+      EXPECT_EQ(bit, s.ToInt64(s[0]->InputAt(1)));
+    } else {
+      EXPECT_EQ(kArm64Tst32, s[0]->arch_opcode());
+      EXPECT_EQ(kNotEqual, s[0]->flags_condition());
+      EXPECT_EQ(4U, s[0]->InputCount());
+    }
   }
 }
 
@@ -1427,9 +1453,17 @@ TEST_F(TurboshaftInstructionSelectorTest, TestAndBranch64AndWhenCanCoverFalse) {
 
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64TestAndBranch, s[0]->arch_opcode());
-    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
-    EXPECT_EQ(4U, s[0]->InputCount());
+    // Only bits 0-31 can be encoded as an immediate to tbz/tbnz instructions.
+    // For higher bits the bit will never be set. As this eliminates the branch,
+    // such optimization should have happened prior to instruction selection.
+    if (bit < 32) {
+      EXPECT_EQ(kArm64TestAndBranch32, s[0]->arch_opcode());
+      EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+      EXPECT_EQ(4U, s[0]->InputCount());
+    } else {
+      EXPECT_EQ(kArm64Tst32, s[0]->arch_opcode());
+      EXPECT_EQ(4U, s[0]->InputCount());
+    }
   }
 }
 
@@ -1931,6 +1965,236 @@ TEST_F(TurboshaftInstructionSelectorTest, ConditionalBranches) {
     Stream s = m.Build();
     EXPECT_EQ(kArm64Float64Cmp, s[0]->arch_opcode());
     EXPECT_EQ(kFlags_conditional_branch, s[0]->flags_mode());
+  }
+}
+
+// -----------------------------------------------------------------------------
+// CCMP branch-cascade fusion.
+
+namespace {
+// Returns the fused cascade instruction, or nullptr if the cascade was not
+// fused. The fused instruction is the one with a conditional-branch flags-mode.
+const Instruction* FindFusedCcmpBranch(
+    const TurboshaftInstructionSelectorTest::Stream& s) {
+  const Instruction* found = nullptr;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i]->flags_mode() == kFlags_conditional_branch) {
+      EXPECT_EQ(nullptr, found);
+      found = s[i];
+    }
+  }
+  return found;
+}
+}  // namespace
+
+TEST_F(TurboshaftInstructionSelectorTest, CcmpBranchCascadeEligible) {
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    Block *t = m.NewBlock(), *b = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(1)), t, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(2)), t, f);
+    m.Bind(t);
+    m.Return(m.Int32Constant(11));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    const Instruction* ccmp = FindFusedCcmpBranch(s);
+    ASSERT_NE(nullptr, ccmp);
+    EXPECT_EQ(kArm64Cmp32, ccmp->arch_opcode());
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32(),
+                    MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    OpIndex shared = m.Parameter(1);
+    Block *t1 = m.NewBlock(), *t2 = m.NewBlock(), *b = m.NewBlock();
+    Block *merge = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(3)), t1, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(4)), t2, f);
+    m.Bind(t1);
+    m.Goto(merge);
+    m.Bind(t2);
+    m.Goto(merge);
+    m.Bind(merge);
+    OpIndex phi = m.Phi(MachineRepresentation::kWord32, shared, shared);
+    m.Return(phi);
+    m.Bind(f);
+    m.Return(m.Int32Constant(0));
+    Stream s = m.Build();
+    EXPECT_NE(nullptr, FindFusedCcmpBranch(s));
+  }
+  {
+    // Immediate-range asymmetry. The head compare is a regular cmp with a
+    // 12-bit immediate range. The fused compare is a ccmp with a 5-bit
+    // immediate range.
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    Block *t = m.NewBlock(), *b = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(100)), t, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(5)), t, f);
+    m.Bind(t);
+    m.Return(m.Int32Constant(11));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_NE(nullptr, FindFusedCcmpBranch(s));
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, CcmpBranchCascadeIneligible) {
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32(),
+                    MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    OpIndex y = m.Parameter(1);
+    Block *t = m.NewBlock(), *b = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(1)), t, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(y, m.Int32Constant(2)), t, f);
+    m.Bind(t);
+    m.Return(m.Int32Constant(11));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s)) << "different variables";
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    Block *t = m.NewBlock(), *b = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(1)), t, b);
+    m.Bind(b);
+    m.Branch(m.Int32LessThan(x, m.Int32Constant(2)), t, f);
+    m.Bind(t);
+    m.Return(m.Int32Constant(11));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s)) << "non-equality compare";
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int64());
+    OpIndex x = m.Parameter(0);
+    Block *t = m.NewBlock(), *b = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word64Equal(x, m.Int64Constant(1)), t, b);
+    m.Bind(b);
+    m.Branch(m.Word64Equal(x, m.Int64Constant(2)), t, f);
+    m.Bind(t);
+    m.Return(m.Int32Constant(11));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s)) << "word64 representation";
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    Block *t = m.NewBlock(), *b = m.NewBlock(), *f = m.NewBlock();
+    V<Word32> cond_a = m.Word32Equal(x, m.Int32Constant(1));
+    m.Branch(cond_a, t, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(2)), t, f);
+    m.Bind(t);
+    m.Return(cond_a);
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s)) << "head compare has extra use";
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    Block *t = m.NewBlock(), *b = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(1)), t, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(100)), t, f);
+    m.Bind(t);
+    m.Return(m.Int32Constant(11));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s))
+        << "fused constant outside ccmp immediate range";
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    Block *t1 = m.NewBlock(), *t2 = m.NewBlock(), *b = m.NewBlock();
+    Block* f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(1)), t1, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(2)), t2, f);
+    m.Bind(t1);
+    m.Return(m.Int32Constant(11));
+    m.Bind(t2);
+    m.Return(m.Int32Constant(33));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s)) << "true edges do not merge";
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32(),
+                    MachineType::Int32(), MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    OpIndex v1 = m.Parameter(1);
+    OpIndex v2 = m.Parameter(2);
+    Block *t1 = m.NewBlock(), *t2 = m.NewBlock(), *b = m.NewBlock();
+    Block *merge = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(1)), t1, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(2)), t2, f);
+    m.Bind(t1);
+    m.Goto(merge);
+    m.Bind(t2);
+    m.Goto(merge);
+    m.Bind(merge);
+    OpIndex phi = m.Phi(MachineRepresentation::kWord32, v1, v2);
+    m.Return(phi);
+    m.Bind(f);
+    m.Return(m.Int32Constant(0));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s)) << "merge phi inputs differ";
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+    OpIndex x = m.Parameter(0);
+    Block *head = m.NewBlock(), *t = m.NewBlock(), *b = m.NewBlock();
+    Block* f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(5)), head, b);
+    m.Bind(head);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(1)), t, b);
+    m.Bind(b);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(2)), t, f);
+    m.Bind(t);
+    m.Return(m.Int32Constant(11));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s))
+        << "fused block has multiple predecessors";
+  }
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32(),
+                    MachineType::Pointer());
+    OpIndex x = m.Parameter(0);
+    OpIndex mem = m.Parameter(1);
+    Block *t = m.NewBlock(), *b = m.NewBlock(), *f = m.NewBlock();
+    m.Branch(m.Word32Equal(x, m.Int32Constant(1)), t, b);
+    m.Bind(b);
+    m.Store(MachineRepresentation::kWord32, mem, m.Int32Constant(0), x,
+            WriteBarrierKind::kNoWriteBarrier);
+    m.Branch(m.Word32Equal(x, m.Int32Constant(2)), t, f);
+    m.Bind(t);
+    m.Return(m.Int32Constant(11));
+    m.Bind(f);
+    m.Return(m.Int32Constant(22));
+    Stream s = m.Build();
+    EXPECT_EQ(nullptr, FindFusedCcmpBranch(s)) << "side effect in fused block";
   }
 }
 
@@ -2564,6 +2828,46 @@ TEST_F(TurboshaftInstructionSelectorTest, Word64ShlWithChangeUint32ToUint64) {
   }
 }
 
+TEST_F(TurboshaftInstructionSelectorTest,
+       Word64ShlBelow32WithChangeInt32ToInt64) {
+  TRACED_FORRANGE(int32_t, x, 1, 31) {
+    StreamBuilder m(this, MachineType::Int64(), MachineType::Int32());
+    OpIndex const p0 = m.Parameter(0);
+    OpIndex const n =
+        m.Word64ShiftLeft(m.ChangeInt32ToInt64(p0), m.Int32Constant(x));
+    m.Return(n);
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Sbfiz, s[0]->arch_opcode());
+    ASSERT_EQ(3U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(p0), s.ToVreg(s[0]->InputAt(0)));
+    EXPECT_EQ(x, s.ToInt32(s[0]->InputAt(1)));
+    EXPECT_EQ(32, s.ToInt32(s[0]->InputAt(2)));
+    ASSERT_EQ(1U, s[0]->OutputCount());
+    EXPECT_EQ(s.ToVreg(n), s.ToVreg(s[0]->Output()));
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest,
+       Word64ShlBelow32WithChangeUint32ToUint64) {
+  TRACED_FORRANGE(int32_t, x, 1, 31) {
+    StreamBuilder m(this, MachineType::Int64(), MachineType::Uint32());
+    OpIndex const p0 = m.Parameter(0);
+    OpIndex const n =
+        m.Word64ShiftLeft(m.ChangeUint32ToUint64(p0), m.Int32Constant(x));
+    m.Return(n);
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Ubfiz, s[0]->arch_opcode());
+    ASSERT_EQ(3U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(p0), s.ToVreg(s[0]->InputAt(0)));
+    EXPECT_EQ(x, s.ToInt32(s[0]->InputAt(1)));
+    EXPECT_EQ(32, s.ToInt32(s[0]->InputAt(2)));
+    ASSERT_EQ(1U, s[0]->OutputCount());
+    EXPECT_EQ(s.ToVreg(n), s.ToVreg(s[0]->Output()));
+  }
+}
+
 TEST_F(TurboshaftInstructionSelectorTest, TruncateWord64ToWord32WithWord64Sar) {
   StreamBuilder m(this, MachineType::Int32(), MachineType::Int64());
   OpIndex const p = m.Parameter(0);
@@ -2718,6 +3022,220 @@ INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
 
 #if V8_ENABLE_WEBASSEMBLY
 
+namespace {
+
+struct SIMDIntNarrowingInst {
+  const char* name;
+  TSBinop operation;
+  ArchOpcode narrow_opcode;
+  ArchOpcode narrow2_opcode;
+  int lane_size;
+};
+
+std::ostream& operator<<(std::ostream& os, const SIMDIntNarrowingInst& inst) {
+  return os << inst.name;
+}
+
+const SIMDIntNarrowingInst kSIMDIntNarrowingInstructions[] = {
+    {"I16x8SConvertI32x4", TSBinop::kI16x8SConvertI32x4, kArm64Sqxtn,
+     kArm64Sqxtn2, 32},
+    {"I16x8UConvertI32x4", TSBinop::kI16x8UConvertI32x4, kArm64Sqxtun,
+     kArm64Sqxtun2, 32},
+    {"I8x16SConvertI16x8", TSBinop::kI8x16SConvertI16x8, kArm64Sqxtn,
+     kArm64Sqxtn2, 16},
+    {"I8x16UConvertI16x8", TSBinop::kI8x16UConvertI16x8, kArm64Sqxtun,
+     kArm64Sqxtun2, 16},
+};
+
+}  // namespace
+
+using TurboshaftInstructionSelectorSIMDIntNarrowingTest =
+    TurboshaftInstructionSelectorTestWithParam<SIMDIntNarrowingInst>;
+
+TEST_P(TurboshaftInstructionSelectorSIMDIntNarrowingTest, Parameter) {
+  const SIMDIntNarrowingInst param = GetParam();
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                  MachineType::Simd128());
+  const V<Simd128> low = m.Parameter(0);
+  const V<Simd128> high = m.Parameter(1);
+  const OpIndex result = m.Emit(param.operation, low, high);
+  m.Return(result);
+  const Stream s = m.Build();
+
+  ASSERT_EQ(2U, s.size());
+
+  EXPECT_EQ(param.narrow_opcode, s[0]->arch_opcode());
+  EXPECT_EQ(param.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+  ASSERT_EQ(1U, s[0]->InputCount());
+  ASSERT_EQ(1U, s[0]->OutputCount());
+  EXPECT_EQ(s.ToVreg(low), s.ToVreg(s[0]->InputAt(0)));
+
+  EXPECT_EQ(param.narrow2_opcode, s[1]->arch_opcode());
+  EXPECT_EQ(param.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+  ASSERT_EQ(2U, s[1]->InputCount());
+  ASSERT_EQ(1U, s[1]->OutputCount());
+  EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(high), s.ToVreg(s[1]->InputAt(1)));
+  EXPECT_EQ(s.ToVreg(result), s.ToVreg(s[1]->Output()));
+  EXPECT_TRUE(s.IsSameAsInput(s[1]->Output(), 0));
+}
+
+INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
+                         TurboshaftInstructionSelectorSIMDIntNarrowingTest,
+                         ::testing::ValuesIn(kSIMDIntNarrowingInstructions));
+
+struct SIMDShiftInst {
+  const char* shift_constructor_name;
+  TSBinop shift_operation;
+  ArchOpcode target_opcode;
+  ArchOpcode shift_opcode;
+  const int lane_size;
+};
+
+std::ostream& operator<<(std::ostream& os, const SIMDShiftInst& inst) {
+  return os << inst.shift_constructor_name;
+}
+
+static const SIMDShiftInst kSIMDShiftTests[] = {
+    {"I64x2Shl", TSBinop::kI64x2Shl, kArm64IShl, kArm64SShl, 64},
+    {"I32x4Shl", TSBinop::kI32x4Shl, kArm64IShl, kArm64SShl, 32},
+    {"I16x8Shl", TSBinop::kI16x8Shl, kArm64IShl, kArm64SShl, 16},
+    {"I8x16Shl", TSBinop::kI8x16Shl, kArm64IShl, kArm64SShl, 8},
+
+    {"I64x2ShrS", TSBinop::kI64x2ShrS, kArm64IShrS, kArm64SShl, 64},
+    {"I32x4ShrS", TSBinop::kI32x4ShrS, kArm64IShrS, kArm64SShl, 32},
+    {"I16x8ShrS", TSBinop::kI16x8ShrS, kArm64IShrS, kArm64SShl, 16},
+    {"I8x16ShrS", TSBinop::kI8x16ShrS, kArm64IShrS, kArm64SShl, 8},
+
+    {"I64x2ShrU", TSBinop::kI64x2ShrU, kArm64IShrU, kArm64UShl, 64},
+    {"I32x4ShrU", TSBinop::kI32x4ShrU, kArm64IShrU, kArm64UShl, 32},
+    {"I16x8ShrU", TSBinop::kI16x8ShrU, kArm64IShrU, kArm64UShl, 16},
+    {"I8x16ShrU", TSBinop::kI8x16ShrU, kArm64IShrU, kArm64UShl, 8},
+};
+
+using TurboshaftInstructionSelectorSIMDShiftTest =
+    TurboshaftInstructionSelectorTestWithParam<SIMDShiftInst>;
+
+TEST_P(TurboshaftInstructionSelectorSIMDShiftTest, NormalImmediate) {
+  const SIMDShiftInst param = GetParam();
+  for (int immediate : {2, param.lane_size + 2}) {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+    V<Simd128> input = m.Parameter(0);
+    m.Return(m.Emit(param.shift_operation, input, m.Int32Constant(immediate)));
+    const Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(param.target_opcode, s[0]->arch_opcode());
+    EXPECT_EQ(param.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+    ASSERT_EQ(2U, s[0]->InputCount());
+    ASSERT_EQ(1U, s[0]->OutputCount());
+    EXPECT_EQ(s.ToVreg(input), s.ToVreg(s[0]->InputAt(0)));
+    ASSERT_TRUE(s[0]->InputAt(1)->IsImmediate());
+    EXPECT_EQ(2, s.ToInt32(s[0]->InputAt(1)));
+  }
+}
+
+TEST_P(TurboshaftInstructionSelectorSIMDShiftTest, ZeroShift) {
+  const SIMDShiftInst param = GetParam();
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+  m.Return(m.Emit(param.shift_operation, m.Parameter(0), m.Int32Constant(0)));
+  const Stream s = m.Build();
+
+  ASSERT_EQ(0U, s.size());
+}
+
+TEST_P(TurboshaftInstructionSelectorSIMDShiftTest, LaneWidthShift) {
+  const SIMDShiftInst param = GetParam();
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+  m.Return(m.Emit(param.shift_operation, m.Parameter(0),
+                  m.Int32Constant(param.lane_size)));
+  const Stream s = m.Build();
+
+  ASSERT_EQ(0U, s.size());
+}
+
+TEST_P(TurboshaftInstructionSelectorSIMDShiftTest,
+       VariableShiftMasksAndDuplicatesCount) {
+  const SIMDShiftInst param = GetParam();
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                  MachineType::Int32());
+  V<Simd128> input = m.Parameter(0);
+  V<Word32> count = m.Parameter(1);
+  m.Return(m.Emit(param.shift_operation, input, count));
+  const Stream s = m.Build();
+
+  const bool is_left_shift = param.target_opcode == kArm64IShl;
+  ASSERT_EQ(is_left_shift ? 3U : 4U, s.size());
+
+  EXPECT_EQ(kArm64And32, s[0]->arch_opcode());
+  ASSERT_EQ(2U, s[0]->InputCount());
+  ASSERT_EQ(1U, s[0]->OutputCount());
+  EXPECT_EQ(s.ToVreg(count), s.ToVreg(s[0]->InputAt(0)));
+  ASSERT_TRUE(s[0]->InputAt(1)->IsImmediate());
+  EXPECT_EQ(param.lane_size - 1, s.ToInt32(s[0]->InputAt(1)));
+
+  EXPECT_EQ(kArm64ISplat, s[1]->arch_opcode());
+  EXPECT_EQ(param.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+  ASSERT_EQ(1U, s[1]->InputCount());
+  ASSERT_EQ(1U, s[1]->OutputCount());
+  EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+
+  size_t shift_index = 2;
+  if (!is_left_shift) {
+    EXPECT_EQ(kArm64INeg, s[2]->arch_opcode());
+    EXPECT_EQ(param.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
+    ASSERT_EQ(1U, s[2]->InputCount());
+    ASSERT_EQ(1U, s[2]->OutputCount());
+    EXPECT_EQ(s.ToVreg(s[1]->Output()), s.ToVreg(s[2]->InputAt(0)));
+    shift_index = 3;
+  }
+
+  EXPECT_EQ(param.shift_opcode, s[shift_index]->arch_opcode());
+  EXPECT_EQ(param.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[shift_index]->opcode())));
+  ASSERT_EQ(2U, s[shift_index]->InputCount());
+  ASSERT_EQ(1U, s[shift_index]->OutputCount());
+  EXPECT_EQ(s.ToVreg(input), s.ToVreg(s[shift_index]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(s[shift_index - 1]->Output()),
+            s.ToVreg(s[shift_index]->InputAt(1)));
+}
+
+class TurboshaftInstructionSelectorSIMDShrSTest
+    : public TurboshaftInstructionSelectorTestWithParam<SIMDShiftInst> {};
+
+TEST_P(TurboshaftInstructionSelectorSIMDShrSTest, ShrSByWidthMinusOne) {
+  const SIMDShiftInst param = GetParam();
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+  V<Simd128> input = m.Parameter(0);
+  m.Return(m.Emit(param.shift_operation, input,
+                  m.Int32Constant(param.lane_size - 1)));
+  const Stream s = m.Build();
+
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kArm64ILtS, s[0]->arch_opcode());
+  EXPECT_EQ(param.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+  ASSERT_EQ(1U, s[0]->InputCount());
+  ASSERT_EQ(1U, s[0]->OutputCount());
+  EXPECT_EQ(s.ToVreg(input), s.ToVreg(s[0]->InputAt(0)));
+}
+
+INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
+                         TurboshaftInstructionSelectorSIMDShiftTest,
+                         ::testing::ValuesIn(kSIMDShiftTests));
+
+INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
+                         TurboshaftInstructionSelectorSIMDShrSTest,
+                         ::testing::Values(kSIMDShiftTests[4],
+                                           kSIMDShiftTests[5],
+                                           kSIMDShiftTests[6],
+                                           kSIMDShiftTests[7]));
+
 TEST_F(TurboshaftInstructionSelectorTest, I32x4DotI8x16I7x16AddS) {
   StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
                   MachineType::Simd128(), MachineType::Simd128());
@@ -2737,33 +3255,88 @@ TEST_F(TurboshaftInstructionSelectorTest, I32x4DotI8x16I7x16AddS) {
   } else {
     ASSERT_EQ(4U, s.size());
     EXPECT_EQ(kArm64Smull, s[0]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(1U, s[0]->OutputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
 
     EXPECT_EQ(kArm64Smull2, s[1]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[1]->opcode()));
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
     EXPECT_EQ(2U, s[1]->InputCount());
     EXPECT_EQ(1U, s[1]->OutputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[1]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[1]->InputAt(1)));
 
     EXPECT_EQ(kArm64IAddp, s[2]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[2]->opcode()));
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
     EXPECT_EQ(2U, s[1]->InputCount());
     EXPECT_EQ(1U, s[1]->OutputCount());
     EXPECT_EQ(s.ToVreg(s[2]->InputAt(0)), s.ToVreg(s[0]->Output()));
     EXPECT_EQ(s.ToVreg(s[2]->InputAt(1)), s.ToVreg(s[1]->Output()));
 
     EXPECT_EQ(kArm64Sadalp, s[3]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[3]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[3]->opcode())));
     EXPECT_EQ(2U, s[2]->InputCount());
     EXPECT_EQ(1U, s[2]->OutputCount());
     EXPECT_EQ(s.ToVreg(s[3]->InputAt(0)), s.ToVreg(m.Parameter(2)));
     EXPECT_EQ(s.ToVreg(s[3]->InputAt(1)), s.ToVreg(s[2]->Output()));
   }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, I32x4DotI8x16S) {
+  if (!CpuFeatures::IsSupported(DOTPROD)) return;
+
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                  MachineType::Simd128());
+  V<Simd128> dot = m.I32x4DotI8x16S(m.Parameter(0), m.Parameter(1));
+  m.Return(dot);
+  Stream s = m.Build();
+
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64S128Const, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64I32x4DotI8x16AddS, s[1]->arch_opcode());
+  EXPECT_EQ(3U, s[1]->InputCount());
+  EXPECT_EQ(1U, s[1]->OutputCount());
+  EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[1]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[1]->InputAt(1)));
+  EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(2)));
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, I32x4AddWithDotI8x16SOnLeft) {
+  if (!CpuFeatures::IsSupported(DOTPROD)) return;
+
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                  MachineType::Simd128(), MachineType::Simd128());
+  V<Simd128> dot = m.I32x4DotI8x16S(m.Parameter(0), m.Parameter(1));
+  m.Return(m.I32x4Add(dot, m.Parameter(2)));
+  Stream s = m.Build();
+
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kArm64I32x4DotI8x16AddS, s[0]->arch_opcode());
+  EXPECT_EQ(3U, s[0]->InputCount());
+  EXPECT_EQ(1U, s[0]->OutputCount());
+  EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(2)), s.ToVreg(s[0]->InputAt(2)));
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, I32x4AddWithDotI8x16SOnRight) {
+  if (!CpuFeatures::IsSupported(DOTPROD)) return;
+
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                  MachineType::Simd128(), MachineType::Simd128());
+  V<Simd128> dot = m.I32x4DotI8x16S(m.Parameter(1), m.Parameter(2));
+  m.Return(m.I32x4Add(m.Parameter(0), dot));
+  Stream s = m.Build();
+
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kArm64I32x4DotI8x16AddS, s[0]->arch_opcode());
+  EXPECT_EQ(3U, s[0]->InputCount());
+  EXPECT_EQ(1U, s[0]->OutputCount());
+  EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(2)), s.ToVreg(s[0]->InputAt(1)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(2)));
 }
 
 TEST_F(TurboshaftInstructionSelectorTest, I16x8DotI8x16I7x16S) {
@@ -2776,19 +3349,19 @@ TEST_F(TurboshaftInstructionSelectorTest, I16x8DotI8x16I7x16S) {
   EXPECT_EQ(kArm64Smull, s[0]->arch_opcode());
   EXPECT_EQ(2U, s[0]->InputCount());
   EXPECT_EQ(1U, s[0]->OutputCount());
-  EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
+  EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
   EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
   EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
 
   EXPECT_EQ(kArm64Smull2, s[1]->arch_opcode());
-  EXPECT_EQ(16, LaneSizeField::decode(s[1]->opcode()));
+  EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
   EXPECT_EQ(2U, s[1]->InputCount());
   EXPECT_EQ(1U, s[1]->OutputCount());
   EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[1]->InputAt(0)));
   EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[1]->InputAt(1)));
 
   EXPECT_EQ(kArm64IAddp, s[2]->arch_opcode());
-  EXPECT_EQ(16, LaneSizeField::decode(s[2]->opcode()));
+  EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
   EXPECT_EQ(2U, s[2]->InputCount());
   EXPECT_EQ(1U, s[2]->OutputCount());
   EXPECT_EQ(s.ToVreg(s[2]->InputAt(0)), s.ToVreg(s[0]->Output()));
@@ -2803,21 +3376,21 @@ TEST_F(TurboshaftInstructionSelectorTest, I32x4DotI16x8S) {
   Stream s = m.Build();
   ASSERT_EQ(3U, s.size());
   EXPECT_EQ(kArm64Smull, s[0]->arch_opcode());
-  EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
   EXPECT_EQ(2U, s[0]->InputCount());
   EXPECT_EQ(1U, s[0]->OutputCount());
   EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
   EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
 
   EXPECT_EQ(kArm64Smull2, s[1]->arch_opcode());
-  EXPECT_EQ(32, LaneSizeField::decode(s[1]->opcode()));
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
   EXPECT_EQ(2U, s[1]->InputCount());
   EXPECT_EQ(1U, s[1]->OutputCount());
   EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[1]->InputAt(0)));
   EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[1]->InputAt(1)));
 
   EXPECT_EQ(kArm64IAddp, s[2]->arch_opcode());
-  EXPECT_EQ(32, LaneSizeField::decode(s[2]->opcode()));
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
   EXPECT_EQ(2U, s[2]->InputCount());
   EXPECT_EQ(1U, s[2]->OutputCount());
   EXPECT_EQ(s.ToVreg(s[2]->InputAt(0)), s.ToVreg(s[0]->Output()));
@@ -2832,7 +3405,7 @@ TEST_F(TurboshaftInstructionSelectorTest, AddReduce) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64IAddv, s[0]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(1U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -2844,7 +3417,7 @@ TEST_F(TurboshaftInstructionSelectorTest, AddReduce) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64IAddv, s[0]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(1U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -2856,7 +3429,7 @@ TEST_F(TurboshaftInstructionSelectorTest, AddReduce) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64IAddv, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(1U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -2879,13 +3452,13 @@ TEST_F(TurboshaftInstructionSelectorTest, AddReduce) {
     Stream s = m.Build();
     ASSERT_EQ(2U, s.size());
     EXPECT_EQ(kArm64FAddp, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
     EXPECT_EQ(kArm64FAddpScalar, s[1]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[1]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
     EXPECT_EQ(1U, s[1]->InputCount());
     EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
     EXPECT_EQ(1U, s[1]->OutputCount());
@@ -2897,10 +3470,145 @@ TEST_F(TurboshaftInstructionSelectorTest, AddReduce) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64FAddpScalar, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(1U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, I64x2MulSVE2) {
+  if (!CpuFeatures::IsSupported(SVE2) ||
+      CpuFeatures::svevlen() != kSimd128Size) {
+    GTEST_SKIP() << "Requires a 128-bit SVE vector-length";
+  }
+
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                  MachineType::Simd128());
+  V<Simd128> lhs = m.Parameter<Simd128>(0);
+  V<Simd128> rhs = m.Parameter<Simd128>(1);
+  V<Simd128> prod = m.Simd128Binop(lhs, rhs, Simd128BinopOp::Kind::kI64x2Mul);
+  m.Return(prod);
+  Stream s = m.Build(SVE2);
+
+  ASSERT_EQ(1U, s.size());
+
+  EXPECT_EQ(kArm64IMul, s[0]->arch_opcode());
+  EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+  ASSERT_EQ(2U, s[0]->InputCount());
+  EXPECT_EQ(s.ToVreg(lhs), s.ToVreg(s[0]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(rhs), s.ToVreg(s[0]->InputAt(1)));
+  ASSERT_EQ(1U, s[0]->OutputCount());
+  EXPECT_EQ(s.ToVreg(prod), s.ToVreg(s[0]->Output()));
+
+  return;
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, I64x2Mul) {
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                  MachineType::Simd128());
+  V<Simd128> lhs = m.Parameter<Simd128>(0);
+  V<Simd128> rhs = m.Parameter<Simd128>(1);
+  V<Simd128> prod = m.Simd128Binop(lhs, rhs, Simd128BinopOp::Kind::kI64x2Mul);
+  m.Return(prod);
+  Stream s = m.Build();
+
+  ASSERT_EQ(7U, s.size());
+
+  EXPECT_EQ(kArm64S128Rev64, s[0]->arch_opcode());
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+  ASSERT_EQ(1U, s[0]->InputCount());
+  EXPECT_EQ(s.ToVreg(rhs), s.ToVreg(s[0]->InputAt(0)));
+
+  EXPECT_EQ(kArm64IMul, s[1]->arch_opcode());
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+  ASSERT_EQ(2U, s[1]->InputCount());
+  EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(lhs), s.ToVreg(s[1]->InputAt(1)));
+
+  EXPECT_EQ(kArm64S128ExtractNarrow, s[2]->arch_opcode());
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
+  EXPECT_EQ(64, VectorLengthBits(VectorLengthField::decode(s[2]->opcode())));
+  ASSERT_EQ(1U, s[2]->InputCount());
+  EXPECT_EQ(s.ToVreg(lhs), s.ToVreg(s[2]->InputAt(0)));
+
+  EXPECT_EQ(kArm64IAddp, s[3]->arch_opcode());
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[3]->opcode())));
+  ASSERT_EQ(2U, s[3]->InputCount());
+  EXPECT_EQ(s.ToVreg(s[1]->Output()), s.ToVreg(s[3]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(s[1]->Output()), s.ToVreg(s[3]->InputAt(1)));
+
+  EXPECT_EQ(kArm64S128ExtractNarrow, s[4]->arch_opcode());
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[4]->opcode())));
+  EXPECT_EQ(64, VectorLengthBits(VectorLengthField::decode(s[4]->opcode())));
+  ASSERT_EQ(1U, s[4]->InputCount());
+  EXPECT_EQ(s.ToVreg(rhs), s.ToVreg(s[4]->InputAt(0)));
+
+  EXPECT_EQ(kArm64IShll, s[5]->arch_opcode());
+  EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[5]->opcode())));
+  ASSERT_EQ(1U, s[5]->InputCount());
+  EXPECT_EQ(s.ToVreg(s[3]->Output()), s.ToVreg(s[5]->InputAt(0)));
+
+  EXPECT_EQ(kArm64Umlal, s[6]->arch_opcode());
+  EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[6]->opcode())));
+  ASSERT_EQ(3U, s[6]->InputCount());
+  EXPECT_EQ(s.ToVreg(s[5]->Output()), s.ToVreg(s[6]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(s[4]->Output()), s.ToVreg(s[6]->InputAt(1)));
+  EXPECT_EQ(s.ToVreg(s[2]->Output()), s.ToVreg(s[6]->InputAt(2)));
+  ASSERT_EQ(1U, s[6]->OutputCount());
+  EXPECT_EQ(s.ToVreg(prod), s.ToVreg(s[6]->Output()));
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, I64x2MulMixedSignExtensions) {
+  using Kind = Simd128UnaryOp::Kind;
+  for (bool high : {false, true}) {
+    for (bool swap_operands : {false, true}) {
+      StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                      MachineType::Simd128());
+      V<Simd128> signed_input = m.Parameter(0);
+      V<Simd128> unsigned_input = m.Parameter(1);
+      V<Simd128> signed_ext =
+          m.Simd128Unary(signed_input, high ? Kind::kI64x2SConvertI32x4High
+                                            : Kind::kI64x2SConvertI32x4Low);
+      V<Simd128> unsigned_ext =
+          m.Simd128Unary(unsigned_input, high ? Kind::kI64x2UConvertI32x4High
+                                              : Kind::kI64x2UConvertI32x4Low);
+      V<Simd128> product = swap_operands ? m.I64x2Mul(unsigned_ext, signed_ext)
+                                         : m.I64x2Mul(signed_ext, unsigned_ext);
+      m.Return(product);
+      Stream s = m.Build();
+
+      ASSERT_EQ(4U, s.size());
+
+      EXPECT_EQ(kArm64IShrS, s[0]->arch_opcode());
+      EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+      ASSERT_EQ(2U, s[0]->InputCount());
+      ASSERT_EQ(1U, s[0]->OutputCount());
+      EXPECT_EQ(s.ToVreg(unsigned_input), s.ToVreg(s[0]->InputAt(0)));
+      EXPECT_EQ(31, s.ToInt32(s[0]->InputAt(1)));
+
+      EXPECT_EQ(kArm64S128And, s[1]->arch_opcode());
+      ASSERT_EQ(2U, s[1]->InputCount());
+      ASSERT_EQ(1U, s[1]->OutputCount());
+      EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+      EXPECT_EQ(s.ToVreg(signed_input), s.ToVreg(s[1]->InputAt(1)));
+
+      EXPECT_EQ(high ? kArm64IShll2 : kArm64IShll, s[2]->arch_opcode());
+      EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
+      ASSERT_EQ(1U, s[2]->InputCount());
+      ASSERT_EQ(1U, s[2]->OutputCount());
+      EXPECT_EQ(s.ToVreg(s[1]->Output()), s.ToVreg(s[2]->InputAt(0)));
+
+      EXPECT_EQ(high ? kArm64Smlal2 : kArm64Smlal, s[3]->arch_opcode());
+      EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[3]->opcode())));
+      ASSERT_EQ(3U, s[3]->InputCount());
+      ASSERT_EQ(1U, s[3]->OutputCount());
+      EXPECT_EQ(s.ToVreg(s[2]->Output()), s.ToVreg(s[3]->InputAt(0)));
+      EXPECT_EQ(s.ToVreg(signed_input), s.ToVreg(s[3]->InputAt(1)));
+      EXPECT_EQ(s.ToVreg(unsigned_input), s.ToVreg(s[3]->InputAt(2)));
+      EXPECT_EQ(s.ToVreg(product), s.ToVreg(s[3]->Output()));
+      EXPECT_TRUE(s.IsSameAsInput(s[3]->Output(), 0));
+    }
   }
 }
 
@@ -2949,6 +3657,71 @@ TEST_F(TurboshaftInstructionSelectorTest, ExtractLaneZero) {
   }
 }
 
+TEST_F(TurboshaftInstructionSelectorTest, ReplaceLaneZero) {
+  constexpr uint8_t zero_data[kSimd128Size] = {0};
+  constexpr uint8_t non_zero_data[kSimd128Size] = {1};
+  {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Float32());
+    OpIndex zero = m.Simd128Constant(zero_data);
+    m.Return(m.F16x8ReplaceLane(zero, m.Parameter(0), 0));
+    Stream s = m.Build();
+    ASSERT_EQ(2U, s.size());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Float32());
+    OpIndex zero = m.Simd128Constant(zero_data);
+    m.Return(m.F32x4ReplaceLane(zero, m.Parameter(0), 0));
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    ASSERT_EQ(kArm64Float32Move, s[0]->arch_opcode());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Float32());
+    OpIndex zero = m.Simd128Constant(non_zero_data);
+    m.Return(m.F32x4ReplaceLane(zero, m.Parameter(0), 0));
+    Stream s = m.Build();
+    ASSERT_EQ(2U, s.size());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Float64());
+    OpIndex zero = m.Simd128Constant(zero_data);
+    m.Return(m.F64x2ReplaceLane(zero, m.Parameter(0), 0));
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    ASSERT_EQ(kArm64Float64Move, s[0]->arch_opcode());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Int32());
+    OpIndex zero = m.Simd128Constant(zero_data);
+    m.Return(m.I8x16ReplaceLane(zero, m.Parameter(0), 0));
+    Stream s = m.Build();
+    ASSERT_EQ(2U, s.size());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Int32());
+    OpIndex zero = m.Simd128Constant(zero_data);
+    m.Return(m.I16x8ReplaceLane(zero, m.Parameter(0), 0));
+    Stream s = m.Build();
+    ASSERT_EQ(2U, s.size());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Int32());
+    OpIndex zero = m.Simd128Constant(zero_data);
+    m.Return(m.I32x4ReplaceLane(zero, m.Parameter(0), 0));
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    ASSERT_EQ(kArm64Float32MoveU32, s[0]->arch_opcode());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Int64());
+    OpIndex zero = m.Simd128Constant(zero_data);
+    m.Return(m.I64x2ReplaceLane(zero, m.Parameter(0), 0));
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    ASSERT_EQ(kArm64Float64MoveU64, s[0]->arch_opcode());
+  }
+}
+
 TEST_F(TurboshaftInstructionSelectorTest, I32x4AddPairwise) {
   StreamBuilder m(this, MachineType::Int32(), MachineType::Simd128(),
                   MachineType::Simd128());
@@ -2957,11 +3730,130 @@ TEST_F(TurboshaftInstructionSelectorTest, I32x4AddPairwise) {
   Stream s = m.Build();
   ASSERT_EQ(1U, s.size());
   EXPECT_EQ(kArm64IAddp, s[0]->arch_opcode());
-  EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+  EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
   EXPECT_EQ(2U, s[0]->InputCount());
   EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
   EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
   EXPECT_EQ(1U, s[0]->OutputCount());
+}
+
+namespace {
+
+struct HalvingAddTestCase {
+  const char* halving_add_name;
+  Simd128BinopOp::Kind add_kind;
+  Simd128ShiftOp::Kind shift_kind;
+  LaneSize lane_size;
+  int lane_bits;
+  ArchOpcode expected_opcode;
+};
+
+constexpr HalvingAddTestCase kHalvingAddCases[] = {
+    {"i8x16_signed", Simd128BinopOp::Kind::kI8x16Add,
+     Simd128ShiftOp::Kind::kI8x16ShrS, LaneSize::kL8, 8, kArm64Shadd},
+    {"i8x16_unsigned", Simd128BinopOp::Kind::kI8x16Add,
+     Simd128ShiftOp::Kind::kI8x16ShrU, LaneSize::kL8, 8, kArm64Uhadd},
+    {"i16x8_signed", Simd128BinopOp::Kind::kI16x8Add,
+     Simd128ShiftOp::Kind::kI16x8ShrS, LaneSize::kL16, 16, kArm64Shadd},
+    {"i16x8_unsigned", Simd128BinopOp::Kind::kI16x8Add,
+     Simd128ShiftOp::Kind::kI16x8ShrU, LaneSize::kL16, 16, kArm64Uhadd},
+    {"i32x4_signed", Simd128BinopOp::Kind::kI32x4Add,
+     Simd128ShiftOp::Kind::kI32x4ShrS, LaneSize::kL32, 32, kArm64Shadd},
+    {"i32x4_unsigned", Simd128BinopOp::Kind::kI32x4Add,
+     Simd128ShiftOp::Kind::kI32x4ShrU, LaneSize::kL32, 32, kArm64Uhadd},
+};
+
+}  // namespace
+
+TEST_F(TurboshaftInstructionSelectorTest, Simd128HalvingAddWithXor) {
+  // Test signed and unsigned-shift half-add for 16x8, 8x16 and 4x32-bit lanes
+  for (const HalvingAddTestCase& c : kHalvingAddCases) {
+    SCOPED_TRACE(c.halving_add_name);
+    // Use ADD|XOR|AND bits to show which order the operands are in
+    // (a & b) + ((a ^ b) >> 1) has 8 possible commutations for the 3 operations
+    for (int comms = 0; comms < 8; ++comms) {
+      SCOPED_TRACE(comms);
+      // Test for the 3 shifts that are 1 when modulo the lane width
+      for (int shift : {1, c.lane_bits + 1, 1 - c.lane_bits}) {
+        SCOPED_TRACE(shift);
+        StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                        MachineType::Simd128());
+
+        OpIndex lhs = m.Parameter(0);
+        OpIndex rhs = m.Parameter(1);
+
+        OpIndex and_lhs = (comms & 1) ? rhs : lhs;
+        OpIndex and_rhs = (comms & 1) ? lhs : rhs;
+        OpIndex xor_lhs = (comms & 2) ? rhs : lhs;
+        OpIndex xor_rhs = (comms & 2) ? lhs : rhs;
+
+        // Check the AND, XOR and ADD operand orderings
+        V<Simd128> and_node =
+            m.Simd128Binop(and_lhs, and_rhs, Simd128BinopOp::Kind::kS128And);
+        V<Simd128> xor_node =
+            m.Simd128Binop(xor_lhs, xor_rhs, Simd128BinopOp::Kind::kS128Xor);
+        V<Simd128> shift_node = m.Simd128Shift(
+            xor_node, m.Word32Constant(static_cast<uint32_t>(shift)),
+            c.shift_kind);
+        V<Simd128> result =
+            (comms & 4) ? m.Simd128Binop(shift_node, and_node, c.add_kind)
+                        : m.Simd128Binop(and_node, shift_node, c.add_kind);
+        m.Return(result);
+
+        Stream s = m.Build();
+
+        ASSERT_EQ(1U, s.size());
+        EXPECT_EQ(c.expected_opcode, s[0]->arch_opcode());
+        EXPECT_EQ(c.lane_size, LaneSizeField::decode(s[0]->opcode()));
+        ASSERT_EQ(2U, s[0]->InputCount());
+        ASSERT_EQ(1U, s[0]->OutputCount());
+
+        EXPECT_EQ(s.ToVreg(and_lhs), s.ToVreg(s[0]->InputAt(0)));
+        EXPECT_EQ(s.ToVreg(and_rhs), s.ToVreg(s[0]->InputAt(1)));
+        EXPECT_EQ(s.ToVreg(result), s.ToVreg(s[0]->OutputAt(0)));
+      }
+    }
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest,
+       Simd128HalvingAddWithMismatchedOperands) {
+  // Test that sharing even one operand should avoid a half-add optimization.
+  for (const HalvingAddTestCase& c : kHalvingAddCases) {
+    SCOPED_TRACE(c.halving_add_name);
+    // Make the shared input either lhs (0) or rhs (1).
+    for (int shared_input : {0, 1}) {
+      SCOPED_TRACE(shared_input);
+      for (int comms = 0; comms < 8; ++comms) {
+        SCOPED_TRACE(comms);
+        StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128(),
+                        MachineType::Simd128(), MachineType::Simd128());
+        OpIndex lhs = m.Parameter(0);
+        OpIndex rhs = m.Parameter(1);
+        OpIndex other = m.Parameter(2);
+        OpIndex shared = m.Parameter(shared_input);
+
+        V<Simd128> and_node =
+            m.Simd128Binop((comms & 1) ? rhs : lhs, (comms & 1) ? lhs : rhs,
+                           Simd128BinopOp::Kind::kS128And);
+        V<Simd128> xor_node = m.Simd128Binop((comms & 2) ? other : shared,
+                                             (comms & 2) ? shared : other,
+                                             Simd128BinopOp::Kind::kS128Xor);
+        V<Simd128> shift_node =
+            m.Simd128Shift(xor_node, m.Word32Constant(1), c.shift_kind);
+        m.Return((comms & 4)
+                     ? m.Simd128Binop(shift_node, and_node, c.add_kind)
+                     : m.Simd128Binop(and_node, shift_node, c.add_kind));
+
+        Stream s = m.Build();
+        ASSERT_GT(s.size(), 0U);
+        for (size_t i = 0; i < s.size(); ++i) {
+          EXPECT_NE(kArm64Shadd, s[i]->arch_opcode());
+          EXPECT_NE(kArm64Uhadd, s[i]->arch_opcode());
+        }
+      }
+    }
+  }
 }
 
 namespace {
@@ -3002,7 +3894,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDDPWithSIMDMulTest, AddWithMul) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(mdpi.multiply_add_arch_opcode, s[0]->arch_opcode());
-    EXPECT_EQ(mdpi.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(mdpi.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
@@ -3013,7 +3906,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDDPWithSIMDMulTest, AddWithMul) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(mdpi.multiply_add_arch_opcode, s[0]->arch_opcode());
-    EXPECT_EQ(mdpi.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(mdpi.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
@@ -3029,7 +3923,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDDPWithSIMDMulTest, SubWithMul) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(mdpi.multiply_sub_arch_opcode, s[0]->arch_opcode());
-    EXPECT_EQ(mdpi.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(mdpi.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
@@ -3080,7 +3975,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDShrAddTest, ShrAddS) {
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64Ssra, s[0]->arch_opcode());
     EXPECT_EQ(3U, s[0]->InputCount());
-    EXPECT_EQ(param.laneSize, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(param.laneSize,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
   {
@@ -3092,7 +3988,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDShrAddTest, ShrAddS) {
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64Ssra, s[0]->arch_opcode());
     EXPECT_EQ(3U, s[0]->InputCount());
-    EXPECT_EQ(param.laneSize, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(param.laneSize,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
 }
@@ -3109,7 +4006,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDShrAddTest, ShrAddU) {
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64Usra, s[0]->arch_opcode());
     EXPECT_EQ(3U, s[0]->InputCount());
-    EXPECT_EQ(param.laneSize, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(param.laneSize,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
   {
@@ -3121,7 +4019,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDShrAddTest, ShrAddU) {
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64Usra, s[0]->arch_opcode());
     EXPECT_EQ(3U, s[0]->InputCount());
-    EXPECT_EQ(param.laneSize, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(param.laneSize,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
 }
@@ -3175,7 +4074,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDAddExtMulTest, AddExtMul) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(mdpi.multiply_add_arch_opcode, s[0]->arch_opcode());
-    EXPECT_EQ(mdpi.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(mdpi.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
@@ -3187,7 +4087,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDAddExtMulTest, AddExtMul) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(mdpi.multiply_add_arch_opcode, s[0]->arch_opcode());
-    EXPECT_EQ(mdpi.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(mdpi.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
@@ -3261,7 +4162,7 @@ TEST_P(TurboshaftInstructionSelectorSimdF32x4MulWithDupTest, MulWithDup) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64FMulElement, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(param.lane, s.ToInt32(s[0]->InputAt(2)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -3279,7 +4180,7 @@ TEST_P(TurboshaftInstructionSelectorSimdF32x4MulWithDupTest, MulWithDup) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64FMulElement, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(param.lane, s.ToInt32(s[0]->InputAt(2)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -3305,12 +4206,12 @@ TEST_F(TurboshaftInstructionSelectorTest, SimdF32x4MulWithDupNegativeTest) {
     ASSERT_EQ(2U, s.size());
     // The shuffle is an i8x16.dup of lane 0.
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(0, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(kArm64FMul, s[1]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[1]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
     EXPECT_EQ(1U, s[0]->OutputCount());
     EXPECT_EQ(2U, s[1]->InputCount());
     EXPECT_EQ(1U, s[1]->OutputCount());
@@ -3355,7 +4256,7 @@ TEST_P(TurboshaftInstructionSelectorSimdF64x2MulWithDupTest, MulWithDup) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64FMulElement, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(param.lane, s.ToInt32(s[0]->InputAt(2)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -3373,7 +4274,7 @@ TEST_P(TurboshaftInstructionSelectorSimdF64x2MulWithDupTest, MulWithDup) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64FMulElement, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(param.lane, s.ToInt32(s[0]->InputAt(2)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -3399,12 +4300,12 @@ TEST_F(TurboshaftInstructionSelectorTest, SimdF64x2MulWithDupNegativeTest) {
     ASSERT_EQ(2U, s.size());
     // The shuffle is an i8x16.dup of lane 0.
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(0, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(kArm64FMul, s[1]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[1]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
     EXPECT_EQ(1U, s[0]->OutputCount());
     EXPECT_EQ(2U, s[1]->InputCount());
     EXPECT_EQ(1U, s[1]->OutputCount());
@@ -3419,6 +4320,35 @@ struct S128ShuffleInst {
   int lane_size;
   const std::array<uint8_t, kSimd128Size> shuffle;
 };
+
+void ExpectS128Tbl1Sequence(const TurboshaftInstructionSelectorTest::Stream& s,
+                            size_t start, OpIndex input, int32_t expected_imm0,
+                            int32_t expected_imm1, int32_t expected_imm2,
+                            int32_t expected_imm3) {
+  ASSERT_LE(start + 2, s.size());
+
+  EXPECT_EQ(kArm64S128Const, s[start]->arch_opcode());
+  EXPECT_EQ(4U, s[start]->InputCount());
+  EXPECT_EQ(1U, s[start]->OutputCount());
+  EXPECT_EQ(expected_imm0, s.ToInt32(s[start]->InputAt(0)));
+  EXPECT_EQ(expected_imm1, s.ToInt32(s[start]->InputAt(1)));
+  EXPECT_EQ(expected_imm2, s.ToInt32(s[start]->InputAt(2)));
+  EXPECT_EQ(expected_imm3, s.ToInt32(s[start]->InputAt(3)));
+
+  EXPECT_EQ(kArm64S128Tbl1, s[start + 1]->arch_opcode());
+  EXPECT_EQ(2U, s[start + 1]->InputCount());
+  EXPECT_EQ(1U, s[start + 1]->OutputCount());
+  EXPECT_EQ(s.ToVreg(input), s.ToVreg(s[start + 1]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(s[start]->Output()), s.ToVreg(s[start + 1]->InputAt(1)));
+}
+
+void ExpectS128Tbl1SequenceWith64BitMask(
+    const TurboshaftInstructionSelectorTest::Stream& s, size_t start,
+    OpIndex input, int64_t expected_mask) {
+  int32_t mask_lo = static_cast<int32_t>(expected_mask);
+  int32_t mask_hi = static_cast<int32_t>(expected_mask >> 32);
+  ExpectS128Tbl1Sequence(s, start, input, mask_lo, mask_hi, mask_lo, mask_hi);
+}
 
 std::ostream& operator<<(std::ostream& os, const S128ShuffleInst& inst) {
   return os << inst.constructor_name
@@ -3440,18 +4370,10 @@ const S128ShuffleInst kShuffles[] = {
      kArm64S128UnzipRight,
      64,
      {{8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31}}},
-    {"kArm64S32x4Shuffle",
-     kArm64S32x4Shuffle,
-     0,
-     {{0, 1, 2, 3, 16, 17, 18, 19, 16, 17, 18, 19, 20, 21, 22, 23}}},
     {"kArm64S128Rev32",
      kArm64S128Rev32,
      8,  // 8x4Reverse
      {{3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12}}},
-    {"kArm64S32x4Reverse",
-     kArm64S32x4Reverse,
-     0,
-     {{12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3}}},
     {"kArm64S128ZipLeft",
      kArm64S128ZipLeft,
      32,
@@ -3563,7 +4485,10 @@ TEST_P(TurboshaftInstructionSelectorS128ShuffleTest, CanonicalTest) {
   Stream s = m.Build();
   ASSERT_EQ(1U, s.size());
   EXPECT_EQ(inst.arch_opcode, s[0]->arch_opcode());
-  EXPECT_EQ(inst.lane_size, LaneSizeField::decode(s[0]->opcode()));
+  if (inst.lane_size) {
+    EXPECT_EQ(inst.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+  }
   EXPECT_EQ(1U, s[0]->OutputCount());
 }
 
@@ -3616,10 +4541,6 @@ const S128HalfShuffleInst kHalfShuffles[] = {
      kArm64S128Rev32,
      8,  // 32x4ReverseBytes
      {{3, 2, 1, 0, 7, 6, 5, 4}}},
-    {"kArm64S32x4Reverse_LowerHalf",
-     kArm64S32x4Reverse,
-     0,
-     {{12, 13, 14, 15, 8, 9, 10, 11}}},
     {"kArm64S128Rev64_LowerHalf",
      kArm64S128Rev64,
      32,  // 32x2Reverse
@@ -3723,7 +4644,8 @@ TEST_P(TurboshaftInstructionSelectorS128HalfShuffleTest, CanonicalTest) {
   Stream s = m.Build();
   ASSERT_EQ(1U, s.size());
   EXPECT_EQ(inst.arch_opcode, s[0]->arch_opcode());
-  EXPECT_EQ(inst.lane_size, LaneSizeField::decode(s[0]->opcode()));
+  EXPECT_EQ(inst.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
   EXPECT_EQ(1U, s[0]->OutputCount());
 }
 
@@ -3784,9 +4706,11 @@ TEST_P(TurboshaftInstructionSelectorI8x4ShuffleTest, S128Deinterleave4) {
   Stream s = m.Build();
   ASSERT_EQ(2U, s.size());
   EXPECT_EQ(inst.first_arch_opcode, s[0]->arch_opcode());
-  EXPECT_EQ(inst.lane_size, LaneSizeField::decode(s[0]->opcode()));
+  EXPECT_EQ(inst.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
   EXPECT_EQ(inst.second_arch_opcode, s[1]->arch_opcode());
-  EXPECT_EQ(inst.lane_size, LaneSizeField::decode(s[1]->opcode()));
+  EXPECT_EQ(inst.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
   EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
   EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(1)));
   EXPECT_EQ(1U, s[0]->OutputCount());
@@ -3795,6 +4719,118 @@ TEST_P(TurboshaftInstructionSelectorI8x4ShuffleTest, S128Deinterleave4) {
 INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
                          TurboshaftInstructionSelectorI8x4ShuffleTest,
                          ::testing::ValuesIn(kDeinterleaveShuffles));
+
+namespace {
+
+struct I8x4TripleShuffleInst {
+  const char* constructor_name;
+  ArchOpcode first_arch_opcode;
+  ArchOpcode second_arch_opcode;
+  ArchOpcode third_arch_opcode;
+  int lane_size;
+  const std::array<uint8_t, 4> shuffle;
+};
+
+std::ostream& operator<<(std::ostream& os, const I8x4TripleShuffleInst& inst) {
+  return os << inst.constructor_name;
+}
+
+const I8x4TripleShuffleInst kQuarterDeinterleaveShuffles[] = {
+    {"Even, Even, Even",
+     kArm64S128UnzipLeft,
+     kArm64S128UnzipLeft,
+     kArm64S128UnzipLeft,
+     8,
+     {{0, 8, 16, 24}}},
+    {"Odd, Even, Even",
+     kArm64S128UnzipRight,
+     kArm64S128UnzipLeft,
+     kArm64S128UnzipLeft,
+     8,
+     {{1, 9, 17, 25}}},
+    {"Even, Odd, Even",
+     kArm64S128UnzipLeft,
+     kArm64S128UnzipRight,
+     kArm64S128UnzipLeft,
+     8,
+     {{2, 10, 18, 26}}},
+    {"Odd, Odd, Even",
+     kArm64S128UnzipRight,
+     kArm64S128UnzipRight,
+     kArm64S128UnzipLeft,
+     8,
+     {{3, 11, 19, 27}}},
+    {"Even, Even, Odd",
+     kArm64S128UnzipLeft,
+     kArm64S128UnzipLeft,
+     kArm64S128UnzipRight,
+     8,
+     {{4, 12, 20, 28}}},
+    {"Odd, Even, Odd",
+     kArm64S128UnzipRight,
+     kArm64S128UnzipLeft,
+     kArm64S128UnzipRight,
+     8,
+     {{5, 13, 21, 29}}},
+    {"Even, Odd, Odd",
+     kArm64S128UnzipLeft,
+     kArm64S128UnzipRight,
+     kArm64S128UnzipRight,
+     8,
+     {{6, 14, 22, 30}}},
+    {"Odd, Odd, Odd",
+     kArm64S128UnzipRight,
+     kArm64S128UnzipRight,
+     kArm64S128UnzipRight,
+     8,
+     {{7, 15, 23, 31}}},
+};
+
+}  // namespace
+
+using TurboshaftInstructionSelectorI8x4TripleShuffleTest =
+    TurboshaftInstructionSelectorTestWithParam<I8x4TripleShuffleInst>;
+
+TEST_P(TurboshaftInstructionSelectorI8x4TripleShuffleTest,
+       S128Deinterleave4ThreeStage) {
+  const I8x4TripleShuffleInst inst = GetParam();
+  const MachineType type = MachineType::Simd128();
+  StreamBuilder m(this, type, type, type, type);
+  m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+                            Simd128ShuffleOp::Kind::kI8x4,
+                            inst.shuffle.data()));
+  Stream s = m.Build();
+
+  ASSERT_EQ(3U, s.size());
+  EXPECT_EQ(inst.first_arch_opcode, s[0]->arch_opcode());
+  EXPECT_EQ(inst.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+  EXPECT_EQ(inst.second_arch_opcode, s[1]->arch_opcode());
+  EXPECT_EQ(inst.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+  EXPECT_EQ(inst.third_arch_opcode, s[2]->arch_opcode());
+  EXPECT_EQ(inst.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
+
+  // First shuffle consumes both inputs.
+  EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
+  EXPECT_EQ(1U, s[0]->OutputCount());
+
+  // Second shuffle operates on the temp produced by the first.
+  EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(1)));
+  EXPECT_EQ(1U, s[1]->OutputCount());
+
+  // Third shuffle consumes the second's output and produces the result.
+  EXPECT_EQ(s.ToVreg(s[1]->Output()), s.ToVreg(s[2]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(s[1]->Output()), s.ToVreg(s[2]->InputAt(1)));
+  EXPECT_EQ(1U, s[2]->OutputCount());
+}
+
+INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
+                         TurboshaftInstructionSelectorI8x4TripleShuffleTest,
+                         ::testing::ValuesIn(kQuarterDeinterleaveShuffles));
 
 namespace {
 
@@ -3930,14 +4966,16 @@ TEST_P(TurboshaftInstructionSelectorDupAndShuffleTest, DupAndShuffle) {
   if (inst.expected_num_insts == 3) {
     // The dup
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(inst.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(inst.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)),
               s.ToVreg(m.Parameter(inst.expected_param_index)));
     EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), inst.index);
 
     // The shuffle
     EXPECT_EQ(inst.arch_opcode, s[1]->arch_opcode());
-    EXPECT_EQ(inst.lane_size, LaneSizeField::decode(s[1]->opcode()));
+    EXPECT_EQ(inst.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(m.Parameter(0)));
     if (inst.is_swizzle) {
       EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(0)));
@@ -3961,67 +4999,53 @@ INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
 TEST_F(TurboshaftInstructionSelectorTest, ReverseShuffle32x4Test) {
   const MachineType type = MachineType::Simd128();
   {
-    const uint8_t shuffle[] = {
-      12, 13, 14, 15,
-      8, 9, 10, 11,
-      4, 5, 6, 7,
-      0, 1, 2, 3
-    };
+    const uint8_t shuffle[] = {12, 13, 14, 15, 8, 9, 10, 11,
+                               4,  5,  6,  7,  0, 1, 2,  3};
     StreamBuilder m(this, type, type, type, type);
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x16, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64S32x4Reverse, s[0]->arch_opcode());
+    ASSERT_EQ(2U, s.size());
+    EXPECT_EQ(kArm64S128Rev64, s[0]->arch_opcode());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
+
+    EXPECT_EQ(kArm64S128Extract, s[1]->arch_opcode());
+    EXPECT_EQ(1U, s[1]->OutputCount());
+    EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+    EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(1)));
   }
   {
-    const uint8_t shuffle[] = {
-      28, 29, 30, 31,
-      24, 25, 26, 27,
-      20, 21, 22, 23,
-      16, 17, 18, 19
-    };
+    const uint8_t shuffle[] = {28, 29, 30, 31, 24, 25, 26, 27,
+                               20, 21, 22, 23, 16, 17, 18, 19};
     StreamBuilder m(this, type, type, type, type);
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x16, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64S32x4Reverse, s[0]->arch_opcode());
+    ASSERT_EQ(2U, s.size());
+    EXPECT_EQ(kArm64S128Rev64, s[0]->arch_opcode());
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
+
+    EXPECT_EQ(kArm64S128Extract, s[1]->arch_opcode());
+  }
+  {
+    const uint8_t shuffle[] = {12, 13, 14, 15, 8, 9, 10, 11};
+    StreamBuilder m(this, type, type, type);
+    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+                              Simd128ShuffleOp::Kind::kI8x8, shuffle));
+
+    Stream s = m.Build();
+    ASSERT_EQ(2U, s.size());
+    EXPECT_EQ(kArm64S128Rev64, s[0]->arch_opcode());
+
+    EXPECT_EQ(kArm64S128Extract, s[1]->arch_opcode());
   }
 }
 
 TEST_F(TurboshaftInstructionSelectorTest, Shuffle64x2Test) {
   const MachineType type = MachineType::Simd128();
-  {
-    const uint8_t shuffle[] = {
-        16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-    };
-    StreamBuilder m(this, type, type, type);
-    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
-                              Simd128ShuffleOp::Kind::kI8x16, shuffle));
-    Stream s = m.Build();
-    ASSERT_EQ(2U, s.size());
-
-    EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
-    EXPECT_EQ(2U, s[0]->InputCount());
-    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(1)));
-    EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 0);
-    EXPECT_EQ(1U, s[0]->OutputCount());
-
-    EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
-    EXPECT_EQ(4U, s[1]->InputCount());
-    EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
-    EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(1)));
-    EXPECT_EQ(s.ToInt32(s[1]->InputAt(2)), 1);
-    EXPECT_EQ(s.ToInt32(s[1]->InputAt(3)), 1);
-    EXPECT_EQ(1U, s[1]->OutputCount());
-  }
   {
     const uint8_t shuffle[] = {
         16, 17, 18, 19, 20, 21, 22, 23, 8, 9, 10, 11, 12, 13, 14, 15,
@@ -4033,20 +5057,60 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle64x2Test) {
     ASSERT_EQ(2U, s.size());
 
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(1)));
     EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 0);
     EXPECT_EQ(1U, s[0]->OutputCount());
 
     EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(4U, s[1]->InputCount());
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(0)));
     EXPECT_EQ(s.ToInt32(s[1]->InputAt(2)), 1);
     EXPECT_EQ(s.ToInt32(s[1]->InputAt(3)), 1);
     EXPECT_EQ(1U, s[1]->OutputCount());
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, IdentityShuffles) {
+  const MachineType type = MachineType::Simd128();
+  {
+    const uint8_t shuffle[] = {0, 1, 2,  3,  4,  5,  6,  7,
+                               8, 9, 10, 11, 12, 13, 14, 15};
+    StreamBuilder m(this, type, type, type);
+    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+                              Simd128ShuffleOp::Kind::kI8x16, shuffle));
+    Stream s = m.Build();
+    ASSERT_EQ(0U, s.size());
+  }
+  {
+    const uint8_t shuffle[] = {0, 1, 2,  3,  4,  5,  6,  7,
+                               8, 9, 10, 11, 12, 13, 14, 15};
+    StreamBuilder m(this, type, type, type);
+    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+                              Simd128ShuffleOp::Kind::kI8x8, shuffle));
+    Stream s = m.Build();
+    ASSERT_EQ(0U, s.size());
+  }
+  {
+    const uint8_t shuffle[] = {16, 17, 18, 19, 20, 21, 22, 23,
+                               24, 25, 26, 27, 28, 29, 30, 31};
+    StreamBuilder m(this, type, type, type);
+    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+                              Simd128ShuffleOp::Kind::kI8x16, shuffle));
+    Stream s = m.Build();
+    ASSERT_EQ(0U, s.size());
+  }
+  {
+    const uint8_t shuffle[] = {16, 17, 18, 19, 20, 21, 22, 23,
+                               24, 25, 26, 27, 28, 29, 30, 31};
+    StreamBuilder m(this, type, type, type);
+    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+                              Simd128ShuffleOp::Kind::kI8x8, shuffle));
+    Stream s = m.Build();
+    ASSERT_EQ(0U, s.size());
   }
 }
 
@@ -4061,7 +5125,7 @@ TEST_F(TurboshaftInstructionSelectorTest, UnzipShuffle64x2Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128UnzipLeft, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4075,7 +5139,7 @@ TEST_F(TurboshaftInstructionSelectorTest, UnzipShuffle64x2Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128UnzipLeft, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4089,7 +5153,7 @@ TEST_F(TurboshaftInstructionSelectorTest, UnzipShuffle64x2Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128UnzipRight, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4103,7 +5167,7 @@ TEST_F(TurboshaftInstructionSelectorTest, UnzipShuffle64x2Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128UnzipRight, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4120,10 +5184,11 @@ TEST_F(TurboshaftInstructionSelectorTest, ReverseShuffle64x2Test) {
                               Simd128ShuffleOp::Kind::kI8x16, shuffle));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64S64x2Reverse, s[0]->arch_opcode());
-    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(kArm64S128Extract, s[0]->arch_opcode());
+    EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
+    EXPECT_EQ(8, s.ToInt32(s[0]->InputAt(2)));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
   {
@@ -4134,10 +5199,11 @@ TEST_F(TurboshaftInstructionSelectorTest, ReverseShuffle64x2Test) {
                               Simd128ShuffleOp::Kind::kI8x16, shuffle));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64S64x2Reverse, s[0]->arch_opcode());
-    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(kArm64S128Extract, s[0]->arch_opcode());
+    EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
+    EXPECT_EQ(8, s.ToInt32(s[0]->InputAt(2)));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
 }
@@ -4229,7 +5295,8 @@ TEST_P(TurboshaftInstructionSelectorSimdSIMD128DupTest, SimdS128Dup) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(param.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(param.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(param.lane_idx, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4245,36 +5312,28 @@ INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
 TEST_F(TurboshaftInstructionSelectorTest, OneLaneSwizzle32x4Test) {
   const MachineType type = MachineType::Simd128();
   {
-    const uint8_t shuffle[] = {
-      0, 1, 2, 3,
-      4, 5, 6, 7,
-      4, 5, 6, 7,
-      12, 13, 14, 15
-    };
+    const uint8_t shuffle[] = {0, 1, 2, 3, 4,  5,  6,  7,
+                               4, 5, 6, 7, 12, 13, 14, 15};
     StreamBuilder m(this, type, type, type, type);
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x16, shuffle));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128MoveLane, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
   {
-    const uint8_t shuffle[] = {
-      16, 17, 18, 19,
-      20, 21, 22, 23,
-      24, 25, 26, 27,
-      16, 17, 18, 19
-    };
+    const uint8_t shuffle[] = {16, 17, 18, 19, 20, 21, 22, 23,
+                               24, 25, 26, 27, 16, 17, 18, 19};
     StreamBuilder m(this, type, type, type, type);
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x16, shuffle));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128MoveLane, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
@@ -4292,7 +5351,7 @@ TEST_F(TurboshaftInstructionSelectorTest, OneLaneSwizzle32x4Test) {
     EXPECT_EQ(kArm64S128MoveReg, s[0]->arch_opcode());
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[1]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
     EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
   }
 }
@@ -4309,7 +5368,7 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x1Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(5, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4324,7 +5383,7 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x1Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(3, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4345,14 +5404,14 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x2Test) {
     ASSERT_EQ(2U, s.size());
 
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(0)));
     EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 5);
     EXPECT_EQ(1U, s[0]->OutputCount());
 
     EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(4U, s[1]->InputCount());
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(0)));
@@ -4372,14 +5431,14 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x2Test) {
     ASSERT_EQ(2U, s.size());
 
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(1)));
     EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 0);
     EXPECT_EQ(1U, s[0]->OutputCount());
 
     EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(4U, s[1]->InputCount());
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(1)));
@@ -4399,14 +5458,14 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x2Test) {
     ASSERT_EQ(2U, s.size());
 
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(0)));
     EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 8);
     EXPECT_EQ(1U, s[0]->OutputCount());
 
     EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(8, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(4U, s[1]->InputCount());
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(1)));
@@ -4429,11 +5488,9 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x4Test) {
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x4, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64I8x16Shuffle, s[0]->arch_opcode());
-    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
-    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
-    EXPECT_EQ(1U, s[0]->OutputCount());
+    ASSERT_EQ(2U, s.size());
+    ExpectS128Tbl1Sequence(s, 0, m.Parameter(0), 0x04080705, 0x04080705,
+                           0x04080705, 0x04080705);
   }
   {
     const uint8_t shuffle[] = {
@@ -4446,11 +5503,9 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x4Test) {
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x4, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64I8x16Shuffle, s[0]->arch_opcode());
-    EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
-    EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
-    EXPECT_EQ(1U, s[0]->OutputCount());
+    ASSERT_EQ(2U, s.size());
+    ExpectS128Tbl1Sequence(s, 0, m.Parameter(1), 0x09060300, 0x09060300,
+                           0x09060300, 0x09060300);
   }
   {
     const uint8_t shuffle[] = {
@@ -4460,16 +5515,107 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x4Test) {
         24,
     };
     StreamBuilder m(this, type, type, type, type);
-    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(0),
                               Simd128ShuffleOp::Kind::kI8x4, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64I8x16Shuffle, s[0]->arch_opcode());
-    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
-    EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
-    EXPECT_EQ(1U, s[0]->OutputCount());
+    ASSERT_EQ(3U, s.size());
+    EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(0)));
+    EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 0);
+    EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
+    EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(0)));
+    EXPECT_EQ(s.ToInt32(s[1]->InputAt(2)), 8);
+    EXPECT_EQ(kArm64S128MoveLane, s[2]->arch_opcode());
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[2]->InputAt(0)), s.ToVreg(s[1]->Output()));
+    EXPECT_EQ(s.ToVreg(s[2]->InputAt(1)), s.ToVreg(m.Parameter(0)));
+    EXPECT_EQ(s.ToInt32(s[2]->InputAt(2)), 8);
+    EXPECT_EQ(1U, s[2]->OutputCount());
   }
 }
+
+namespace {
+
+struct AddSubHighNarrowConvertConfig {
+  const char* name;
+  TSBinop operation;
+  int lane_size;
+  TSBinop binop;
+  TSBinop shift;
+  ArchOpcode hn_opcode;
+  ArchOpcode hn2_opcode;
+};
+
+std::ostream& operator<<(std::ostream& os,
+                         const AddSubHighNarrowConvertConfig& config) {
+  return os << config.name;
+}
+
+const AddSubHighNarrowConvertConfig kAddSubHighNarrowConvertConfigs[] = {
+    {"I16x8SConvertI32x4Add", TSBinop::kI16x8SConvertI32x4, 32,
+     TSBinop::kI32x4Add, TSBinop::kI32x4ShrS, kArm64Addhn, kArm64Addhn2},
+    {"I16x8SConvertI32x4Sub", TSBinop::kI16x8SConvertI32x4, 32,
+     TSBinop::kI32x4Sub, TSBinop::kI32x4ShrS, kArm64Subhn, kArm64Subhn2},
+    {"I16x8UConvertI32x4Add", TSBinop::kI16x8UConvertI32x4, 32,
+     TSBinop::kI32x4Add, TSBinop::kI32x4ShrU, kArm64Addhn, kArm64Addhn2},
+    {"I16x8UConvertI32x4Sub", TSBinop::kI16x8UConvertI32x4, 32,
+     TSBinop::kI32x4Sub, TSBinop::kI32x4ShrU, kArm64Subhn, kArm64Subhn2},
+    {"I8x16SConvertI16x8Add", TSBinop::kI8x16SConvertI16x8, 16,
+     TSBinop::kI16x8Add, TSBinop::kI16x8ShrS, kArm64Addhn, kArm64Addhn2},
+    {"I8x16SConvertI16x8Sub", TSBinop::kI8x16SConvertI16x8, 16,
+     TSBinop::kI16x8Sub, TSBinop::kI16x8ShrS, kArm64Subhn, kArm64Subhn2},
+    {"I8x16UConvertI16x8Add", TSBinop::kI8x16UConvertI16x8, 16,
+     TSBinop::kI16x8Add, TSBinop::kI16x8ShrU, kArm64Addhn, kArm64Addhn2},
+    {"I8x16UConvertI16x8Sub", TSBinop::kI8x16UConvertI16x8, 16,
+     TSBinop::kI16x8Sub, TSBinop::kI16x8ShrU, kArm64Subhn, kArm64Subhn2},
+};
+
+}  // namespace
+
+using TurboshaftInstructionSelectorAddSubHighNarrowConvertTest =
+    TurboshaftInstructionSelectorTestWithParam<AddSubHighNarrowConvertConfig>;
+
+TEST_P(TurboshaftInstructionSelectorAddSubHighNarrowConvertTest,
+       ShiftedAddSub) {
+  const auto& param = GetParam();
+  const MachineType type = MachineType::Simd128();
+  StreamBuilder m(this, type, type, type, type, type);
+  OpIndex amount = m.Int32Constant(param.lane_size / 2);
+  OpIndex low = m.Emit(param.binop, m.Parameter(0), m.Parameter(1));
+  OpIndex high = m.Emit(param.binop, m.Parameter(2), m.Parameter(3));
+  low = m.Emit(param.shift, low, amount);
+  high = m.Emit(param.shift, high, amount);
+  OpIndex result = m.Emit(param.operation, low, high);
+  m.Return(result);
+  Stream s = m.Build();
+
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(param.hn_opcode, s[0]->arch_opcode());
+  EXPECT_EQ(param.hn2_opcode, s[1]->arch_opcode());
+  EXPECT_EQ(param.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+  ASSERT_EQ(1U, s[0]->OutputCount());
+  EXPECT_EQ(param.lane_size,
+            LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+  ASSERT_EQ(1U, s[1]->OutputCount());
+  ASSERT_EQ(2U, s[0]->InputCount());
+  ASSERT_EQ(3U, s[1]->InputCount());
+  EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
+  EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(2)), s.ToVreg(s[1]->InputAt(1)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(3)), s.ToVreg(s[1]->InputAt(2)));
+  EXPECT_TRUE(s.IsSameAsFirst(s[1]->Output()));
+  EXPECT_EQ(s.ToVreg(result), s.ToVreg(s[1]->Output()));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    TurboshaftInstructionSelectorTest,
+    TurboshaftInstructionSelectorAddSubHighNarrowConvertTest,
+    ::testing::ValuesIn(kAddSubHighNarrowConvertConfigs));
 
 TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x8Test) {
   const MachineType type = MachineType::Simd128();
@@ -4631,6 +5777,27 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle8x8Test) {
   }
 }
 
+TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x8TopBottomInterleave) {
+  const MachineType type = MachineType::Simd128();
+  const uint8_t shuffle[] = {0, 1, 8,  9,  2, 3, 10, 11,
+                             4, 5, 12, 13, 6, 7, 14, 15};
+  StreamBuilder m(this, type, type, type, type);
+  m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+                            Simd128ShuffleOp::Kind::kI8x16, shuffle));
+  Stream s = m.Build();
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64S128UnzipRight, s[0]->arch_opcode());
+  EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+  EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
+  EXPECT_EQ(1U, s[0]->OutputCount());
+  EXPECT_EQ(kArm64S128ZipLeft, s[1]->arch_opcode());
+  EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+  EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[1]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(s[0]->OutputAt(0)), s.ToVreg(s[1]->InputAt(1)));
+  EXPECT_EQ(1U, s[1]->OutputCount());
+}
+
 TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x1Test) {
   const MachineType type = MachineType::Simd128();
   {
@@ -4644,7 +5811,7 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x1Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(3, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4657,7 +5824,7 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x1Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(0, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4690,23 +5857,13 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x2Test) {
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x4, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(2U, s.size());
-
-    EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64S128LowUnzipLeft, s[0]->arch_opcode());
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(1)));
-    EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 0);
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(1)), s.ToVreg(m.Parameter(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
-
-    EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
-    EXPECT_EQ(4U, s[1]->InputCount());
-    EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
-    EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(1)));
-    EXPECT_EQ(s.ToInt32(s[1]->InputAt(2)), 2);
-    EXPECT_EQ(s.ToInt32(s[1]->InputAt(3)), 1);
-    EXPECT_EQ(1U, s[1]->OutputCount());
   }
   {
     const uint8_t shuffle[] = {
@@ -4722,14 +5879,14 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x2Test) {
     ASSERT_EQ(2U, s.size());
 
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(0)));
     EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 7);
     EXPECT_EQ(1U, s[0]->OutputCount());
 
     EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(16, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(4U, s[1]->InputCount());
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(1)));
@@ -4749,11 +5906,9 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x4Test) {
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x8, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64I8x16Shuffle, s[0]->arch_opcode());
-    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
-    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
-    EXPECT_EQ(1U, s[0]->OutputCount());
+    ASSERT_EQ(2U, s.size());
+    ExpectS128Tbl1SequenceWith64BitMask(s, 0, m.Parameter(0),
+                                        0x01000b0a07060302);
   }
   {
     const uint8_t shuffle[] = {
@@ -4763,11 +5918,9 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x4Test) {
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x8, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64I8x16Shuffle, s[0]->arch_opcode());
-    EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
-    EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
-    EXPECT_EQ(1U, s[0]->OutputCount());
+    ASSERT_EQ(2U, s.size());
+    ExpectS128Tbl1SequenceWith64BitMask(s, 0, m.Parameter(1),
+                                        0x0d0c0f0e05040100);
   }
   {
     const uint8_t shuffle[] = {0, 1, 14, 15, 22, 23, 26, 27};
@@ -4775,11 +5928,27 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle16x4Test) {
     m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
                               Simd128ShuffleOp::Kind::kI8x8, shuffle));
     Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64I8x16Shuffle, s[0]->arch_opcode());
-    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
-    EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
-    EXPECT_EQ(1U, s[0]->OutputCount());
+    ASSERT_EQ(4U, s.size());
+    EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(0)));
+    EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 0);
+    EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
+    EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(0)));
+    EXPECT_EQ(s.ToInt32(s[1]->InputAt(2)), 7);
+    EXPECT_EQ(kArm64S128MoveLane, s[2]->arch_opcode());
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[2]->InputAt(0)), s.ToVreg(s[1]->Output()));
+    EXPECT_EQ(s.ToVreg(s[2]->InputAt(1)), s.ToVreg(m.Parameter(1)));
+    EXPECT_EQ(s.ToInt32(s[2]->InputAt(2)), 3);
+    EXPECT_EQ(kArm64S128MoveLane, s[3]->arch_opcode());
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[3]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[3]->InputAt(0)), s.ToVreg(s[2]->Output()));
+    EXPECT_EQ(s.ToVreg(s[3]->InputAt(1)), s.ToVreg(m.Parameter(1)));
+    EXPECT_EQ(s.ToInt32(s[3]->InputAt(2)), 5);
+    EXPECT_EQ(1U, s[3]->OutputCount());
   }
 }
 
@@ -4798,7 +5967,7 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle32x1Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(1, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4816,7 +5985,7 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle32x1Test) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(3, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4836,20 +6005,49 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle32x2Test) {
     ASSERT_EQ(2U, s.size());
 
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(1)));
     EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 0);
     EXPECT_EQ(1U, s[0]->OutputCount());
 
     EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
-    EXPECT_EQ(32, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(4U, s[1]->InputCount());
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
     EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(0)));
     EXPECT_EQ(s.ToInt32(s[1]->InputAt(2)), 3);
     EXPECT_EQ(s.ToInt32(s[1]->InputAt(3)), 1);
     EXPECT_EQ(1U, s[1]->OutputCount());
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Shuffle32x4) {
+  const MachineType type = MachineType::Simd128();
+  {
+    // shuffle32x4
+    std::array<uint8_t, kSimd128Size> shuffle = {
+        0, 1, 2, 3, 16, 17, 18, 19, 16, 17, 18, 19, 20, 21, 22, 23};
+    StreamBuilder m(this, type, type, type, type);
+    m.Return(m.Simd128Shuffle(m.Parameter(0), m.Parameter(1),
+                              Simd128ShuffleOp::Kind::kI8x16, shuffle.data()));
+    Stream s = m.Build();
+    ASSERT_EQ(3U, s.size());
+    EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(m.Parameter(1)));
+    EXPECT_EQ(s.ToInt32(s[0]->InputAt(1)), 0);
+    EXPECT_EQ(kArm64S128MoveLane, s[1]->arch_opcode());
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[1]->InputAt(0)), s.ToVreg(s[0]->Output()));
+    EXPECT_EQ(s.ToVreg(s[1]->InputAt(1)), s.ToVreg(m.Parameter(0)));
+    EXPECT_EQ(s.ToInt32(s[1]->InputAt(2)), 0);
+    EXPECT_EQ(kArm64S128MoveLane, s[2]->arch_opcode());
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[2]->opcode())));
+    EXPECT_EQ(s.ToVreg(s[2]->InputAt(0)), s.ToVreg(s[1]->Output()));
+    EXPECT_EQ(s.ToVreg(s[2]->InputAt(1)), s.ToVreg(m.Parameter(1)));
+    EXPECT_EQ(s.ToInt32(s[2]->InputAt(2)), 1);
+    EXPECT_EQ(1U, s[2]->OutputCount());
   }
 }
 
@@ -4864,10 +6062,10 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle64x1Test) {
                               Simd128ShuffleOp::Kind::kI8x8, shuffle));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(kArm64S128UnzipRight, s[0]->arch_opcode());
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
-    EXPECT_EQ(1, s.ToInt32(s[0]->InputAt(1)));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
   {
@@ -4879,10 +6077,10 @@ TEST_F(TurboshaftInstructionSelectorTest, Shuffle64x1Test) {
                               Simd128ShuffleOp::Kind::kI8x8, shuffle));
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(64, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(kArm64S128UnzipRight, s[0]->arch_opcode());
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(0)));
-    EXPECT_EQ(1, s.ToInt32(s[0]->InputAt(1)));
+    EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
 }
@@ -4955,7 +6153,8 @@ TEST_P(TurboshaftInstructionSelectorSimdS128LowDupTest, SimdS128LowDup) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
-    EXPECT_EQ(param.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(param.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(2U, s[0]->InputCount());
     EXPECT_EQ(param.lane_idx, s.ToInt32(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
@@ -4993,11 +6192,47 @@ TEST_F(TurboshaftInstructionSelectorTest, MoveLane) {
     Stream s = m.Build();
     ASSERT_EQ(1U, s.size());
     EXPECT_EQ(kArm64S128MoveLane, s[0]->arch_opcode());
-    EXPECT_EQ(config.lane_size, LaneSizeField::decode(s[0]->opcode()));
+    EXPECT_EQ(config.lane_size,
+              LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(config.from_lane, s.ToInt32(s[0]->InputAt(2)));
     EXPECT_EQ(config.into_lane, s.ToInt32(s[0]->InputAt(3)));
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, MoveLaneZero) {
+  struct MoveLaneConfig {
+    Simd128MoveLaneOp::Kind kind;
+    unsigned expected_size;
+    InstructionCode expected_opcode;
+  };
+  std::array configs = std::to_array<MoveLaneConfig>({
+      {Simd128MoveLaneOp::Kind::kI32x4, 1, kArm64Float32Move},
+      {Simd128MoveLaneOp::Kind::kI64x2, 1, kArm64Float64Move},
+      {Simd128MoveLaneOp::Kind::kF32x4, 1, kArm64Float32Move},
+      {Simd128MoveLaneOp::Kind::kF64x2, 1, kArm64Float64Move},
+      {Simd128MoveLaneOp::Kind::kI8x16, 2, kArm64S128MoveLane},
+      {Simd128MoveLaneOp::Kind::kI16x8, 2, kArm64S128MoveLane},
+  });
+
+  const MachineType type = MachineType::Simd128();
+  for (const auto& config : configs) {
+    StreamBuilder m(this, type, type);
+    uint8_t data[kSimd128Size] = {0};
+    OpIndex zero = m.Simd128Constant(data);
+    m.Return(m.Simd128MoveLane(zero, m.Parameter(0), config.kind, 0, 0));
+    Stream s = m.Build();
+    ASSERT_EQ(config.expected_size, s.size());
+    if (s.size() == 1U) {
+      EXPECT_EQ(config.expected_opcode, s[0]->arch_opcode());
+      EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+    } else {
+      EXPECT_EQ(config.expected_opcode, s[1]->arch_opcode());
+      EXPECT_EQ(kArm64S128Const, s[0]->arch_opcode());
+      EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+      EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[1]->InputAt(1)));
+    }
   }
 }
 
@@ -5007,7 +6242,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTwoMultiple) {
     StreamBuilder m(this, MachineType::Simd128(), MachineType::Pointer(),
                     MachineType::Pointer());
     OpIndex load = m.Simd128LoadPairDeinterleave(
-        m.Parameter(0), m.Parameter(1), LoadOp::Kind::Protected(),
+        m.Parameter(0), m.Parameter(1), LoadOp::Kind::Trapping(),
         Simd128LoadPairDeinterleaveOp::Kind::k64x4);
     m.Return(m.Simd128Binop(m.Projection(load, 0), m.Projection(load, 1),
                             Simd128BinopOp::Kind::kI64x2Add));
@@ -5025,7 +6260,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTwoMultiple) {
     // Test deinterleaved 64x4 protected load, immediate index.
     StreamBuilder m(this, MachineType::Simd128(), MachineType::Pointer());
     OpIndex load = m.Simd128LoadPairDeinterleave(
-        m.Parameter(0), m.Int64Constant(8), LoadOp::Kind::Protected(),
+        m.Parameter(0), m.Int64Constant(8), LoadOp::Kind::Trapping(),
         Simd128LoadPairDeinterleaveOp::Kind::k64x4);
     m.Return(m.Simd128Binop(m.Projection(load, 0), m.Projection(load, 1),
                             Simd128BinopOp::Kind::kI64x2Add));
@@ -5045,7 +6280,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTwoMultiple) {
     StreamBuilder m(this, MachineType::Simd128(), MachineType::Pointer(),
                     MachineType::Pointer());
     OpIndex load = m.Simd128LoadPairDeinterleave(
-        m.Parameter(0), m.Parameter(1), LoadOp::Kind::Protected(),
+        m.Parameter(0), m.Parameter(1), LoadOp::Kind::Trapping(),
         Simd128LoadPairDeinterleaveOp::Kind::k32x8);
     m.Return(m.Simd128Binop(m.Projection(load, 0), m.Projection(load, 1),
                             Simd128BinopOp::Kind::kI32x4Mul));
@@ -5063,7 +6298,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTwoMultiple) {
     // Test deinterleaved 32x8 protected load, immediate index.
     StreamBuilder m(this, MachineType::Simd128(), MachineType::Pointer());
     OpIndex load = m.Simd128LoadPairDeinterleave(
-        m.Parameter(0), m.Int64Constant(4), LoadOp::Kind::Protected(),
+        m.Parameter(0), m.Int64Constant(4), LoadOp::Kind::Trapping(),
         Simd128LoadPairDeinterleaveOp::Kind::k32x8);
     m.Return(m.Simd128Binop(m.Projection(load, 0), m.Projection(load, 1),
                             Simd128BinopOp::Kind::kI32x4Sub));
@@ -5083,7 +6318,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTwoMultiple) {
     StreamBuilder m(this, MachineType::Simd128(), MachineType::Pointer(),
                     MachineType::Pointer());
     OpIndex load = m.Simd128LoadPairDeinterleave(
-        m.Parameter(0), m.Parameter(1), LoadOp::Kind::Protected(),
+        m.Parameter(0), m.Parameter(1), LoadOp::Kind::Trapping(),
         Simd128LoadPairDeinterleaveOp::Kind::k16x16);
     m.Return(m.Simd128Binop(m.Projection(load, 0), m.Projection(load, 1),
                             Simd128BinopOp::Kind::kS128Or));
@@ -5101,7 +6336,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTwoMultiple) {
     // Test deinterleaved 16x16 protected load, immediate index.
     StreamBuilder m(this, MachineType::Simd128(), MachineType::Pointer());
     OpIndex load = m.Simd128LoadPairDeinterleave(
-        m.Parameter(0), m.Int64Constant(2), LoadOp::Kind::Protected(),
+        m.Parameter(0), m.Int64Constant(2), LoadOp::Kind::Trapping(),
         Simd128LoadPairDeinterleaveOp::Kind::k16x16);
     m.Return(m.Simd128Binop(m.Projection(load, 0), m.Projection(load, 1),
                             Simd128BinopOp::Kind::kS128Xor));
@@ -5121,7 +6356,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTwoMultiple) {
     StreamBuilder m(this, MachineType::Simd128(), MachineType::Pointer(),
                     MachineType::Pointer());
     OpIndex load = m.Simd128LoadPairDeinterleave(
-        m.Parameter(0), m.Parameter(1), LoadOp::Kind::Protected(),
+        m.Parameter(0), m.Parameter(1), LoadOp::Kind::Trapping(),
         Simd128LoadPairDeinterleaveOp::Kind::k8x32);
     m.Return(m.Simd128Binop(m.Projection(load, 0), m.Projection(load, 1),
                             Simd128BinopOp::Kind::kS128Or));
@@ -5139,7 +6374,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTwoMultiple) {
     // Test deinterleaved 8x32 protected load, immediate index.
     StreamBuilder m(this, MachineType::Simd128(), MachineType::Pointer());
     OpIndex load = m.Simd128LoadPairDeinterleave(
-        m.Parameter(0), m.Int64Constant(16), LoadOp::Kind::Protected(),
+        m.Parameter(0), m.Int64Constant(16), LoadOp::Kind::Trapping(),
         Simd128LoadPairDeinterleaveOp::Kind::k8x32);
     m.Return(m.Simd128Binop(m.Projection(load, 0), m.Projection(load, 1),
                             Simd128BinopOp::Kind::kS128Xor));
@@ -5244,6 +6479,73 @@ TEST_F(TurboshaftInstructionSelectorTest, Sha3Test) {
       EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
       EXPECT_EQ(s.ToVreg(m.Parameter(2)), s.ToVreg(s[1]->InputAt(1)));
       EXPECT_EQ(1U, s[0]->OutputCount());
+    }
+  }
+  {
+    StreamBuilder m(this, type, type, type);
+    OpIndex x = m.S128Xor(m.Parameter(0), m.Parameter(1));
+    m.Return(m.S128Or(m.I64x2Shl(x, m.Int32Constant(32)),
+                      m.I64x2ShrU(x, m.Int32Constant(32))));
+    Stream s = m.Build();
+    if (CpuFeatures::IsSupported(SHA3)) {
+      ASSERT_EQ(1U, s.size());
+      EXPECT_EQ(kArm64Xar, s[0]->arch_opcode());
+      EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+      EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
+      EXPECT_EQ(s.ToInt32(s[0]->InputAt(2)), 32);
+    } else {
+      ASSERT_EQ(4U, s.size());
+    }
+  }
+  {
+    StreamBuilder m(this, type, type, type);
+    OpIndex x = m.S128Xor(m.Parameter(0), m.Parameter(1));
+    m.Return(m.S128Or(m.I64x2ShrU(x, m.Int32Constant(24)),
+                      m.I64x2Shl(x, m.Int32Constant(40))));
+    Stream s = m.Build();
+    if (CpuFeatures::IsSupported(SHA3)) {
+      ASSERT_EQ(1U, s.size());
+      EXPECT_EQ(kArm64Xar, s[0]->arch_opcode());
+      EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+      EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
+      EXPECT_EQ(s.ToInt32(s[0]->InputAt(2)), 24);
+    } else {
+      ASSERT_EQ(4U, s.size());
+    }
+  }
+  {
+    StreamBuilder m(this, type, type, type);
+    OpIndex x = m.S128Xor(m.Parameter(0), m.Parameter(1));
+    m.Return(m.S128Or(m.I64x2Shl(x, m.Int32Constant(1)),
+                      m.I64x2ShrU(x, m.Int32Constant(63))));
+    Stream s = m.Build();
+    if (CpuFeatures::IsSupported(SHA3)) {
+      ASSERT_EQ(1U, s.size());
+      EXPECT_EQ(kArm64Xar, s[0]->arch_opcode());
+      EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+      EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
+      EXPECT_EQ(s.ToInt32(s[0]->InputAt(2)), 63);
+    } else {
+      ASSERT_EQ(4U, s.size());
+    }
+  }
+  {
+    StreamBuilder m(this, type, type, type);
+    OpIndex x = m.S128And(m.Parameter(0), m.Parameter(1));
+    m.Return(m.S128Or(m.I64x2Shl(x, m.Int32Constant(1)),
+                      m.I64x2ShrU(x, m.Int32Constant(63))));
+    Stream s = m.Build();
+    if (CpuFeatures::IsSupported(SHA3)) {
+      ASSERT_EQ(2U, s.size());
+      EXPECT_EQ(kArm64S128And, s[0]->arch_opcode());
+      EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+      EXPECT_EQ(s.ToVreg(m.Parameter(1)), s.ToVreg(s[0]->InputAt(1)));
+      EXPECT_EQ(kArm64Xar, s[1]->arch_opcode());
+      EXPECT_EQ(s.ToVreg(s[0]->Output()), s.ToVreg(s[1]->InputAt(0)));
+      EXPECT_EQ(s.ToInt32(s[1]->InputAt(1)), 0);
+      EXPECT_EQ(s.ToInt32(s[1]->InputAt(2)), 63);
+    } else {
+      ASSERT_EQ(4U, s.size());
     }
   }
 }
@@ -6449,7 +7751,7 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTransform) {
     OpIndex base = m.Parameter(0);
     OpIndex index = m.Parameter(1);
     Simd128LoadTransformOp::TransformKind transform_kind = std::get<0>(config);
-    LoadOp::Kind load_kind = LoadOp::Kind::Protected();
+    LoadOp::Kind load_kind = LoadOp::Kind::Trapping();
     m.Return(m.Simd128LoadTransform(base, index, load_kind, transform_kind, 8));
     Stream s = m.Build();
 
@@ -6459,12 +7761,13 @@ TEST_F(TurboshaftInstructionSelectorTest, LoadTransform) {
     ASSERT_EQ(2U, s.size());
     EXPECT_EQ(kArm64LdrD, s[0]->arch_opcode());
     EXPECT_EQ(expected_opcode, s[1]->arch_opcode());
-    EXPECT_EQ(expected_lanesize, LaneSizeField::decode(s[1]->opcode()));
+    EXPECT_EQ(expected_lanesize,
+              LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
   }
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-// This list doesn't contain kIndirectPointerWriteBarrier because only indirect
+// This list doesn't contain kTrustedPointerWriteBarrier because only trusted
 // pointer fields can be stored to with that barrier kind.
 static const WriteBarrierKind kWriteBarrierKinds[] = {
     kMapWriteBarrier, kPointerWriteBarrier, kEphemeronKeyWriteBarrier,
@@ -6522,6 +7825,24 @@ TEST_P(TurboshaftInstructionSelectorStoreWithBarrierTest,
 INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
                          TurboshaftInstructionSelectorStoreWithBarrierTest,
                          ::testing::ValuesIn(kWriteBarrierKinds));
+
+TEST_F(TurboshaftInstructionSelectorTest, AtomicStoreWithWriteBarrier) {
+  if (v8_flags.disable_write_barriers) return;
+  StreamBuilder m(this, MachineType::Int32(), MachineType::Int64(),
+                  MachineType::Int64(), MachineType::AnyTagged());
+  m.Store(m.Parameter(0), m.Parameter(1), m.Parameter(2),
+          StoreOp::Kind::Aligned(BaseTaggedness::kTaggedBase).Atomic(),
+          MemoryRepresentation::TaggedPointer(),
+          WriteBarrierKind::kFullWriteBarrier, AtomicMemoryOrder::kSeqCst);
+  m.Return(m.Int32Constant(0));
+  Stream s = m.Build(kAllExceptNopInstructions);
+  ASSERT_EQ(3U, s.size());
+  EXPECT_EQ(kArm64Sub, s[0]->arch_opcode());
+  EXPECT_EQ(kArchAtomicStoreWithWriteBarrier, s[1]->arch_opcode());
+  EXPECT_EQ(kMode_MRR, s[1]->addressing_mode());
+  EXPECT_EQ(RecordWriteModeField::decode(s[1]->opcode()),
+            RecordWriteMode::kValueIsAny);
+}
 
 // -----------------------------------------------------------------------------
 // Comparison instructions.
@@ -7402,6 +8723,141 @@ TEST_F(TurboshaftInstructionSelectorTest, CommuteAddsExtend) {
   }
 }
 
+TEST_F(TurboshaftInstructionSelectorTest, ComparisonWithPowerOf2) {
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Uint64());
+    const int64_t c = 1ULL << 63;
+    const OpIndex p = m.Parameter(0);
+
+    m.Return(m.Uint64GreaterThanOrEqual(p, m.Int64Constant(c)));
+
+    Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Tst, s[0]->arch_opcode());
+    EXPECT_EQ(kNotEqual, s[0]->flags_condition());
+    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(p));
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(c, 1 + ~s.ToInt64(s[0]->InputAt(1)));
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Uint64());
+    const int64_t c = 1ULL << 53;
+    const OpIndex p = m.Parameter(0);
+
+    m.Return(m.Uint64LessThan(p, m.Int64Constant(c)));
+
+    Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Tst, s[0]->arch_opcode());
+    EXPECT_EQ(kEqual, s[0]->flags_condition());
+    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(p));
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(c, 1 + ~s.ToInt64(s[0]->InputAt(1)));
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Uint64());
+    const int64_t c = (1ULL << 41) - 1;
+    const OpIndex p = m.Parameter(0);
+
+    m.Return(m.Uint64GreaterThan(p, m.Int64Constant(c)));
+
+    Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Tst, s[0]->arch_opcode());
+    EXPECT_EQ(kNotEqual, s[0]->flags_condition());
+    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(p));
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(c, ~s.ToInt64(s[0]->InputAt(1)));
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Uint64());
+    const int64_t c = (1ULL << 33) - 1;
+    const OpIndex p = m.Parameter(0);
+
+    m.Return(m.Uint64LessThanOrEqual(p, m.Int64Constant(c)));
+
+    Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Tst, s[0]->arch_opcode());
+    EXPECT_EQ(kEqual, s[0]->flags_condition());
+    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(p));
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(c, ~s.ToInt64(s[0]->InputAt(1)));
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Uint64());
+    const int64_t c = 1ULL << 57;
+    const OpIndex p = m.Parameter(0);
+
+    m.Return(m.Uint64LessThanOrEqual(m.Int64Constant(c), p));
+
+    Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Tst, s[0]->arch_opcode());
+    EXPECT_EQ(kNotEqual, s[0]->flags_condition());
+    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(p));
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(c, 1 + ~s.ToInt64(s[0]->InputAt(1)));
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Uint32());
+    const int32_t c = 1UL << 31;
+    const OpIndex p = m.Parameter(0);
+
+    m.Return(m.Uint32GreaterThanOrEqual(p, m.Int32Constant(c)));
+
+    Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Tst32, s[0]->arch_opcode());
+    EXPECT_EQ(kNotEqual, s[0]->flags_condition());
+    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(p));
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(c, 1 + ~s.ToInt32(s[0]->InputAt(1)));
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+
+  {
+    StreamBuilder m(this, MachineType::Int32(), MachineType::Uint32());
+    const int32_t c = (1UL << 21) - 1;
+    const OpIndex p = m.Parameter(0);
+
+    m.Return(m.Uint32LessThanOrEqual(p, m.Int32Constant(c)));
+
+    Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Tst32, s[0]->arch_opcode());
+    EXPECT_EQ(kEqual, s[0]->flags_condition());
+    EXPECT_EQ(2U, s[0]->InputCount());
+    EXPECT_EQ(s.ToVreg(s[0]->InputAt(0)), s.ToVreg(p));
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(c, ~s.ToInt32(s[0]->InputAt(1)));
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Miscellaneous
 
@@ -7832,6 +9288,109 @@ TEST_F(TurboshaftInstructionSelectorTest, Uint32MulHighWithShr) {
   }
 }
 
+TEST_F(TurboshaftInstructionSelectorTest, Word64MulWideSigned) {
+  StreamBuilder m(this, MachineType::Int64(), MachineType::Int64(),
+                  MachineType::Int64());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Word64Pair> mul = m.Word64MulWide(p0, p1, Word64MulWideOp::Kind::kSigned);
+  OpIndex low = m.Projection(mul, 0);
+  m.Return(low);
+  Stream s = m.Build();
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kArm64Mul, s[0]->arch_opcode());
+  ASSERT_EQ(2U, s[0]->InputCount());
+  ASSERT_EQ(1U, s[0]->OutputCount());
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Word64MulWideSignedWithLoad) {
+  StreamBuilder m(this, MachineType::Int64(), MachineType::Int64(),
+                  MachineType::Pointer());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Word64> load = m.Load(MachineType::Int64(), p1);
+  V<Tuple<Word64, Word64>> mul =
+      m.Word64MulWide(p0, load, Word64MulWideOp::Kind::kSigned);
+  OpIndex low = m.Projection(mul, 0);
+  m.Return(low);
+  Stream s = m.Build();
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64Ldr, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Mul, s[1]->arch_opcode());
+  ASSERT_EQ(2U, s[1]->InputCount());
+  ASSERT_EQ(1U, s[1]->OutputCount());
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Word64MulWideUnsigned) {
+  StreamBuilder m(this, MachineType::Uint64(), MachineType::Uint64(),
+                  MachineType::Uint64());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Tuple<Word64, Word64>> mul =
+      m.Word64MulWide(p0, p1, Word64MulWideOp::Kind::kUnsigned);
+  OpIndex low = m.Projection(mul, 0);
+  m.Return(low);
+  Stream s = m.Build();
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kArm64Mul, s[0]->arch_opcode());
+  ASSERT_EQ(2U, s[0]->InputCount());
+  ASSERT_EQ(1U, s[0]->OutputCount());
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Word64MulWideUnsignedWithLoad) {
+  StreamBuilder m(this, MachineType::Uint64(), MachineType::Uint64(),
+                  MachineType::Pointer());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Word64> load = m.Load(MachineType::Uint64(), p1);
+  V<Tuple<Word64, Word64>> mul =
+      m.Word64MulWide(p0, load, Word64MulWideOp::Kind::kUnsigned);
+  OpIndex low = m.Projection(mul, 0);
+  m.Return(low);
+  Stream s = m.Build();
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64Ldr, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Mul, s[1]->arch_opcode());
+  ASSERT_EQ(2U, s[1]->InputCount());
+  ASSERT_EQ(1U, s[1]->OutputCount());
+}
+
+TEST_F(TurboshaftInstructionSelectorTest,
+       Word64MulWideSignedWithHighProjection) {
+  StreamBuilder m(this, MachineType::Int64(), MachineType::Int64(),
+                  MachineType::Int64());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Tuple<Word64, Word64>> mul =
+      m.Word64MulWide(p0, p1, Word64MulWideOp::Kind::kSigned);
+  OpIndex high = m.Projection(mul, 1);
+  m.Return(high);
+  Stream s = m.Build();
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64Mul, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Smulh, s[1]->arch_opcode());
+  ASSERT_EQ(2U, s[1]->InputCount());
+  ASSERT_EQ(1U, s[1]->OutputCount());
+}
+
+TEST_F(TurboshaftInstructionSelectorTest,
+       Word64MulWideUnsignedWithHighProjection) {
+  StreamBuilder m(this, MachineType::Uint64(), MachineType::Uint64(),
+                  MachineType::Uint64());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Tuple<Word64, Word64>> mul =
+      m.Word64MulWide(p0, p1, Word64MulWideOp::Kind::kUnsigned);
+  OpIndex high = m.Projection(mul, 1);
+  m.Return(high);
+  Stream s = m.Build();
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64Mul, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Umulh, s[1]->arch_opcode());
+  ASSERT_EQ(2U, s[1]->InputCount());
+  ASSERT_EQ(1U, s[1]->OutputCount());
+}
+
 TEST_F(TurboshaftInstructionSelectorTest, Word32SarWithWord32Shl) {
   TRACED_FORRANGE(int32_t, shift, 1, 31) {
     StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
@@ -7898,35 +9457,52 @@ TEST_F(TurboshaftInstructionSelectorTest,
 }
 
 TEST_F(TurboshaftInstructionSelectorTest, Word32ShlWithWord32And) {
-  TRACED_FORRANGE(int32_t, shift, 1, 30) {
-    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
-    OpIndex const p0 = m.Parameter(0);
-    OpIndex const r = m.Word32ShiftLeft(
-        m.Word32BitwiseAnd(p0, m.Int32Constant((1 << (31 - shift)) - 1)),
-        m.Int32Constant(shift));
-    m.Return(r);
-    Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64Ubfiz32, s[0]->arch_opcode());
-    ASSERT_EQ(3U, s[0]->InputCount());
-    EXPECT_EQ(s.ToVreg(p0), s.ToVreg(s[0]->InputAt(0)));
-    ASSERT_EQ(1U, s[0]->OutputCount());
-    EXPECT_EQ(s.ToVreg(r), s.ToVreg(s[0]->Output()));
+  // Test Shl(And(x, mask), shift) -> UBFIZ32
+  TRACED_FORRANGE(int32_t, shift, 1, 31) {
+    TRACED_FORRANGE(int32_t, width, 1, 32 - shift) {
+      uint32_t msk = (uint32_t{1} << width) - 1;
+      StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+      m.Return(m.Word32ShiftLeft(
+          m.Word32BitwiseAnd(m.Parameter(0), m.Int32Constant(msk)),
+          m.Int32Constant(shift)));
+      Stream s = m.Build();
+      ASSERT_EQ(1U, s.size());
+      if (width + shift == 32) {
+        EXPECT_EQ(kArm64Lsl32, s[0]->arch_opcode());
+        ASSERT_EQ(2U, s[0]->InputCount());
+        EXPECT_EQ(shift, s.ToInt32(s[0]->InputAt(1)));
+      } else {
+        EXPECT_EQ(kArm64Ubfiz32, s[0]->arch_opcode());
+        ASSERT_EQ(3U, s[0]->InputCount());
+        EXPECT_EQ(shift, s.ToInt32(s[0]->InputAt(1)));
+        EXPECT_EQ(width, s.ToInt32(s[0]->InputAt(2)));
+      }
+    }
   }
-  TRACED_FORRANGE(int32_t, shift, 0, 30) {
-    StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
-    OpIndex const p0 = m.Parameter(0);
-    OpIndex const r = m.Word32ShiftLeft(
-        m.Word32BitwiseAnd(p0, m.Int32Constant((1u << (31 - shift)) - 1)),
-        m.Int32Constant(shift + 1));
-    m.Return(r);
-    Stream s = m.Build();
-    ASSERT_EQ(1U, s.size());
-    EXPECT_EQ(kArm64Lsl32, s[0]->arch_opcode());
-    ASSERT_EQ(2U, s[0]->InputCount());
-    EXPECT_EQ(s.ToVreg(p0), s.ToVreg(s[0]->InputAt(0)));
-    ASSERT_EQ(1U, s[0]->OutputCount());
-    EXPECT_EQ(s.ToVreg(r), s.ToVreg(s[0]->Output()));
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Word32AndWithWord32Shl) {
+  // Test And(Lsl(x, shift), mask) -> UBFIZ32
+  TRACED_FORRANGE(int32_t, shift, 1, 31) {
+    TRACED_FORRANGE(int32_t, width, 1, 32 - shift) {
+      uint32_t msk = ((uint32_t{1} << width) - 1) << shift;
+      StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
+      m.Return(m.Word32BitwiseAnd(
+          m.Word32ShiftLeft(m.Parameter(0), m.Int32Constant(shift)),
+          m.Int32Constant(msk)));
+      Stream s = m.Build();
+      ASSERT_EQ(1U, s.size());
+      if (width + shift == 32) {
+        EXPECT_EQ(kArm64Lsl32, s[0]->arch_opcode());
+        ASSERT_EQ(2U, s[0]->InputCount());
+        EXPECT_EQ(shift, s.ToInt32(s[0]->InputAt(1)));
+      } else {
+        EXPECT_EQ(kArm64Ubfiz32, s[0]->arch_opcode());
+        ASSERT_EQ(3U, s[0]->InputCount());
+        EXPECT_EQ(shift, s.ToInt32(s[0]->InputAt(1)));
+        EXPECT_EQ(width, s.ToInt32(s[0]->InputAt(2)));
+      }
+    }
   }
 }
 
@@ -8598,13 +10174,15 @@ TEST_P(TurboshaftInstructionSelectorSIMDConstZeroCmTest, ConstZero) {
       EXPECT_EQ(param.expected_op_left, s[0]->arch_opcode());
       EXPECT_EQ(1U, s[0]->InputCount());
       EXPECT_EQ(1U, s[0]->OutputCount());
-      EXPECT_EQ(param.lane_size, LaneSizeField::decode(s[0]->opcode()));
+      EXPECT_EQ(param.lane_size,
+                LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     } else {
       EXPECT_EQ(kArm64S128Const, s[0]->arch_opcode());
       EXPECT_EQ(param.expected_op_left, s[1]->arch_opcode());
       EXPECT_EQ(2U, s[1]->InputCount());
       EXPECT_EQ(1U, s[1]->OutputCount());
-      EXPECT_EQ(param.lane_size, LaneSizeField::decode(s[1]->opcode()));
+      EXPECT_EQ(param.lane_size,
+                LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
     }
   }
   //  Const node on the right
@@ -8619,13 +10197,15 @@ TEST_P(TurboshaftInstructionSelectorSIMDConstZeroCmTest, ConstZero) {
       EXPECT_EQ(param.expected_op_right, s[0]->arch_opcode());
       EXPECT_EQ(1U, s[0]->InputCount());
       EXPECT_EQ(1U, s[0]->OutputCount());
-      EXPECT_EQ(param.lane_size, LaneSizeField::decode(s[0]->opcode()));
+      EXPECT_EQ(param.lane_size,
+                LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
     } else {
       EXPECT_EQ(kArm64S128Const, s[0]->arch_opcode());
       EXPECT_EQ(param.expected_op_right, s[1]->arch_opcode());
       EXPECT_EQ(2U, s[1]->InputCount());
       EXPECT_EQ(1U, s[1]->OutputCount());
-      EXPECT_EQ(param.lane_size, LaneSizeField::decode(s[1]->opcode()));
+      EXPECT_EQ(param.lane_size,
+                LaneSizeBits(LaneSizeField::decode(s[1]->opcode())));
     }
   }
 }
@@ -8799,7 +10379,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDConstAndTest, ConstAnd) {
       EXPECT_EQ(param.expected_op, s[0]->arch_opcode());
       EXPECT_EQ(3U, s[0]->InputCount());
       EXPECT_EQ(1U, s[0]->OutputCount());
-      EXPECT_EQ(param.lane_size, LaneSizeField::decode(s[0]->opcode()));
+      EXPECT_EQ(param.lane_size,
+                LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
       EXPECT_EQ(param.shift_amount, s.ToInt32(s[0]->InputAt(2)));
       EXPECT_EQ(param.expected_imm, s.ToInt32(s[0]->InputAt(1)));
     } else {
@@ -8821,7 +10402,8 @@ TEST_P(TurboshaftInstructionSelectorSIMDConstAndTest, ConstAnd) {
       EXPECT_EQ(param.expected_op, s[0]->arch_opcode());
       EXPECT_EQ(3U, s[0]->InputCount());
       EXPECT_EQ(1U, s[0]->OutputCount());
-      EXPECT_EQ(param.lane_size, LaneSizeField::decode(s[0]->opcode()));
+      EXPECT_EQ(param.lane_size,
+                LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
       EXPECT_EQ(param.shift_amount, s.ToInt32(s[0]->InputAt(2)));
       EXPECT_EQ(param.expected_imm, s.ToInt32(s[0]->InputAt(1)));
     } else {
@@ -9041,7 +10623,7 @@ TEST_P(TurboshaftInstructionSelectorSIMDAddFamilyTest, wasmSimdAddFamilyTest) {
     EXPECT_EQ(1U, s.size());
     EXPECT_EQ(s.ToVreg(l), s.ToVreg(s[0]->InputAt(1)));
     EXPECT_EQ(s.ToVreg(r), s.ToVreg(s[0]->InputAt(0)));
-    int lsf = LaneSizeField::decode(s[0]->opcode());
+    int lsf = LaneSizeBits(LaneSizeField::decode(s[0]->opcode()));
     EXPECT_EQ(param.lsf, lsf);
   }
   {  // Convert on the right (ADDW)
@@ -9061,7 +10643,7 @@ TEST_P(TurboshaftInstructionSelectorSIMDAddFamilyTest, wasmSimdAddFamilyTest) {
     EXPECT_EQ(1U, s.size());
     EXPECT_EQ(s.ToVreg(l), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(r), s.ToVreg(s[0]->InputAt(1)));
-    int lsf = LaneSizeField::decode(s[0]->opcode());
+    int lsf = LaneSizeBits(LaneSizeField::decode(s[0]->opcode()));
     EXPECT_EQ(param.lsf, lsf);
   }
   {  // Convert on both sides (ADDL)
@@ -9083,7 +10665,7 @@ TEST_P(TurboshaftInstructionSelectorSIMDAddFamilyTest, wasmSimdAddFamilyTest) {
     EXPECT_EQ(1U, s.size());
     EXPECT_EQ(s.ToVreg(l), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(r), s.ToVreg(s[0]->InputAt(1)));
-    int lsf = LaneSizeField::decode(s[0]->opcode());
+    int lsf = LaneSizeBits(LaneSizeField::decode(s[0]->opcode()));
     EXPECT_EQ(param.lsf, lsf);
   }
 }
@@ -9227,7 +10809,7 @@ TEST_P(TurboshaftInstructionSelectorSIMDSubFamilyTest, wasmSimdSubFamilyTest) {
     EXPECT_EQ(1U, s.size());
     EXPECT_EQ(s.ToVreg(l), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(r), s.ToVreg(s[0]->InputAt(1)));
-    int lsf = LaneSizeField::decode(s[0]->opcode());
+    int lsf = LaneSizeBits(LaneSizeField::decode(s[0]->opcode()));
     EXPECT_EQ(param.lsf, lsf);
   }
   {  // Convert on both sides (SUBL)
@@ -9249,8 +10831,119 @@ TEST_P(TurboshaftInstructionSelectorSIMDSubFamilyTest, wasmSimdSubFamilyTest) {
     EXPECT_EQ(1U, s.size());
     EXPECT_EQ(s.ToVreg(l), s.ToVreg(s[0]->InputAt(0)));
     EXPECT_EQ(s.ToVreg(r), s.ToVreg(s[0]->InputAt(1)));
-    int lsf = LaneSizeField::decode(s[0]->opcode());
+    int lsf = LaneSizeBits(LaneSizeField::decode(s[0]->opcode()));
     EXPECT_EQ(param.lsf, lsf);
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, SimdShiftToAdd) {
+  for (int shift : {1, 8 + 1}) {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+    m.Return(m.I8x16Shl(m.Parameter(0), m.Int32Constant(shift)));
+    Stream s = m.Build();
+    EXPECT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64IAdd, s[0]->arch_opcode());
+    EXPECT_EQ(8, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
+  }
+  for (int shift : {1, 16 + 1}) {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+    m.Return(m.I16x8Shl(m.Parameter(0), m.Int32Constant(shift)));
+    Stream s = m.Build();
+    EXPECT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64IAdd, s[0]->arch_opcode());
+    EXPECT_EQ(16, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
+  }
+  for (int shift : {1, 32 + 1}) {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+    m.Return(m.I32x4Shl(m.Parameter(0), m.Int32Constant(shift)));
+    Stream s = m.Build();
+    EXPECT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64IAdd, s[0]->arch_opcode());
+    EXPECT_EQ(32, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
+  }
+  for (int shift : {1, 64 + 1}) {
+    StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+    m.Return(m.I64x2Shl(m.Parameter(0), m.Int32Constant(shift)));
+    Stream s = m.Build();
+    EXPECT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64IAdd, s[0]->arch_opcode());
+    EXPECT_EQ(64, LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(0)));
+    EXPECT_EQ(s.ToVreg(m.Parameter(0)), s.ToVreg(s[0]->InputAt(1)));
+  }
+}
+
+namespace {
+
+struct SIMDShiftLeftLongTest {
+  const TSUnop extension;
+  const TSBinop shift;
+  const ArchOpcode regular_opcode;
+  const ArchOpcode full_width_opcode;
+  const int lane_bits;
+};
+
+#define SIMD_SHIFT_LEFT_LONG_TESTS(Dst, Src, LaneBits)                        \
+  {TSUnop::k##Dst##SConvert##Src##Low, TSBinop::k##Dst##Shl, kArm64Sshll,     \
+   kArm64IShll, LaneBits},                                                    \
+      {TSUnop::k##Dst##SConvert##Src##High, TSBinop::k##Dst##Shl,             \
+       kArm64Sshll2, kArm64IShll2, LaneBits},                                 \
+      {TSUnop::k##Dst##UConvert##Src##Low, TSBinop::k##Dst##Shl, kArm64Ushll, \
+       kArm64IShll, LaneBits},                                                \
+  {                                                                           \
+    TSUnop::k##Dst##UConvert##Src##High, TSBinop::k##Dst##Shl, kArm64Ushll2,  \
+        kArm64IShll2, LaneBits                                                \
+  }
+
+const SIMDShiftLeftLongTest kSIMDShiftLeftLongTests[] = {
+    SIMD_SHIFT_LEFT_LONG_TESTS(I16x8, I8x16, 16),
+    SIMD_SHIFT_LEFT_LONG_TESTS(I32x4, I16x8, 32),
+    SIMD_SHIFT_LEFT_LONG_TESTS(I64x2, I32x4, 64),
+};
+
+#undef SIMD_SHIFT_LEFT_LONG_TESTS
+
+}  // namespace
+
+TEST_F(TurboshaftInstructionSelectorTest, SimdShiftLeftLong) {
+  for (const SIMDShiftLeftLongTest& test : kSIMDShiftLeftLongTests) {
+    const int source_lane_bits = test.lane_bits / 2;
+    TRACED_FORRANGE(int, shift_amount, 1, source_lane_bits) {
+      StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+      const V<Simd128> input = m.Parameter(0);
+      const OpIndex extension = m.Emit(test.extension, input);
+      const OpIndex result =
+          m.Emit(test.shift, extension, m.Int32Constant(shift_amount));
+      m.Return(result);
+      const Stream s = m.Build();
+
+      if (shift_amount == source_lane_bits) {
+        ASSERT_EQ(1U, s.size());
+        EXPECT_EQ(test.full_width_opcode, s[0]->arch_opcode());
+        EXPECT_EQ(test.lane_bits,
+                  LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+        EXPECT_EQ(1U, s[0]->InputCount());
+        ASSERT_EQ(1U, s[0]->OutputCount());
+        EXPECT_EQ(s.ToVreg(input), s.ToVreg(s[0]->InputAt(0)));
+        EXPECT_EQ(s.ToVreg(result), s.ToVreg(s[0]->Output()));
+      } else {
+        ASSERT_EQ(1U, s.size());
+        EXPECT_EQ(test.regular_opcode, s[0]->arch_opcode());
+        EXPECT_EQ(test.lane_bits,
+                  LaneSizeBits(LaneSizeField::decode(s[0]->opcode())));
+        EXPECT_EQ(2U, s[0]->InputCount());
+        ASSERT_EQ(1U, s[0]->OutputCount());
+        EXPECT_EQ(s.ToVreg(input), s.ToVreg(s[0]->InputAt(0)));
+        EXPECT_EQ(s.ToVreg(result), s.ToVreg(s[0]->Output()));
+        EXPECT_EQ(shift_amount, s.ToInt32(s[0]->InputAt(1)));
+      }
+    }
   }
 }
 
@@ -9500,6 +11193,154 @@ TEST_F(TurboshaftInstructionSelectorTest, MaxMin) {
     EXPECT_EQ(c, s.ToInt64(s[0]->InputAt(1)));
     EXPECT_EQ(1U, s[0]->OutputCount());
   }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Word64AndWithWord64Shl) {
+  // Test And(Lsl(x, shift), mask) -> UBFIZ
+  TRACED_FORRANGE(int32_t, shift, 1, 63) {
+    TRACED_FORRANGE(int32_t, width, 1, 64 - shift) {
+      uint64_t msk = ((uint64_t{1} << width) - 1) << shift;
+      StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
+      m.Return(m.Word64BitwiseAnd(
+          m.Word64ShiftLeft(m.Parameter(0), m.Int32Constant(shift)),
+          m.Int64Constant(msk)));
+      Stream s = m.Build();
+      ASSERT_EQ(1U, s.size());
+      if (width + shift == 64) {
+        EXPECT_EQ(kArm64Lsl, s[0]->arch_opcode());
+        ASSERT_EQ(2U, s[0]->InputCount());
+        EXPECT_EQ(shift, s.ToInt32(s[0]->InputAt(1)));
+      } else {
+        EXPECT_EQ(kArm64Ubfiz, s[0]->arch_opcode());
+        ASSERT_EQ(3U, s[0]->InputCount());
+        EXPECT_EQ(shift, s.ToInt32(s[0]->InputAt(1)));
+        EXPECT_EQ(width, s.ToInt32(s[0]->InputAt(2)));
+      }
+    }
+  }
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Word64ShiftLeftWithWord64And) {
+  // Test Lsl(And(x, mask), shift) -> UBFIZ
+  TRACED_FORRANGE(int32_t, shift, 1, 63) {
+    TRACED_FORRANGE(int32_t, width, 1, 64 - shift) {
+      uint64_t msk = (uint64_t{1} << width) - 1;
+      StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
+      m.Return(m.Word64ShiftLeft(
+          m.Word64BitwiseAnd(m.Parameter(0), m.Int64Constant(msk)),
+          m.Int32Constant(shift)));
+      Stream s = m.Build();
+      ASSERT_EQ(1U, s.size());
+      if (width + shift == 64) {
+        EXPECT_EQ(kArm64Lsl, s[0]->arch_opcode());
+        ASSERT_EQ(2U, s[0]->InputCount());
+        EXPECT_EQ(shift, s.ToInt32(s[0]->InputAt(1)));
+      } else {
+        EXPECT_EQ(kArm64Ubfiz, s[0]->arch_opcode());
+        ASSERT_EQ(3U, s[0]->InputCount());
+        EXPECT_EQ(shift, s.ToInt32(s[0]->InputAt(1)));
+        EXPECT_EQ(width, s.ToInt32(s[0]->InputAt(2)));
+      }
+    }
+  }
+}
+
+struct AddOrSub128 {
+  Word64AddSub128BinopOp::Kind kind;
+  ArchOpcode expected;
+};
+
+std::ostream& operator<<(std::ostream& os, const AddOrSub128& op) {
+  return os << (op.kind == Word64AddSub128BinopOp::Kind::kAdd ? "Add" : "Sub");
+}
+
+using TurboshaftInstructionSelectorAddSub128Test =
+    TurboshaftInstructionSelectorTestWithParam<AddOrSub128>;
+
+const AddOrSub128 kAddOrSub128[] = {
+    {Word64AddSub128BinopOp::Kind::kAdd, kArm64Add128},
+    {Word64AddSub128BinopOp::Kind::kSub, kArm64Sub128},
+};
+
+TEST_P(TurboshaftInstructionSelectorAddSub128Test, Word64AddSub128) {
+  const AddOrSub128 param = GetParam();
+  StreamBuilder m(this, MachineType::Uint64(), MachineType::Uint64(),
+                  MachineType::Uint64(), MachineType::Uint64(),
+                  MachineType::Uint64());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Word64> p2 = m.Parameter<Word64>(2);
+  V<Word64> p3 = m.Parameter<Word64>(3);
+  V<Word64Pair> res = m.Word64AddSub128Binop(p0, p1, p2, p3, param.kind);
+  OpIndex low = m.Projection(res, 0);
+  OpIndex high = m.Projection(res, 1);
+  m.Return(m.Word64Add(low, high));
+  Stream s = m.Build();
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(param.expected, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Add, s[1]->arch_opcode());
+  ASSERT_EQ(4U, s[0]->InputCount());
+  ASSERT_EQ(2U, s[0]->OutputCount());
+}
+
+INSTANTIATE_TEST_SUITE_P(TurboshaftInstructionSelectorTest,
+                         TurboshaftInstructionSelectorAddSub128Test,
+                         ::testing::ValuesIn(kAddOrSub128));
+
+TEST_F(TurboshaftInstructionSelectorTest, Word32EqualWithReadOnlyRoot) {
+  if (!V8_STATIC_ROOTS_BOOL &&
+      (!COMPRESS_POINTERS_BOOL || isolate()->bootstrapper())) {
+    return;
+  }
+
+  StreamBuilder m(this, MachineType::Int32(), MachineType::AnyTagged());
+  Handle<HeapObject> undefined_value = isolate()->factory()->undefined_value();
+
+  OpIndex param = m.Parameter(0);
+  OpIndex heap_constant = m.HeapConstant(undefined_value);
+  OpIndex eq = m.Word32Equal(param, heap_constant);
+
+  m.Return(eq);
+  Stream s = m.Build();
+
+  ASSERT_EQ(1u, s.size());
+  EXPECT_EQ(kArm64Cmp32, s[0]->arch_opcode());
+  ASSERT_EQ(2u, s[0]->InputCount());
+  EXPECT_TRUE(s[0]->InputAt(1)->IsImmediate());
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Word64Add3) {
+  StreamBuilder m(this, MachineType::Uint64(), MachineType::Uint64(),
+                  MachineType::Uint64(), MachineType::Uint64());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Word64> p2 = m.Parameter<Word64>(2);
+  V<Word64Pair> res = m.Word64Add3(p0, p1, p2);
+  OpIndex low = m.Projection(res, 0);
+  OpIndex high = m.Projection(res, 1);
+  m.Return(m.Word64Add(low, high));
+  Stream s = m.Build();
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64Add64_3, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Add, s[1]->arch_opcode());
+  ASSERT_EQ(3U, s[0]->InputCount());
+  ASSERT_EQ(2U, s[0]->OutputCount());
+}
+
+TEST_F(TurboshaftInstructionSelectorTest, Word64Add3UnusedHigh) {
+  StreamBuilder m(this, MachineType::Uint64(), MachineType::Uint64(),
+                  MachineType::Uint64(), MachineType::Uint64());
+  V<Word64> p0 = m.Parameter<Word64>(0);
+  V<Word64> p1 = m.Parameter<Word64>(1);
+  V<Word64> p2 = m.Parameter<Word64>(2);
+  V<Word64Pair> res = m.Word64Add3(p0, p1, p2);
+  OpIndex low = m.Projection(res, 0);
+  m.Return(low);
+  Stream s = m.Build();
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kArm64Add64_3, s[0]->arch_opcode());
+  ASSERT_EQ(3U, s[0]->InputCount());
+  ASSERT_EQ(1U, s[0]->OutputCount());
 }
 
 }  // namespace v8::internal::compiler::turboshaft

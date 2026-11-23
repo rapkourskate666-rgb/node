@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 #include "src/base/bits.h"
@@ -18,6 +19,7 @@
 #include "src/base/hashing.h"
 #include "src/base/logging.h"
 #include "src/base/macros.h"
+#include "src/base/memory.h"
 #include "src/base/numerics/safe_conversions.h"
 #include "src/base/vector.h"
 #include "src/common/globals.h"
@@ -233,7 +235,7 @@ inline T RoundingAverageUnsigned(T a, T b) {
 //   V(kField4Offset, kSystemPointerSize)
 //   V(kSize, 0)
 //
-// DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize, MAP_FIELDS)
+// DEFINE_FIELD_OFFSET_CONSTANTS(sizeof(HeapObject), MAP_FIELDS)
 //
 #define DEFINE_ONE_FIELD_OFFSET(Name, Size, ...) \
   Name, Name##End = Name + (Size)-1,
@@ -269,45 +271,39 @@ inline T RoundingAverageUnsigned(T a, T b) {
 // ----------------------------------------------------------------------------
 // Hash function.
 
-// Thomas Wang, Integer Hash Functions.
-// http://www.concentric.net/~Ttwang/tech/inthash.htm`
-inline uint32_t ComputeUnseededHash(uint32_t key) {
-  uint32_t hash = key;
-  hash = ~hash + (hash << 15);  // hash = (hash << 15) - hash - 1;
-  hash = hash ^ (hash >> 12);
-  hash = hash + (hash << 2);
-  hash = hash ^ (hash >> 4);
-  hash = hash * 2057;  // hash = (hash + (hash << 3)) + (hash << 11);
-  hash = hash ^ (hash >> 16);
-  return hash & 0x3fffffff;
+// Smi-payload-sized integer hashes. Mask the canonical hash from
+// base::hash32 / base::hash64 with kSmiHashMask so the result is a
+// non-negative Smi payload, safe to pass to Smi::FromInt. Use only when the
+// result will actually be stored as a Smi field; for bucket-modulo or
+// comparison use base::hash32 / base::hash64 directly to preserve entropy.
+inline uint32_t SmiHash32(uint32_t key) {
+  return base::hash32(key) & kSmiHashMask;
 }
 
-inline uint32_t ComputeLongHash(uint64_t key) {
-  uint64_t hash = key;
-  hash = ~hash + (hash << 18);  // hash = (hash << 18) - hash - 1;
-  hash = hash ^ (hash >> 31);
-  hash = hash * 21;  // hash = (hash + (hash << 2)) + (hash << 4);
-  hash = hash ^ (hash >> 11);
-  hash = hash + (hash << 6);
-  hash = hash ^ (hash >> 22);
-  return static_cast<uint32_t>(hash & 0x3fffffff);
+// Block implicit narrowing into SmiHash32; 64-bit keys must use SmiHash64.
+uint32_t SmiHash32(uint64_t) = delete;
+
+inline uint32_t SmiHash64(uint64_t key) {
+  return static_cast<uint32_t>(base::hash64(key)) & kSmiHashMask;
 }
 
+// TODO(jgruber): Rename to reveal Smi-masking (e.g. SmiHashWithSeed).
 inline uint32_t ComputeSeededHash(uint32_t key, uint64_t seed) {
 #ifdef V8_USE_SIPHASH
   return halfsiphash(key, seed);
 #else
-  return ComputeLongHash(static_cast<uint64_t>(key) ^ seed);
+  return SmiHash64(key ^ seed);
 #endif  // V8_USE_SIPHASH
 }
 
+// TODO(jgruber): Rename to reveal Smi-masking (e.g. SmiHashPointer).
 inline uint32_t ComputePointerHash(void* ptr) {
-  return ComputeUnseededHash(
-      static_cast<uint32_t>(reinterpret_cast<intptr_t>(ptr)));
+  return SmiHash32(static_cast<uint32_t>(reinterpret_cast<intptr_t>(ptr)));
 }
 
+// TODO(jgruber): Rename to reveal Smi-masking (e.g. SmiHashAddress).
 inline uint32_t ComputeAddressHash(Address address) {
-  return ComputeUnseededHash(static_cast<uint32_t>(address & 0xFFFFFFFFul));
+  return SmiHash32(static_cast<uint32_t>(address & 0xFFFFFFFFul));
 }
 
 // ----------------------------------------------------------------------------
@@ -486,6 +482,104 @@ V8_INLINE bool SimdMemEqual(const Char* lhs, const Char* rhs, size_t count) {
   }
 }
 
+#if defined(V8_TARGET_LITTLE_ENDIAN)
+V8_INLINE uint32_t WidenTwoBytesToU32(const uint8_t* p) {
+  uint32_t x = base::ReadUnalignedValue<uint16_t>(p);
+  return (x | (x << 8)) & 0x00FF00FFu;
+}
+
+V8_INLINE uint64_t WidenFourBytesToU64(const uint8_t* p) {
+  uint64_t x = base::ReadUnalignedValue<uint32_t>(p);
+  x = (x | (x << 16)) & 0x0000FFFF0000FFFFULL;
+  return (x | (x << 8)) & 0x00FF00FF00FF00FFULL;
+}
+#endif  // defined(V8_TARGET_LITTLE_ENDIAN)
+
+V8_INLINE bool CompareOneAndTwoByteCharsFallback(const uint8_t* one_byte,
+                                                 const uint16_t* two_byte,
+                                                 size_t length) {
+  DCHECK_LT(length, 8);
+#if defined(V8_TARGET_LITTLE_ENDIAN)
+  static constexpr size_t kSwarChunkSize = 4;
+  if (length >= kSwarChunkSize) {
+    return WidenFourBytesToU64(one_byte) ==
+               base::ReadUnalignedValue<uint64_t>(
+                   reinterpret_cast<const uint8_t*>(two_byte)) &&
+           WidenFourBytesToU64(one_byte + length - kSwarChunkSize) ==
+               base::ReadUnalignedValue<uint64_t>(
+                   reinterpret_cast<const uint8_t*>(two_byte + length -
+                                                    kSwarChunkSize));
+  }
+  if (length >= 2) {
+    return WidenTwoBytesToU32(one_byte) ==
+               base::ReadUnalignedValue<uint32_t>(
+                   reinterpret_cast<const uint8_t*>(two_byte)) &&
+           WidenTwoBytesToU32(one_byte + length - 2) ==
+               base::ReadUnalignedValue<uint32_t>(
+                   reinterpret_cast<const uint8_t*>(two_byte + length - 2));
+  }
+  return length == 0 || *one_byte == *two_byte;
+#else
+  for (size_t i = 0; i < length; ++i) {
+    if (one_byte[i] != two_byte[i]) return false;
+  }
+  return true;
+#endif  // defined(V8_TARGET_LITTLE_ENDIAN)
+}
+
+// We intentionally use misaligned reads for the SIMD intrinsics below, disable
+// alignment sanitization explicitly.
+#if defined(__SSE3__)
+V8_CLANG_NO_SANITIZE("alignment")
+V8_INLINE bool CompareOneAndTwoByteChunk(const uint8_t* ob,
+                                         const uint16_t* tb) {
+  __m128i ob8 = _mm_loadu_si64(ob);
+  __m128i ob16 = _mm_unpacklo_epi8(ob8, _mm_setzero_si128());
+  __m128i tb16 = _mm_lddqu_si128(reinterpret_cast<const __m128i*>(tb));
+  __m128i eq = _mm_cmpeq_epi16(ob16, tb16);
+  return _mm_movemask_epi8(eq) == 0xFFFF;
+}
+#elif defined(V8_OPTIMIZE_WITH_NEON)
+V8_CLANG_NO_SANITIZE("alignment")
+V8_INLINE bool CompareOneAndTwoByteChunk(const uint8_t* ob,
+                                         const uint16_t* tb) {
+  uint8x8_t ob8 = vld1_u8(ob);
+  uint16x8_t ob16 = vmovl_u8(ob8);
+  uint16x8_t tb16 = vld1q_u16(tb);
+  uint16x8_t diff = veorq_u16(ob16, tb16);
+  return vmaxvq_u16(diff) == 0;
+}
+#endif
+
+#if defined(__SSE3__) || defined(V8_OPTIMIZE_WITH_NEON)
+V8_INLINE bool CompareOneAndTwoByteChars(const uint8_t* one_byte,
+                                         const uint16_t* two_byte,
+                                         size_t length) {
+  static constexpr size_t kChunkSize = 8;
+  if (length < kChunkSize) {
+    return CompareOneAndTwoByteCharsFallback(one_byte, two_byte, length);
+  }
+  size_t i = 0;
+  for (; i + kChunkSize <= length; i += kChunkSize) {
+    if (!CompareOneAndTwoByteChunk(one_byte + i, two_byte + i)) return false;
+  }
+  if (i < length) {
+    return CompareOneAndTwoByteChunk(one_byte + length - kChunkSize,
+                                     two_byte + length - kChunkSize);
+  }
+  return true;
+}
+#else
+V8_INLINE bool CompareOneAndTwoByteChars(const uint8_t* one_byte,
+                                         const uint16_t* two_byte,
+                                         size_t length) {
+  for (size_t i = 0; i < length; ++i) {
+    if (one_byte[i] != two_byte[i]) return false;
+  }
+  return true;
+}
+#endif
+
 // Compare 8bit/16bit chars to 8bit/16bit chars.
 template <typename lchar, typename rchar>
 inline bool CompareCharsEqualUnsigned(const lchar* lhs, const rchar* rhs,
@@ -501,6 +595,12 @@ inline bool CompareCharsEqualUnsigned(const lchar* lhs, const rchar* rhs,
     // memcmp compares byte-by-byte, but for equality it doesn't matter whether
     // two-byte char comparison is little- or big-endian.
     return memcmp(lhs, rhs, chars * sizeof(*lhs)) == 0;
+  }
+  if constexpr (sizeof(*lhs) == 1 && sizeof(*rhs) == 2) {
+    return CompareOneAndTwoByteChars(lhs, rhs, chars);
+  }
+  if constexpr (sizeof(*lhs) == 2 && sizeof(*rhs) == 1) {
+    return CompareOneAndTwoByteChars(rhs, lhs, chars);
   }
   for (const lchar* limit = lhs + chars; lhs < limit; ++lhs, ++rhs) {
     if (*lhs != *rhs) return false;
@@ -805,8 +905,8 @@ inline Float16 FpOpWorkaround(Float16 input, Float16 value) {
 
 #endif
 
-V8_EXPORT_PRIVATE bool PassesFilter(base::Vector<const char> name,
-                                    base::Vector<const char> filter);
+V8_EXPORT_PRIVATE bool PassesFilter(std::string_view name,
+                                    std::string_view filter);
 
 // Zap the specified area with a specific byte pattern. This currently defaults
 // to int3 on x64 and ia32. On other architectures this will produce unspecified

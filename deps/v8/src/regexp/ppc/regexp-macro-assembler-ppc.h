@@ -10,6 +10,7 @@
 
 namespace v8 {
 namespace internal {
+namespace regexp {
 
 class V8_EXPORT_PRIVATE RegExpMacroAssemblerPPC
     : public NativeRegExpMacroAssembler {
@@ -54,7 +55,8 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerPPC
   void CheckBitInTable(Handle<ByteArray> table, Label* on_bit_set) override;
   void SkipUntilBitInTable(int cp_offset, Handle<ByteArray> table,
                            Handle<ByteArray> nibble_table, int advance_by,
-                           Label* on_match, Label* on_no_match) override;
+                           int bounds_check_offset, Label* on_match,
+                           Label* on_no_match) override;
 
   // Checks whether the given offset from the current position is before
   // the end of the string.
@@ -62,8 +64,8 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerPPC
   void CheckSpecialClassRanges(StandardCharacterSet type,
                                Label* on_no_match) override;
   void Fail() override;
-  DirectHandle<HeapObject> GetCode(DirectHandle<String> source,
-                                   RegExpFlags flags) override;
+  DirectHandle<HeapObject> GetCode(DirectHandle<RegExpData> re_data,
+                                   Flags flags) override;
   void GoTo(Label* label) override;
   void IfRegisterGE(int reg, int comparand, Label* if_ge) override;
   void IfRegisterLT(int reg, int comparand, Label* if_lt) override;
@@ -106,7 +108,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerPPC
   static constexpr int kStoredRegistersOffset = kFramePointerOffset;
   // Return address (stored from link register, read into pc on return).
   static constexpr int kReturnAddressOffset =
-      kStoredRegistersOffset + 7 * kSystemPointerSize;
+      kStoredRegistersOffset + 8 * kSystemPointerSize;
   static constexpr int kCallerFrameOffset =
       kReturnAddressOffset + kSystemPointerSize;
 
@@ -191,6 +193,11 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerPPC
   // Register holding pointer to the current code object.
   static constexpr Register code_pointer() { return r26; }
 
+  // Register holding the address of the regexp stack's thread-local block,
+  // from which the stack limit, memory top and saved stack pointer are
+  // loaded at Stack::k*Offset.
+  static constexpr Register regexp_stack() { return r24; }
+
   // Equivalent to a conditional branch to the label, unless the label
   // is nullptr, in which case it is a conditional Backtrack.
   void BranchOrBacktrack(Condition condition, Label* to, CRegister cr = cr0);
@@ -210,7 +217,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerPPC
   inline void Pop(Register target);
 
   void LoadRegExpStackPointerFromMemory(Register dst);
-  void StoreRegExpStackPointerToMemory(Register src, Register scratch);
+  void StoreRegExpStackPointerToMemory(Register src);
   void PushRegExpBasePointer(Register stack_pointer, Register scratch);
   void PopRegExpBasePointer(Register stack_pointer_out, Register scratch);
 
@@ -239,8 +246,9 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerPPC
 };
 
 // Set of non-volatile registers saved/restored by generated regexp code.
-const RegList kRegExpCalleeSaved = {r25, r26, r27, r28, r29, r30, fp};
+const RegList kRegExpCalleeSaved = {r24, r25, r26, r27, r28, r29, r30, fp};
 
+}  // namespace regexp
 }  // namespace internal
 }  // namespace v8
 

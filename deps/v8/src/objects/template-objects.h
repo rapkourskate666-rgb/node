@@ -8,7 +8,6 @@
 #include "src/objects/fixed-array.h"
 #include "src/objects/struct.h"
 #include "src/objects/tagged-field.h"
-#include "src/objects/torque-defined-classes.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -19,25 +18,22 @@ namespace internal {
 class Oddball;
 class StructBodyDescriptor;
 
-#include "torque-generated/src/objects/template-objects-tq.inc"
-
 // TemplateObjectDescription is a tuple of raw strings and cooked strings for
 // tagged template literals. Used to communicate with the runtime for template
 // object creation within the {Runtime_GetTemplateObject} method.
-V8_OBJECT class TemplateObjectDescription final : public StructLayout {
+V8_OBJECT class TemplateObjectDescription final : public Struct {
  public:
+  inline TemplateObjectDescription(const AllocationWitness& witness,
+                                   Tagged<FixedArray> raw_strings,
+                                   Tagged<FixedArray> cooked_strings);
+
   static DirectHandle<JSArray> GetTemplateObject(
       Isolate* isolate, DirectHandle<NativeContext> native_context,
       DirectHandle<TemplateObjectDescription> description,
       DirectHandle<SharedFunctionInfo> shared_info, int slot_id);
 
   inline Tagged<FixedArray> raw_strings() const;
-  inline void set_raw_strings(Tagged<FixedArray> value,
-                              WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
   inline Tagged<FixedArray> cooked_strings() const;
-  inline void set_cooked_strings(Tagged<FixedArray> value,
-                                 WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   using BodyDescriptor = StructBodyDescriptor;
 
@@ -48,8 +44,8 @@ V8_OBJECT class TemplateObjectDescription final : public StructLayout {
   friend class Factory;
   friend class TorqueGeneratedTemplateObjectDescriptionAsserts;
 
-  TaggedMember<FixedArray> raw_strings_;
-  TaggedMember<FixedArray> cooked_strings_;
+  const TaggedMember<FixedArray> raw_strings_;
+  const TaggedMember<FixedArray> cooked_strings_;
 } V8_OBJECT_END;
 
 }  // namespace internal

@@ -3,10 +3,9 @@
 
 #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
 
-#include <map>
+#include <span>
 #include <string>
 #include <string_view>
-#include "v8.h"
 
 namespace node {
 
@@ -40,6 +39,8 @@ namespace permission {
 #define OPENSSL_STORE_PERMISSIONS(V)                                           \
   V(OpenSSLStore, "openssl.store", PermissionsRoot, "--allow-openssl-store")
 
+#define ENV_PERMISSIONS(V) V(Env, "env", PermissionsRoot, "--allow-env")
+
 #define PERMISSIONS(V)                                                         \
   FILESYSTEM_PERMISSIONS(V)                                                    \
   CHILD_PROCESS_PERMISSIONS(V)                                                 \
@@ -49,7 +50,8 @@ namespace permission {
   NET_PERMISSIONS(V)                                                           \
   ADDON_PERMISSIONS(V)                                                         \
   FFI_PERMISSIONS(V)                                                           \
-  OPENSSL_STORE_PERMISSIONS(V)
+  OPENSSL_STORE_PERMISSIONS(V)                                                 \
+  ENV_PERMISSIONS(V)
 
 #define V(name, _, __, ___) k##name,
 enum class PermissionScope {
@@ -60,15 +62,16 @@ enum class PermissionScope {
 
 class PermissionBase {
  public:
+  virtual ~PermissionBase() = default;
   virtual void Apply(Environment* env,
-                     const std::vector<std::string>& allow,
+                     std::span<const std::string> allow,
                      PermissionScope scope) = 0;
   virtual void Drop(Environment* env,
                     PermissionScope scope,
-                    const std::string_view& param = "") = 0;
+                    std::string_view param) = 0;
   virtual bool is_granted(Environment* env,
                           PermissionScope perm,
-                          const std::string_view& param = "") const = 0;
+                          std::string_view param) const = 0;
 };
 
 }  // namespace permission

@@ -143,6 +143,7 @@ namespace v8::internal {
   V(Object_ToPrimitive)                                    \
   V(Object_ToString)                                       \
   V(Object_ToUint32)                                       \
+  V(Object_TryGetWithNoSideEffects)                        \
   V(Persistent_New)                                        \
   V(Private_New)                                           \
   V(Promise_Catch)                                         \
@@ -252,6 +253,7 @@ namespace v8::internal {
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, EscapeAnalysis)                    \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, FinalizeCode)                      \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, FrameElision)                      \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, BlockPositioning)                  \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, GenericLowering)                   \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, Inlining)                          \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, JSWasmInlining)                    \
@@ -263,27 +265,27 @@ namespace v8::internal {
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, LoopPeeling)                       \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, PairingOptimization)               \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, MeetRegisterConstraints)           \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, MemoryOptimization)                \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, OptimizeMoves)                     \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, PopulateReferenceMaps)             \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, PrintGraph)                        \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, PrintTurboshaftGraph)              \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, ResolveControlFlow)                \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, ResolvePhis)                       \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize,                                    \
-                              ScheduledEffectControlLinearization)            \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, ScheduledMachineLowering)          \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, Scheduling)                        \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, SelectInstructions)                \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, SimplifiedLowering)                \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TraceScheduleAndVerify)            \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevMaglevGraphBuilder)        \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevInliner)                   \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevMaglevGraphBuilding)       \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevInlining)                  \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevTruncation)                \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevPrePhiUntagging)           \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevPhiUntagging)              \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevLoopPeeling)               \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevEscapeAnalysis)            \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevRangeAnalysis)             \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevPostOptimizer)             \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevPostHoc)                   \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevAnyUseMarking)             \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurbolevDeadNodeSweeping)          \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftBlockInstrumentation)    \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftBuildGraph)              \
@@ -304,16 +306,18 @@ namespace v8::internal {
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftInstructionSelection)    \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftInt64Lowering)           \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftLateOptimization)        \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftLoopOptimization)        \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftLoopPeeling)             \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftLoopUnrolling)           \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftMachineLowering)         \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftRandomRescheduling)      \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftTurbolevGraphBuilding)   \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize,                                    \
                               TurboshaftSimplificationAndNormalization)       \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftOptimize)                \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftMemoryOptimization)      \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftProfileApplication)      \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftSpecialRPOScheduling)    \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftStoreStoreElimination)   \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftLoadElimination)         \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftTagUntagLowering)        \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftTypeAssertions)          \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, TurboshaftTypedOptimizations)      \
@@ -329,10 +333,7 @@ namespace v8::internal {
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, Typer)                             \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, Untyper)                           \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, VerifyGraph)                       \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, WasmBaseOptimization)              \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, WasmGCLowering)                    \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, WasmGCOptimization)                \
-  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, WasmInlining)                      \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, WasmOptimization)                  \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, WasmTyping)                        \
                                                                               \
@@ -377,8 +378,6 @@ namespace v8::internal {
   V(DeserializeIsolate)                        \
   V(FinalizationRegistryCleanupFromTask)       \
   V(FunctionCallback)                          \
-  V(FunctionArgumentsGetter)                   \
-  V(FunctionCallerGetter)                      \
   V(FunctionLengthGetter)                      \
   V(FunctionPrototypeGetter)                   \
   V(FunctionPrototypeSetter)                   \
@@ -427,7 +426,6 @@ namespace v8::internal {
   V(OptimizeConcurrentPrepare)                 \
   V(OptimizeFinalizePipelineJob)               \
   V(OptimizeHeapBrokerInitialization)          \
-  V(OptimizeRevectorizer)                      \
   V(OptimizeSerialization)                     \
   V(OptimizeSerializeMetadata)                 \
   V(OptimizeSynchronous)                       \

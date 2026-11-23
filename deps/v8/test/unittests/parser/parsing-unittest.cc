@@ -15,6 +15,7 @@
 #include "src/ast/ast.h"
 #include "src/base/enum-set.h"
 #include "src/base/strings.h"
+#include "src/base/unique-array.h"
 #include "src/execution/execution.h"
 #include "src/execution/isolate.h"
 #include "src/flags/flags.h"
@@ -97,7 +98,7 @@ struct Input {
 #define CHECK_PARSE_PROGRAM(info, script, isolate)                        \
   do {                                                                    \
     if (!i::parsing::ParseProgram((info), script, (isolate),              \
-                                  parsing::ReportStatisticsMode::kYes)) { \
+                                  parsing::ReportStatisticsMode{true})) { \
       FAIL_WITH_PENDING_PARSER_ERROR((info), (script), (isolate));        \
     }                                                                     \
                                                                           \
@@ -108,7 +109,7 @@ struct Input {
 #define CHECK_PARSE_FUNCTION(info, shared, isolate)                        \
   do {                                                                     \
     if (!i::parsing::ParseFunction((info), (shared), (isolate),            \
-                                   parsing::ReportStatisticsMode::kYes)) { \
+                                   parsing::ReportStatisticsMode{true})) { \
       FAIL_WITH_PENDING_PARSER_ERROR(                                      \
           (info), handle(Cast<Script>((shared)->script()), (isolate)),     \
           (isolate));                                                      \
@@ -189,8 +190,7 @@ class ParsingTest : public TestWithContextAndZone {
     full_source += "; }";
 
     i::DirectHandle<i::String> source_code =
-        factory->NewStringFromUtf8(base::CStrVector(full_source.c_str()))
-            .ToHandleChecked();
+        factory->NewStringFromUtf8(full_source).ToHandleChecked();
 
     i::Handle<i::Script> script = factory->NewScript(source_code);
 
@@ -260,7 +260,7 @@ class ParsingTest : public TestWithContextAndZone {
       i::ParseInfo info(isolate, compile_flags, &compile_state,
                         &reusable_state);
       if (!i::parsing::ParseProgram(&info, script, isolate,
-                                    parsing::ReportStatisticsMode::kYes)) {
+                                    parsing::ReportStatisticsMode{true})) {
         info.pending_error_handler()->PrepareErrors(isolate,
                                                     info.ast_value_factory());
         info.pending_error_handler()->ReportErrors(isolate, script);
@@ -347,17 +347,15 @@ class ParsingTest : public TestWithContextAndZone {
                       size_t always_false_flags_length = 0,
                       bool is_module = false, bool test_preparser = true,
                       bool ignore_error_msg = false) {
-    i::Handle<i::String> str = i_isolate()
-                                   ->factory()
-                                   ->NewStringFromUtf8(base::Vector<const char>(
-                                       source, strlen(source)))
-                                   .ToHandleChecked();
+    i::Handle<i::String> str =
+        i_isolate()->factory()->NewStringFromUtf8(source).ToHandleChecked();
     for (int bits = 0; bits < (1 << varying_flags_length); bits++) {
       base::EnumSet<ParserFlag> flags;
       for (size_t flag_index = 0; flag_index < varying_flags_length;
            ++flag_index) {
-        if ((bits & (1 << flag_index)) != 0)
+        if ((bits & (1 << flag_index)) != 0) {
           flags.Add(varying_flags[flag_index]);
+        }
       }
       for (size_t flag_index = 0; flag_index < always_true_flags_length;
            ++flag_index) {
@@ -420,9 +418,11 @@ class ParsingTest : public TestWithContextAndZone {
         int kProgramSize = kPrefixLen + kStatementLen + kSuffixLen;
 
         // Plug the source code pieces together.
-        base::ScopedVector<char> program(kProgramSize + 1);
-        int length = base::SNPrintF(program, "%s%s%s", context_data[i][0],
-                                    statement_data[j], context_data[i][1]);
+        auto program =
+            base::UniqueArray<char>::NewForOverwrite(kProgramSize + 1);
+        int length =
+            base::SNPrintF(program.as_span(), "%s%s%s", context_data[i][0],
+                           statement_data[j], context_data[i][1]);
         PrintF("%s\n", program.begin());
         CHECK_EQ(length, kProgramSize);
         TestParserSync(program.begin(), flags, flags_len, result,
@@ -1416,12 +1416,12 @@ TEST_F(ParsingTest, ScopeUsesArgumentsSuperThis) {
       int kProgramByteSize = static_cast<int>(strlen(surroundings[j].prefix) +
                                               strlen(surroundings[j].suffix) +
                                               strlen(source_data[i].body));
-      base::ScopedVector<char> program(kProgramByteSize + 1);
-      base::SNPrintF(program, "%s%s%s", surroundings[j].prefix,
+      auto program =
+          base::UniqueArray<char>::NewForOverwrite(kProgramByteSize + 1);
+      base::SNPrintF(program.as_span(), "%s%s%s", surroundings[j].prefix,
                      source_data[i].body, surroundings[j].suffix);
       i::DirectHandle<i::String> source =
-          factory->NewStringFromUtf8(base::CStrVector(program.begin()))
-              .ToHandleChecked();
+          factory->NewStringFromUtf8(program.begin()).ToHandleChecked();
       i::Handle<i::Script> script = factory->NewScript(source);
       i::UnoptimizedCompileState compile_state;
       i::ReusableUnoptimizedCompileState reusable_state(isolate);
@@ -1746,14 +1746,14 @@ TEST_F(ParsingTest, ScopePositions) {
     int kSuffixByteLen = static_cast<int>(strlen(source_data[i].outer_suffix));
     int kProgramSize = kPrefixLen + kInnerLen + kSuffixLen;
     int kProgramByteSize = kPrefixByteLen + kInnerByteLen + kSuffixByteLen;
-    base::ScopedVector<char> program(kProgramByteSize + 1);
-    base::SNPrintF(program, "%s%s%s", source_data[i].outer_prefix,
+    auto program =
+        base::UniqueArray<char>::NewForOverwrite(kProgramByteSize + 1);
+    base::SNPrintF(program.as_span(), "%s%s%s", source_data[i].outer_prefix,
                    source_data[i].inner_source, source_data[i].outer_suffix);
 
     // Parse program source.
     i::DirectHandle<i::String> source =
-        factory->NewStringFromUtf8(base::CStrVector(program.begin()))
-            .ToHandleChecked();
+        factory->NewStringFromUtf8(program.begin()).ToHandleChecked();
     CHECK_EQ(source->length(), kProgramSize);
     i::Handle<i::Script> script = factory->NewScript(source);
 
@@ -1802,7 +1802,7 @@ TEST_F(ParsingTest, DiscardFunctionBody) {
   for (int i = 0; discard_sources[i]; i++) {
     const char* source = discard_sources[i];
     i::DirectHandle<i::String> source_code =
-        factory->NewStringFromUtf8(base::CStrVector(source)).ToHandleChecked();
+        factory->NewStringFromUtf8(source).ToHandleChecked();
     i::Handle<i::Script> script = factory->NewScript(source_code);
     i::UnoptimizedCompileState compile_state;
     i::ReusableUnoptimizedCompileState reusable_state(isolate);
@@ -1913,10 +1913,12 @@ TEST_F(ParsingTest, ParserSync) {
                            static_cast<int>(strlen("label: for (;;) {  }"));
 
         // Plug the source code pieces together.
-        base::ScopedVector<char> program(kProgramSize + 1);
-        int length = base::SNPrintF(program, "label: for (;;) { %s%s%s%s }",
-                                    context_data[i][0], statement_data[j],
-                                    termination_data[k], context_data[i][1]);
+        auto program =
+            base::UniqueArray<char>::NewForOverwrite(kProgramSize + 1);
+        int length =
+            base::SNPrintF(program.as_span(), "label: for (;;) { %s%s%s%s }",
+                           context_data[i][0], statement_data[j],
+                           termination_data[k], context_data[i][1]);
         CHECK_EQ(length, kProgramSize);
         TestParserSync(program.begin(), nullptr, 0);
       }
@@ -3108,17 +3110,22 @@ TEST_F(ParsingTest, InvalidLeftHandSide) {
   const char* postfix_context_data[][2] = {
       {"", "++;"}, {"\"use strict\"; ", "++;"}, {nullptr, nullptr}};
 
+  const char* sloppy_call_context_data[][2] = {
+      {"", " = 1;"}, {"++", ";"}, {"", "++;"}, {nullptr, nullptr}};
+
+  const char* strict_call_context_data[][2] = {{"\"use strict\"; ", " = 1;"},
+                                               {"\"use strict\"; ++", ";"},
+                                               {"\"use strict\"; ", "++;"},
+                                               {nullptr, nullptr}};
+
   // Good left hand sides for assigment or prefix / postfix operations.
-  const char* good_statement_data[] = {"foo",
-                                       "foo.bar",
-                                       "foo[bar]",
-                                       "foo()[bar]",
-                                       "foo().bar",
-                                       "this.foo",
-                                       "this[foo]",
-                                       "new foo()[bar]",
-                                       "new foo().bar",
-                                       "foo()",
+  const char* good_statement_data[] = {
+      "foo",      "foo.bar",   "foo[bar]",       "foo()[bar]",    "foo().bar",
+      "this.foo", "this[foo]", "new foo()[bar]", "new foo().bar", nullptr};
+
+  // Call expressions are accepted as left hand sides only in sloppy mode for
+  // legacy web compatibility.
+  const char* call_statement_data[] = {"foo()",
                                        "foo(bar)",
                                        "foo[bar]()",
                                        "foo.bar()",
@@ -3157,6 +3164,9 @@ TEST_F(ParsingTest, InvalidLeftHandSide) {
 
   RunParserSyncTest(postfix_context_data, good_statement_data, kSuccess);
   RunParserSyncTest(postfix_context_data, bad_statement_data_common, kError);
+
+  RunParserSyncTest(sloppy_call_context_data, call_statement_data, kSuccess);
+  RunParserSyncTest(strict_call_context_data, call_statement_data, kError);
 }
 
 TEST_F(ParsingTest, FuncNameInferrerBasic) {
@@ -3262,8 +3272,9 @@ TEST_F(ParsingTest, SerializationOfMaybeAssignmentFlag) {
       "};"
       "h();";
 
-  base::ScopedVector<char> program(Utf8LengthHelper(src) + 1);
-  base::SNPrintF(program, "%s", src);
+  auto program =
+      base::UniqueArray<char>::NewForOverwrite(Utf8LengthHelper(src) + 1);
+  base::SNPrintF(program.as_span(), "%s", src);
   i::DirectHandle<i::String> source =
       factory->InternalizeUtf8String(program.begin());
   source->PrintOn(stdout);
@@ -3309,8 +3320,9 @@ TEST_F(ParsingTest, IfArgumentsArrayAccessedThenParametersMaybeAssigned) {
       "  }"
       "f(0);";
 
-  base::ScopedVector<char> program(Utf8LengthHelper(src) + 1);
-  base::SNPrintF(program, "%s", src);
+  auto program =
+      base::UniqueArray<char>::NewForOverwrite(Utf8LengthHelper(src) + 1);
+  base::SNPrintF(program.as_span(), "%s", src);
   i::DirectHandle<i::String> source =
       factory->InternalizeUtf8String(program.begin());
   source->PrintOn(stdout);
@@ -3361,16 +3373,27 @@ TEST_F(ParsingTest, InnerAssignment) {
       {"var x = {a: 4, b: (x = 5)};", true, false},
       {"var {x=1} = {a: 4, b: (x = 5)};", true, false},
       {"var {x} = {x: 4, b: (x = 5)};", true, false},
+      {"var [x = (x = 2)] = [];", true, false},
+      {"'use strict'; let [x = (x = 2)] = [];", true, true},
+      {"'use strict'; let {x = (x = 2)} = {};", true, true},
       // Actual non-assignments.
       {"var x;", false, false},
       {"var x = 5;", false, false},
+      {"var [x = 5] = [];", false, false},
+      {"var {x = 5} = {};", false, false},
+      {"var {a: x = 5} = {};", false, false},
       {"'use strict'; let x;", false, true},
       {"'use strict'; let x = 6;", false, true},
+      {"'use strict'; let [x = 6] = [];", false, true},
+      {"'use strict'; let {x = 6} = {};", false, true},
+      {"'use strict'; let {a: x = 6} = {};", false, true},
       {"'use strict'; var x = 0; { let x = 6; }", false, true},
       {"'use strict'; var x = 0; { let x; x = 6; }", false, true},
       {"'use strict'; let x = 0; { let x = 6; }", false, true},
       {"'use strict'; let x = 0; { let x; x = 6; }", false, true},
       {"var x; try {} catch (x) { x = 5; }", false, false},
+      {"var x; try {} catch ([x = 1]) { x = 5; }", false, false},
+      {"var x; try {} catch ({x = 1}) { x = 5; }", false, false},
       {"function x() {}", false, false},
       // Eval approximation.
       {"var x; eval('');", true, false},
@@ -3415,22 +3438,39 @@ TEST_F(ParsingTest, InnerAssignment) {
       {"for (x of [1,2,3]) {}", true, false, false},
       {"for (x in {a: 1}) {}", true, false, false},
       {"for ([x] of [[1],[2],[3]]) {}", true, false, false},
+      {"for ([x = 1] of [[]]) {}", true, false, false},
+      {"for ({x = 1} of [{}]) {}", true, false, false},
       {"for ([x] in {ab: 1}) {}", true, false, false},
       {"for ([...x] in {ab: 1}) {}", true, false, false},
       {"[x] = [1]", true, false, false},
+      {"[x = 1] = []", true, false, false},
+      {"({x = 1} = {})", true, false, false},
+      {"({a: x = 1} = {})", true, false, false},
+      {"let [y = (x = 1)] = [];", true, false, false},
+      {"let {y = (x = 1)} = {};", true, false, false},
       // Actual non-assignments.
       {"", false, false, false},
       {"x;", false, false, false},
       {"var x;", false, false, false},
       {"var x = 8;", false, false, false},
+      {"var [x = 8] = [];", false, false, false},
+      {"var {x = 8} = {};", false, false, false},
+      {"var {a: x = 8} = {};", false, false, false},
       {"var x; x = 8;", false, false, false},
       {"'use strict'; let x;", false, false, false},
       {"'use strict'; let x = 8;", false, false, false},
+      {"'use strict'; let [x = 8] = [];", false, false, false},
+      {"'use strict'; let {x = 8} = {};", false, false, false},
+      {"'use strict'; let {a: x = 8} = {};", false, false, false},
       {"'use strict'; let x; x = 8;", false, false, false},
       {"'use strict'; const x = 8;", false, false, false},
       {"function x() {}", false, false, false},
       {"function x() { x = 0; }", false, false, true},
       {"function h(x) { x = 0; }", false, false, false},
+      {"function h([x = 1]) { x = 0; }", false, false, false},
+      {"function h({x = 1}) { x = 0; }", false, false, false},
+      {"([x = 1]) => { x = 0; };", false, false, false},
+      {"({x = 1}) => { x = 0; };", false, false, false},
       {"'use strict'; { let x; x = 0; }", false, false, false},
       {"{ var x; }; x = 0;", false, false, false},
       {"with ({}) {}", false, true, false},
@@ -3462,10 +3502,10 @@ TEST_F(ParsingTest, InnerAssignment) {
         int inner_len = Utf8LengthHelper(inner);
 
         int len = prefix_len + outer_len + midfix_len + inner_len + suffix_len;
-        base::ScopedVector<char> program(len + 1);
+        auto program = base::UniqueArray<char>::NewForOverwrite(len + 1);
 
-        base::SNPrintF(program, "%s%s%s%s%s", prefix, outer, midfix, inner,
-                       suffix);
+        base::SNPrintF(program.as_span(), "%s%s%s%s%s", prefix, outer, midfix,
+                       inner, suffix);
 
         UnoptimizedCompileState compile_state;
         ReusableUnoptimizedCompileState reusable_state(isolate);
@@ -3574,9 +3614,21 @@ TEST_F(ParsingTest, MaybeAssignedParameters) {
       {false, "function f({x:arg = 1}) {}"},
       {true, "function f({x:arg = 1}, {y:b=(arg=2)}) {}"},
       {true, "function f({x:arg = (arg = 2)}) {}"},
+      {false, "function f({arg = 1}) {}"},
+      {true, "function f({arg = 1}, {b=(arg=2)}) {}"},
+      {true, "function f({arg = (arg = 2)}) {}"},
+      {false, "function f([arg = 1]) {}"},
+      {true, "function f([arg = 1], [b=(arg=2)]) {}"},
+      {true, "function f([arg = (arg = 2)]) {}"},
       {false, "var f = ({x:arg = 1}) => {}"},
       {true, "var f = ({x:arg = 1}, {y:b=(arg=2)}) => {}"},
       {true, "var f = ({x:arg = (arg = 2)}) => {}"},
+      {false, "var f = ({arg = 1}) => {}"},
+      {true, "var f = ({arg = 1}, {b=(arg=2)}) => {}"},
+      {true, "var f = ({arg = (arg = 2)}) => {}"},
+      {false, "var f = ([arg = 1]) => {}"},
+      {true, "var f = ([arg = 1], [b=(arg=2)]) => {}"},
+      {true, "var f = ([arg = (arg = 2)]) => {}"},
   };
 
   const char* suffix = "; f";
@@ -3585,9 +3637,9 @@ TEST_F(ParsingTest, MaybeAssignedParameters) {
     bool assigned = tests[i].arg_assigned;
     const char* source = tests[i].source;
     for (unsigned allow_lazy = 0; allow_lazy < 2; ++allow_lazy) {
-      base::ScopedVector<char> program(Utf8LengthHelper(source) +
-                                       Utf8LengthHelper(suffix) + 1);
-      base::SNPrintF(program, "%s%s", source, suffix);
+      auto program = base::UniqueArray<char>::NewForOverwrite(
+          Utf8LengthHelper(source) + Utf8LengthHelper(suffix) + 1);
+      base::SNPrintF(program.as_span(), "%s%s", source, suffix);
       printf("%s\n", program.begin());
       v8::Local<v8::Value> v = RunJS(program.begin());
       i::DirectHandle<i::Object> o = v8::Utils::OpenDirectHandle(*v);
@@ -3644,6 +3696,8 @@ TEST_F(ParsingTest, MaybeAssignedInsideLoop) {
       {true, "for (j=x; j<10; ++j) { let foo; [[foo]=[42]] = [] }", {0}},
       {false, "for (j=x; j<10; ++j) { let foo = j }", {0}},
       {false, "for (j=x; j<10; ++j) { let [foo] = [j] }", {0}},
+      {false, "for (j=x; j<10; ++j) { let [foo = j] = [] }", {0}},
+      {false, "for (j=x; j<10; ++j) { let {foo = j} = {} }", {0}},
       {false, "for (j=x; j<10; ++j) { const foo = j }", {0}},
       {false, "for (j=x; j<10; ++j) { const [foo] = [j] }", {0}},
       {false, "for (j=x; j<10; ++j) { function foo() {return j} }", {0}},
@@ -4184,59 +4238,6 @@ TEST_F(ParsingTest, MaybeAssignedTopLevel) {
   }
 }
 
-#if V8_ENABLE_WEBASSEMBLY
-namespace {
-
-i::Scope* DeserializeFunctionScope(i::Isolate* isolate, i::Zone* zone,
-                                   i::DirectHandle<i::JSObject> m,
-                                   const char* name) {
-  i::AstValueFactory avf(zone, isolate->ast_string_constants(),
-                         HashSeed(isolate));
-  i::DirectHandle<i::JSFunction> f = i::Cast<i::JSFunction>(
-      i::JSReceiver::GetProperty(isolate, m, name).ToHandleChecked());
-  i::DeclarationScope* script_scope =
-      zone->New<i::DeclarationScope>(zone, &avf);
-  i::Scope* s = i::Scope::DeserializeScopeChain(
-      isolate, zone, f->context()->scope_info(), script_scope, &avf,
-      i::Scope::DeserializationMode::kIncludingVariables);
-  return s;
-}
-
-}  // namespace
-
-TEST_F(ParsingTest, AsmModuleFlag) {
-  i::v8_flags.validate_asm = false;
-  i::Isolate* isolate = i_isolate();
-
-  const char* src =
-      "function m() {"
-      "  'use asm';"
-      "  function f() { return 0 };"
-      "  return { f:f };"
-      "}"
-      "m();";
-
-  v8::Local<v8::Value> v = RunJS(src);
-  i::DirectHandle<i::Object> o = v8::Utils::OpenDirectHandle(*v);
-  i::DirectHandle<i::JSObject> m = i::Cast<i::JSObject>(o);
-
-  // The asm.js module should be marked as such.
-  i::Scope* s = DeserializeFunctionScope(isolate, zone(), m, "f");
-  CHECK(s->IsAsmModule() && s->AsDeclarationScope()->is_asm_module());
-}
-
-TEST_F(ParsingTest, UseAsmUseCount) {
-  int use_counts[v8::Isolate::kUseCounterFeatureCount] = {};
-  global_use_counts = use_counts;
-  v8_isolate()->SetUseCounterCallback(MockUseCounterCallback);
-  RunJS(
-      "\"use asm\";\n"
-      "var foo = 1;\n"
-      "function bar() { \"use asm\"; var baz = 1; }");
-  CHECK_LT(0, use_counts[v8::Isolate::kUseAsm]);
-}
-#endif  // V8_ENABLE_WEBASSEMBLY
-
 TEST_F(ParsingTest, StrictModeUseCount) {
   int use_counts[v8::Isolate::kUseCounterFeatureCount] = {};
   global_use_counts = use_counts;
@@ -4246,6 +4247,7 @@ TEST_F(ParsingTest, StrictModeUseCount) {
       "function bar() { var baz = 1; }");  // strict mode inherits
   CHECK_LT(0, use_counts[v8::Isolate::kStrictMode]);
   CHECK_EQ(0, use_counts[v8::Isolate::kSloppyMode]);
+  global_use_counts = nullptr;
 }
 
 TEST_F(ParsingTest, SloppyModeUseCount) {
@@ -4258,6 +4260,7 @@ TEST_F(ParsingTest, SloppyModeUseCount) {
   RunJS("function bar() { var baz = 1; }");
   CHECK_LT(0, use_counts[v8::Isolate::kSloppyMode]);
   CHECK_EQ(0, use_counts[v8::Isolate::kStrictMode]);
+  global_use_counts = nullptr;
 }
 
 TEST_F(ParsingTest, BothModesUseCount) {
@@ -4269,6 +4272,7 @@ TEST_F(ParsingTest, BothModesUseCount) {
   RunJS("function bar() { 'use strict'; var baz = 1; }");
   CHECK_LT(0, use_counts[v8::Isolate::kSloppyMode]);
   CHECK_LT(0, use_counts[v8::Isolate::kStrictMode]);
+  global_use_counts = nullptr;
 }
 
 TEST_F(ParsingTest, LineOrParagraphSeparatorAsLineTerminator) {
@@ -4753,6 +4757,8 @@ TEST_F(ParsingTest, ImportExpressionErrors) {
       "import = 1",
       "import.wat",
       "new import(x)",
+      "new import(x).prop",
+      "new import(x).prop(r => r())",
       nullptr
     };
 
@@ -4959,7 +4965,7 @@ TEST_F(ParsingTest, BasicImportAttributesParsing) {
           i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
       i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
       CHECK(!i::parsing::ParseProgram(&info, script, isolate,
-                                      parsing::ReportStatisticsMode::kYes));
+                                      parsing::ReportStatisticsMode{true}));
       CHECK(info.pending_error_handler()->has_pending_error());
     }
   }
@@ -5010,7 +5016,7 @@ TEST_F(ParsingTest, ImportAttributesParsingErrors) {
     flags.set_is_module(true);
     i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
     CHECK(!i::parsing::ParseProgram(&info, script, isolate,
-                                    parsing::ReportStatisticsMode::kYes));
+                                    parsing::ReportStatisticsMode{true}));
     CHECK(info.pending_error_handler()->has_pending_error());
   }
 }
@@ -7476,7 +7482,7 @@ TEST_F(ParsingTest, ConstParsingInForInError) {
 }
 
 TEST_F(ParsingTest, InitializedDeclarationsInForInOf) {
-  // https://tc39.github.io/ecma262/#sec-initializers-in-forin-statement-heads
+  // https://tc39.es/ecma262/#sec-initializers-in-forin-statement-heads
 
   // Initialized declarations only allowed for
   // - sloppy mode (not strict mode)
@@ -8171,7 +8177,7 @@ TEST_F(ParsingTest, BasicImportExportParsing) {
           i::UnoptimizedCompileFlags::ForScriptCompile(isolate, *script);
       i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
       CHECK(!i::parsing::ParseProgram(&info, script, isolate,
-                                      parsing::ReportStatisticsMode::kYes));
+                                      parsing::ReportStatisticsMode{true}));
       CHECK(info.pending_error_handler()->has_pending_error());
     }
   }
@@ -8304,7 +8310,7 @@ TEST_F(ParsingTest, ImportExportParsingErrors) {
     flags.set_is_module(true);
     i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
     CHECK(!i::parsing::ParseProgram(&info, script, isolate,
-                                    parsing::ReportStatisticsMode::kYes));
+                                    parsing::ReportStatisticsMode{true}));
     CHECK(info.pending_error_handler()->has_pending_error());
   }
 }
@@ -8341,7 +8347,7 @@ TEST_F(ParsingTest, ModuleTopLevelFunctionDecl) {
     flags.set_is_module(true);
     i::ParseInfo info(isolate, flags, &compile_state, &reusable_state);
     CHECK(!i::parsing::ParseProgram(&info, script, isolate,
-                                    parsing::ReportStatisticsMode::kYes));
+                                    parsing::ReportStatisticsMode{true}));
     CHECK(info.pending_error_handler()->has_pending_error());
   }
 }
@@ -10733,6 +10739,7 @@ TEST_F(ParsingTest, ImportCallSourceFailure) {
     "import.source()",
     "new import.source.MagicClass",
     "new import.source",
+    "new import.source('x').prop",
     "t = [...import.source]",
     "f = {...import.source}",
     "delete import.source",
@@ -10938,6 +10945,7 @@ TEST_F(ParsingTest, ImportCallDeferFailure) {
     "import.defer()",
     "new import.defer.MagicClass",
     "new import.defer",
+    "new import.defer('x').prop",
     "t = [...import.defer]",
     "f = {...import.defer}",
     "delete import.defer",
@@ -12387,13 +12395,13 @@ TEST_F(ParsingTest, NoPessimisticContextAllocation) {
       int len = prefix_len + inner_function_len + params_len + source_len +
                 suffix_len;
 
-      base::ScopedVector<char> program(len + 1);
-      base::SNPrintF(program, "%s", prefix);
-      base::SNPrintF(program + prefix_len, inner_function, inners[i].params,
-                     inners[i].source);
-      base::SNPrintF(
-          program + prefix_len + inner_function_len + params_len + source_len,
-          "%s", suffix);
+      auto program = base::UniqueArray<char>::NewForOverwrite(len + 1);
+      base::SNPrintF(program.as_span(), "%s", prefix);
+      base::SNPrintF(program.as_span().subspan(prefix_len), inner_function,
+                     inners[i].params, inners[i].source);
+      base::SNPrintF(program.as_span().subspan(prefix_len + inner_function_len +
+                                               params_len + source_len),
+                     "%s", suffix);
 
       i::DirectHandle<i::String> source =
           factory->InternalizeUtf8String(program.begin());
@@ -12960,7 +12968,7 @@ TEST_F(ParsingTest, LexicalLoopVariable) {
   auto TestProgram = [isolate](const char* program, TestCB test) {
     i::Factory* const factory = isolate->factory();
     i::DirectHandle<i::String> source =
-        factory->NewStringFromUtf8(base::CStrVector(program)).ToHandleChecked();
+        factory->NewStringFromUtf8(program).ToHandleChecked();
     i::Handle<i::Script> script = factory->NewScript(source);
     i::UnoptimizedCompileState compile_state;
     i::ReusableUnoptimizedCompileState reusable_state(isolate);

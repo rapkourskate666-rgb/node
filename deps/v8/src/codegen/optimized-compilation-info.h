@@ -6,8 +6,9 @@
 #define V8_CODEGEN_OPTIMIZED_COMPILATION_INFO_H_
 
 #include <memory>
+#include <string>
+#include <string_view>
 
-#include "src/base/vector.h"
 #include "src/codegen/bailout-reason.h"
 #include "src/codegen/source-position-table.h"
 #include "src/codegen/tick-counter.h"
@@ -112,7 +113,7 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
       : OptimizedCompilationInfo(zone, isolate, shared, closure, code_kind,
                                  BytecodeOffset::None()) {}
   // Construct a compilation info for stub compilation, Wasm, and testing.
-  OptimizedCompilationInfo(base::Vector<const char> debug_name, Zone* zone,
+  OptimizedCompilationInfo(std::string_view debug_name, Zone* zone,
                            CodeKind code_kind,
                            Builtin builtin = Builtin::kNoBuiltinId);
 
@@ -169,6 +170,10 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
            code_kind() == CodeKind::WASM_STACK_ENTRY ||
            (code_kind() == CodeKind::BUILTIN &&
             (builtin() == Builtin::kJSToWasmWrapper ||
+#if V8_ENABLE_DRUMBRAKE
+             builtin() == Builtin::kJSToWasmInterpreterWrapper ||
+             builtin() == Builtin::kJSToWasmInterpreterHandleReturns ||
+#endif
              builtin() == Builtin::kJSToWasmHandleReturns ||
              builtin() == Builtin::kWasmToJsWrapperCSA ||
              wasm::BuiltinLookup::IsWasmBuiltinId(builtin())));
@@ -254,6 +259,9 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
     trace_turbo_filename_ = std::move(filename);
   }
 
+  void set_debug_name(std::string name) { debug_name_ = std::move(name); }
+  const std::string& debug_name() const { return debug_name_; }
+
   TickCounter& tick_counter() { return tick_counter_; }
 
   bool was_cancelled() const {
@@ -273,7 +281,6 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
   }
 
   std::unique_ptr<CanonicalHandlesMap> DetachCanonicalHandles() {
-    DCHECK_NOT_NULL(canonical_handles_);
     return std::move(canonical_handles_);
   }
 
@@ -331,7 +338,7 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
   const int optimization_id_;
   unsigned inlined_bytecode_size_ = 0;
 
-  base::Vector<const char> debug_name_;
+  std::string debug_name_;
   std::unique_ptr<char[]> trace_turbo_filename_;
 
   TickCounter tick_counter_;

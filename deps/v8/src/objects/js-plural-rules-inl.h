@@ -13,6 +13,7 @@
 // Include the non-inl header before the rest of the headers.
 
 #include "src/api/api-inl.h"
+#include "src/objects/managed-inl.h"
 #include "src/objects/objects-inl.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -21,15 +22,23 @@
 namespace v8 {
 namespace internal {
 
-#include "torque-generated/src/objects/js-plural-rules-tq-inl.inc"
+Tagged<String> JSPluralRules::locale() const { return locale_.load(); }
+void JSPluralRules::set_locale(Tagged<String> value, WriteBarrierMode mode) {
+  locale_.store(this, value, mode);
+}
 
-TQ_OBJECT_CONSTRUCTORS_IMPL(JSPluralRules)
+int JSPluralRules::flags() const { return flags_.load().value(); }
+void JSPluralRules::set_flags(int value) {
+  flags_.store(this, Smi::FromInt(value));
+}
 
-ACCESSORS(JSPluralRules, icu_plural_rules, Tagged<Managed<icu::PluralRules>>,
-          kIcuPluralRulesOffset)
-ACCESSORS(JSPluralRules, icu_number_formatter,
-          Tagged<Managed<icu::number::LocalizedNumberFormatter>>,
-          kIcuNumberFormatterOffset)
+Tagged<CppGCManaged<PluralRulesInternal>> JSPluralRules::internal() const {
+  return Cast<CppGCManaged<PluralRulesInternal>>(internal_.load());
+}
+void JSPluralRules::set_internal(
+    Tagged<CppGCManaged<PluralRulesInternal>> value, WriteBarrierMode mode) {
+  internal_.store(this, value, mode);
+}
 
 inline void JSPluralRules::set_type(Type type) {
   DCHECK(TypeBit::is_valid(type));

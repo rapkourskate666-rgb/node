@@ -9,13 +9,15 @@
 #error This header should only be included if WebAssembly is enabled.
 #endif  // !V8_ENABLE_WEBASSEMBLY
 
+#include <compare>
 #include <iosfwd>
+#include <span>
 #include <string>
 
-#include "src/base/small-vector.h"
+#include "src/base/logging.h"
 #include "src/common/globals.h"
 // The feature flags are declared in their own header.
-#include "src/wasm/wasm-feature-flags.h"
+#include "src/flags/feature-flags.h"
 
 // Features that are always enabled and do not have a flag.
 #define FOREACH_WASM_NON_FLAG_FEATURE(V) \
@@ -36,7 +38,21 @@
   V(mutable_globals)                     \
   V(non_trapping_float_to_int)           \
   V(sign_extension_ops)                  \
-  V(jspi)
+  V(jspi)                                \
+  V(exnref)                              \
+  V(branch_hinting)                      \
+  V(gc_allocation)
+
+#define IGNORE_NON_WASM_FEATURE(feat, ...)
+#define FOREACH_WASM_FEATURE_FLAG(V)                            \
+  FOREACH_EXPERIMENTAL_FEATURE_FLAG(IGNORE_NON_WASM_FEATURE, V, \
+                                    IGNORE_NON_WASM_FEATURE)    \
+  FOREACH_PRE_STAGED_FEATURE_FLAG(IGNORE_NON_WASM_FEATURE, V,   \
+                                  IGNORE_NON_WASM_FEATURE)      \
+  FOREACH_STAGED_FEATURE_FLAG(IGNORE_NON_WASM_FEATURE, V,       \
+                              IGNORE_NON_WASM_FEATURE)          \
+  FOREACH_SHIPPED_FEATURE_FLAG(IGNORE_NON_WASM_FEATURE, V,      \
+                               IGNORE_NON_WASM_FEATURE)
 
 // All features, including features that do not have flags.
 #define FOREACH_WASM_FEATURE(V) \
@@ -119,6 +135,7 @@ inline constexpr const char* name(WasmEnabledFeature feature) {
     return #feat;
     FOREACH_WASM_FEATURE_FLAG(NAME)
   }
+  UNREACHABLE();
 #undef NAME
 }
 
@@ -133,6 +150,7 @@ inline constexpr const char* name(WasmDetectedFeature feature) {
     return #feat;
     FOREACH_WASM_FEATURE(NAME)
   }
+  UNREACHABLE();
 #undef NAME
 }
 
@@ -146,8 +164,6 @@ enum class CompileTimeImport {
   kTextEncoder,
   kTextDecoder,
   kJsPrototypes,
-  // Not really an import, but needs the same handling as compile-time imports.
-  kDisableDenormalFloats,
 };
 
 inline std::ostream& operator<<(std::ostream& os, CompileTimeImport imp) {
@@ -169,22 +185,22 @@ class CompileTimeImports {
   CompileTimeImports& operator=(CompileTimeImports&& other) V8_NOEXCEPT {
     bits_ = other.bits_;
     constants_module_ = std::move(other.constants_module_);
+#if DEBUG
+    // Leaving {other} noticeably unusable can flush out bugs.
+    other.bits_.RemoveAll();
+#endif  // DEBUG
     return *this;
   }
 
   bool empty() const { return bits_.empty(); }
-  bool has_string_constants(base::Vector<const uint8_t> name) const {
+  bool has_string_constants(std::span<const uint8_t> name) const {
     return bits_.contains(CompileTimeImport::kStringConstants) &&
            constants_module_.size() == name.size() &&
            std::equal(name.begin(), name.end(), constants_module_.begin());
   }
   bool contains(CompileTimeImport imp) const { return bits_.contains(imp); }
 
-  int compare(const CompileTimeImports& other) const {
-    if (bits_.ToIntegral() < other.bits_.ToIntegral()) return -1;
-    if (bits_.ToIntegral() > other.bits_.ToIntegral()) return 1;
-    return constants_module_.compare(other.constants_module_);
-  }
+  auto operator<=>(const CompileTimeImports& other) const = default;
 
   void Add(CompileTimeImport imp) { bits_.Add(imp); }
 
@@ -197,6 +213,11 @@ class CompileTimeImports {
   CompileTimeImportFlags bits_;
   std::string constants_module_;
 };
+
+inline std::ostream& operator<<(std::ostream& os,
+                                const CompileTimeImports& imports) {
+  return os << imports.flags() << " ['" << imports.constants_module() << "']";
+}
 
 }  // namespace v8::internal::wasm
 

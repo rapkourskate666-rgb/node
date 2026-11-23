@@ -11,7 +11,7 @@
 #include "src/objects/fixed-array.h"
 #include "src/objects/objects-body-descriptors.h"
 #include "src/objects/struct.h"
-#include "src/objects/trusted-pointer.h"
+#include "src/sandbox/trusted-pointer.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -21,51 +21,48 @@ namespace internal {
 
 class ClassLiteral;
 class StructBodyDescriptor;
+class SandboxTesting;
 
-#include "torque-generated/src/objects/literal-objects-tq.inc"
-
-class PrototypeSharedClosureInfo
-    : public TorqueGeneratedPrototypeSharedClosureInfo<
-          PrototypeSharedClosureInfo, Struct> {
+V8_OBJECT class PrototypeSharedClosureInfo : public Struct {
  public:
+  inline PrototypeSharedClosureInfo(
+      const AllocationWitness& witness,
+      Tagged<ObjectBoilerplateDescription> boilerplate_description,
+      Tagged<ClosureFeedbackCellArray> closure_feedback_cell_array,
+      Tagged<Context> context);
+
+  inline Tagged<ObjectBoilerplateDescription> boilerplate_description() const;
+  inline Tagged<ClosureFeedbackCellArray> closure_feedback_cell_array() const;
+  inline Tagged<Context> context() const;
+
   DECL_PRINTER(PrototypeSharedClosureInfo)
   DECL_VERIFIER(PrototypeSharedClosureInfo)
 
   using BodyDescriptor = StructBodyDescriptor;
 
-  TQ_OBJECT_CONSTRUCTORS(PrototypeSharedClosureInfo)
-};
-
-class ObjectBoilerplateDescriptionShape final : public AllStatic {
  public:
-  using ElementT = Object;
-  using CompressionScheme = V8HeapCompressionScheme;
-  static constexpr RootIndex kMapRootIndex =
-      RootIndex::kObjectBoilerplateDescriptionMap;
-  static constexpr bool kLengthEqualsCapacity = true;
-
-  V8_ARRAY_EXTRA_FIELDS({
-    TaggedMember<Smi> backing_store_size_;
-    TaggedMember<Smi> flags_;
-  });
-};
+  const TaggedMember<ObjectBoilerplateDescription> boilerplate_description_;
+  const TaggedMember<ClosureFeedbackCellArray> closure_feedback_cell_array_;
+  const TaggedMember<Context> context_;
+} V8_OBJECT_END;
 
 // ObjectBoilerplateDescription is a list of properties consisting of name
 // value pairs. In addition to the properties, it provides the projected number
 // of properties in the backing store. This number includes properties with
 // computed names that are not in the list.
-class ObjectBoilerplateDescription
-    : public TaggedArrayBase<ObjectBoilerplateDescription,
-                             ObjectBoilerplateDescriptionShape> {
-  using Super = TaggedArrayBase<ObjectBoilerplateDescription,
-                                ObjectBoilerplateDescriptionShape>;
+V8_OBJECT class ObjectBoilerplateDescription
+    : public TaggedArrayBase<ObjectBoilerplateDescription, Object> {
+  using Super = TaggedArrayBase<ObjectBoilerplateDescription, Object>;
+
  public:
-  using Shape = ObjectBoilerplateDescriptionShape;
+  static constexpr RootIndex kMapRootIndex =
+      RootIndex::kObjectBoilerplateDescriptionMap;
+  using KeyT = UnionOf<InternalizedString, Number>;
 
   template <class IsolateT>
   static inline Handle<ObjectBoilerplateDescription> New(
-      IsolateT* isolate, int boilerplate, int all_properties, int index_keys,
-      bool has_seen_proto, AllocationType allocation = AllocationType::kYoung);
+      IsolateT* isolate, uint32_t boilerplate, uint32_t backing_store_size,
+      AllocationType allocation = AllocationType::kYoung);
 
   // ObjectLiteral::Flags for nested object literals.
   inline int flags() const;
@@ -77,17 +74,20 @@ class ObjectBoilerplateDescription
 
   inline int boilerplate_properties_count() const;
 
-  inline Tagged<Object> name(int index) const;
+  inline Tagged<KeyT> name(int index) const;
   inline Tagged<Object> value(int index) const;
 
-  inline void set_key_value(int index, Tagged<Object> key,
-                            Tagged<Object> value);
+  inline void set_key_value(int index, Tagged<KeyT> key, Tagged<Object> value);
   inline void set_value(int index, Tagged<Object> value);
 
   DECL_VERIFIER(ObjectBoilerplateDescription)
   DECL_PRINTER(ObjectBoilerplateDescription)
 
   class BodyDescriptor;
+
+  static constexpr uint32_t kLengthOffset = sizeof(HeapObject);
+  static constexpr uint32_t kHeaderSize =
+      kLengthOffset + 3 * (TAGGED_SIZE_8_BYTES ? kTaggedSize : kApiInt32Size);
 
  private:
   using TaggedArrayBase::get;
@@ -96,12 +96,22 @@ class ObjectBoilerplateDescription
   static constexpr int kElementsPerEntry = 2;
   static constexpr int NameIndex(int i) { return i * kElementsPerEntry; }
   static constexpr int ValueIndex(int i) { return i * kElementsPerEntry + 1; }
-};
 
-V8_OBJECT class ArrayBoilerplateDescription : public StructLayout {
  public:
+  // length_ / optional_padding_ live in FixedArrayBase.
+  TaggedMember<Smi> backing_store_size_;
+  TaggedMember<Smi> flags_;
+  V8_TQ_TAIL_LENGTH(length);
+  FLEXIBLE_ARRAY_MEMBER(typename Super::ElementMemberT, objects);
+} V8_OBJECT_END;
+
+V8_OBJECT class ArrayBoilerplateDescription : public Struct {
+ public:
+  inline ArrayBoilerplateDescription(const AllocationWitness& witness,
+                                     ElementsKind elements_kind,
+                                     Tagged<FixedArrayBase> constant_values);
+
   inline ElementsKind elements_kind() const;
-  inline void set_elements_kind(ElementsKind kind);
 
   inline bool is_empty() const;
 
@@ -113,38 +123,28 @@ V8_OBJECT class ArrayBoilerplateDescription : public StructLayout {
   using BodyDescriptor = StructBodyDescriptor;
 
   inline Tagged<Smi> flags() const;
-  inline void set_flags(Tagged<Smi> value,
-                        WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
   inline Tagged<FixedArrayBase> constant_elements() const;
-  inline void set_constant_elements(
-      Tagged<FixedArrayBase> value,
-      WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
  private:
   friend class Factory;
   friend class TorqueGeneratedArrayBoilerplateDescriptionAsserts;
   friend class V8HeapExplorer;
 
-  TaggedMember<Smi> flags_;
-  TaggedMember<FixedArrayBase> constant_elements_;
+  const TaggedMember<Smi> flags_;
+  const TaggedMember<FixedArrayBase> constant_elements_;
 } V8_OBJECT_END;
 
-V8_OBJECT class RegExpBoilerplateDescription : public StructLayout {
+V8_OBJECT class RegExpBoilerplateDescription : public Struct {
  public:
+  inline RegExpBoilerplateDescription(const AllocationWitness& witness,
+                                      Tagged<RegExpData> data,
+                                      Tagged<Smi> flags);
+
   // Dispatched behavior.
   void BriefPrintDetails(std::ostream& os);
 
   inline Tagged<RegExpData> data(IsolateForSandbox isolate) const;
-  inline void set_data(Tagged<RegExpData> value,
-                       WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
-  inline Tagged<String> source() const;
-  inline void set_source(Tagged<String> value,
-                         WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
   inline int flags() const;
-  inline void set_flags(int value);
 
   DECL_PRINTER(RegExpBoilerplateDescription)
   DECL_VERIFIER(RegExpBoilerplateDescription)
@@ -156,22 +156,21 @@ V8_OBJECT class RegExpBoilerplateDescription : public StructLayout {
   friend class ConstructorBuiltinsAssembler;
   friend struct ObjectTraits<RegExpBoilerplateDescription>;
 
-  TrustedPointerMember<RegExpData, kRegExpDataIndirectPointerTag> data_;
-  TaggedMember<String> source_;
-  TaggedMember<Smi> flags_;
+  const TrustedPointerMember<RegExpData, kRegExpDataTrustedPointerTag> data_;
+  const TaggedMember<Smi> flags_ V8_TQ_TYPE(SmiTagged<JSRegExpFlags>);
 } V8_OBJECT_END;
 
 template <>
 struct ObjectTraits<RegExpBoilerplateDescription> {
   using BodyDescriptor = StackedBodyDescriptor<
-      FixedBodyDescriptor<offsetof(RegExpBoilerplateDescription, source_),
+      FixedBodyDescriptor<offsetof(RegExpBoilerplateDescription, flags_),
                           sizeof(RegExpBoilerplateDescription),
                           sizeof(RegExpBoilerplateDescription)>,
       WithStrongTrustedPointer<offsetof(RegExpBoilerplateDescription, data_),
-                               kRegExpDataIndirectPointerTag>>;
+                               kRegExpDataTrustedPointerTag>>;
 };
 
-V8_OBJECT class ClassBoilerplate : public StructLayout {
+V8_OBJECT class ClassBoilerplate : public Struct {
  public:
   enum ValueKind { kData, kGetter, kSetter, kAutoAccessor };
 
@@ -195,37 +194,26 @@ V8_OBJECT class ClassBoilerplate : public StructLayout {
   static const int kMinimumClassPropertiesCount = 6;
   static const int kMinimumPrototypePropertiesCount = 1;
 
+  inline ClassBoilerplate(const AllocationWitness& witness, int arguments_count,
+                          Tagged<Object> static_properties_template,
+                          Tagged<Object> static_elements_template,
+                          Tagged<FixedArray> static_computed_properties,
+                          Tagged<Object> instance_properties_template,
+                          Tagged<Object> instance_elements_template,
+                          Tagged<FixedArray> instance_computed_properties);
+
   template <typename IsolateT>
   static Handle<ClassBoilerplate> New(
       IsolateT* isolate, ClassLiteral* expr,
       AllocationType allocation = AllocationType::kYoung);
 
   inline int arguments_count() const;
-  inline void set_arguments_count(int value);
-
   inline Tagged<Object> static_properties_template() const;
-  inline void set_static_properties_template(
-      Tagged<Object> value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
   inline Tagged<Object> static_elements_template() const;
-  inline void set_static_elements_template(
-      Tagged<Object> value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
   inline Tagged<FixedArray> static_computed_properties() const;
-  inline void set_static_computed_properties(
-      Tagged<FixedArray> value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
   inline Tagged<Object> instance_properties_template() const;
-  inline void set_instance_properties_template(
-      Tagged<Object> value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
   inline Tagged<Object> instance_elements_template() const;
-  inline void set_instance_elements_template(
-      Tagged<Object> value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-
   inline Tagged<FixedArray> instance_computed_properties() const;
-  inline void set_instance_computed_properties(
-      Tagged<FixedArray> value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   template <typename IsolateT, typename Dictionary>
   static void AddToPropertiesTemplate(IsolateT* isolate,
@@ -247,14 +235,15 @@ V8_OBJECT class ClassBoilerplate : public StructLayout {
  private:
   friend class Factory;
   friend class TorqueGeneratedClassBoilerplateAsserts;
+  friend class SandboxTesting;
 
-  TaggedMember<Smi> arguments_count_;
-  TaggedMember<Object> static_properties_template_;
-  TaggedMember<Object> static_elements_template_;
-  TaggedMember<FixedArray> static_computed_properties_;
-  TaggedMember<Object> instance_properties_template_;
-  TaggedMember<Object> instance_elements_template_;
-  TaggedMember<FixedArray> instance_computed_properties_;
+  const TaggedMember<Smi> arguments_count_;
+  const TaggedMember<Object> static_properties_template_;
+  const TaggedMember<Object> static_elements_template_;
+  const TaggedMember<FixedArray> static_computed_properties_;
+  const TaggedMember<Object> instance_properties_template_;
+  const TaggedMember<Object> instance_elements_template_;
+  const TaggedMember<FixedArray> instance_computed_properties_;
 } V8_OBJECT_END;
 
 }  // namespace internal

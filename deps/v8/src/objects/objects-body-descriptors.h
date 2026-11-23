@@ -56,16 +56,28 @@ class BodyDescriptorBase {
   template <typename ObjectVisitor>
   static inline void IterateTrustedPointer(Tagged<HeapObject> obj, int offset,
                                            ObjectVisitor* visitor,
-                                           IndirectPointerMode mode,
-                                           IndirectPointerTagRange tag_range);
+                                           TrustedPointerMode mode,
+                                           TrustedPointerTagRange tag_range);
+  template <typename ObjectVisitor, typename T,
+            TrustedPointerTagRange kTagRange>
+  static inline void IterateTrustedPointer(
+      Tagged<HeapObject> obj, TrustedPointerMember<T, kTagRange>* member,
+      ObjectVisitor* v, TrustedPointerMode mode);
+
   template <typename ObjectVisitor>
   static inline void IterateCodePointer(Tagged<HeapObject> obj, int offset,
                                         ObjectVisitor* visitor,
-                                        IndirectPointerMode mode);
+                                        TrustedPointerMode mode);
   template <typename ObjectVisitor>
-  static inline void IterateSelfIndirectPointer(
-      Tagged<HeapObject> obj, IndirectPointerTagRange tag_range,
-      ObjectVisitor* v);
+  static inline void IterateCodePointer(
+      Tagged<HeapObject> obj,
+      TrustedPointerMember<Code, kCodeTrustedPointerTag>* member,
+      ObjectVisitor* v, TrustedPointerMode mode);
+
+  template <typename ObjectVisitor>
+  static inline void IterateSelfTrustedPointer(Tagged<HeapObject> obj,
+                                               TrustedPointerTagRange tag_range,
+                                               ObjectVisitor* v);
 
   template <typename ObjectVisitor>
   static inline void IterateProtectedPointer(Tagged<HeapObject> obj, int offset,
@@ -185,8 +197,7 @@ class FlexibleBodyDescriptor : public SuffixRangeBodyDescriptor<start_offset> {
 };
 
 // A forward-declarable descriptor body alias for most of the Struct successors.
-class StructBodyDescriptor
-    : public FlexibleBodyDescriptor<HeapObject::kHeaderSize> {};
+class StructBodyDescriptor : public FlexibleBodyDescriptor<sizeof(Struct)> {};
 
 // This class describes a body of an object in which all pointer fields are
 // located in the [start_offset, object_size) interval.
@@ -275,7 +286,7 @@ class SubclassBodyDescriptor : public BodyDescriptorBase {
 
 // Visitor for exposed trusted objects with fixed layout according to
 // FixedBodyDescriptor.
-template <typename T, IndirectPointerTagRange kTagRange>
+template <typename T, TrustedPointerTagRange kTagRange>
 class FixedExposedTrustedObjectBodyDescriptor
     : public FixedBodyDescriptorFor<T> {
   static_assert(std::is_base_of_v<ExposedTrustedObject, T>);
@@ -285,13 +296,13 @@ class FixedExposedTrustedObjectBodyDescriptor
   template <typename ObjectVisitor>
   static inline void IterateBody(Tagged<Map> map, Tagged<HeapObject> obj,
                                  int object_size, ObjectVisitor* v) {
-    Base::IterateSelfIndirectPointer(obj, kTagRange, v);
+    Base::IterateSelfTrustedPointer(obj, kTagRange, v);
     Base::IterateBody(map, obj, object_size, v);
   }
 };
 
 // A mix-in for visiting a trusted pointer field.
-template <size_t kFieldOffset, IndirectPointerTagRange kTagRange>
+template <size_t kFieldOffset, TrustedPointerTagRange kTagRange>
 struct WithStrongTrustedPointer {
   template <typename Base>
   class BodyDescriptor : public Base {
@@ -301,14 +312,14 @@ struct WithStrongTrustedPointer {
                                    int object_size, ObjectVisitor* v) {
       Base::IterateBody(map, obj, object_size, v);
       Base::IterateTrustedPointer(obj, kFieldOffset, v,
-                                  IndirectPointerMode::kStrong, kTagRange);
+                                  TrustedPointerMode::kStrong, kTagRange);
     }
   };
 };
 
 template <size_t kFieldOffset>
 using WithStrongCodePointer =
-    WithStrongTrustedPointer<kFieldOffset, kCodeIndirectPointerTag>;
+    WithStrongTrustedPointer<kFieldOffset, kCodeTrustedPointerTag>;
 
 // A mix-in for visiting an external pointer field.
 template <size_t kFieldOffset, ExternalPointerTagRange kTagRange>

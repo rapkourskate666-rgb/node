@@ -133,6 +133,105 @@ fs.writeFileSync(path.join(dir, 'item2.txt'), 'bbb');
   assert.strictEqual(child.status, 0);
 }
 
+// Grant a directory and a file inside it separately, drop the directory
+// the explicit file grant still applies regardless of the flag order
+for (const files of [
+  [dir, path.join(dir, 'item1.txt')],
+  [path.join(dir, 'item1.txt'), dir],
+]) {
+  const child = spawnSync(process.execPath, [
+    '--permission',
+    ...files.map((file) => `--allow-fs-read=${file}`),
+    ...files.map((file) => `--allow-fs-write=${file}`),
+    '-e',
+    `
+      const assert = require('assert');
+      const fs = require('fs');
+      const dir = ${JSON.stringify(dir)};
+
+      for (const scope of ['fs.read', 'fs.write']) {
+        assert.ok(process.permission.has(scope, dir + '/item1.txt'));
+        assert.ok(process.permission.has(scope, dir + '/item2.txt'));
+
+        process.permission.drop(scope, dir);
+
+        assert.ok(process.permission.has(scope, dir + '/item1.txt'));
+        assert.ok(!process.permission.has(scope, dir + '/item2.txt'));
+      }
+      assert.strictEqual(fs.readFileSync(dir + '/item1.txt', 'utf8'), 'aaa');
+    `,
+  ]);
+  if (child.status !== 0) {
+    console.error('Case 5 stderr:', child.stderr?.toString());
+  }
+  assert.strictEqual(child.status, 0);
+}
+
+// Grant a path that does not exist yet, then create it as a directory
+// dropping it still revokes the grant
+{
+  const later = path.join(tmpdir.path, 'later-dir');
+  const child = spawnSync(process.execPath, [
+    '--permission',
+    `--allow-fs-read=${later}`,
+    `--allow-fs-write=${later}`,
+    '-e',
+    `
+      const assert = require('assert');
+      const fs = require('fs');
+      const later = ${JSON.stringify(later)};
+
+      fs.mkdirSync(later);
+      for (const scope of ['fs.read', 'fs.write']) {
+        assert.ok(process.permission.has(scope, later));
+
+        process.permission.drop(scope, later);
+
+        assert.ok(!process.permission.has(scope, later));
+        assert.ok(!process.permission.has(scope, later + '/file.txt'));
+      }
+    `,
+  ]);
+  if (child.status !== 0) {
+    console.error('Case 6 stderr:', child.stderr?.toString());
+  }
+  assert.strictEqual(child.status, 0);
+}
+
+// Grant a directory, then remove it - dropping it still revokes the grant
+{
+  const gone = path.join(tmpdir.path, 'gone-dir');
+  fs.mkdirSync(gone);
+  const child = spawnSync(process.execPath, [
+    '--permission',
+    `--allow-fs-read=${gone}`,
+    `--allow-fs-read=${dir}`,
+    `--allow-fs-write=${gone}`,
+    `--allow-fs-write=${dir}`,
+    '-e',
+    `
+      const assert = require('assert');
+      const fs = require('fs');
+      const gone = ${JSON.stringify(gone)};
+      const dir = ${JSON.stringify(dir)};
+
+      fs.rmdirSync(gone);
+      for (const scope of ['fs.read', 'fs.write']) {
+        assert.ok(process.permission.has(scope, gone));
+
+        process.permission.drop(scope, gone);
+
+        assert.ok(!process.permission.has(scope, gone));
+        assert.ok(process.permission.has(scope, dir + '/item1.txt'));
+      }
+    `,
+  ]);
+  if (child.status !== 0) {
+    console.error('Case 7 stderr:', child.stderr?.toString());
+  }
+  assert.strictEqual(child.status, 0);
+}
+
 // Drop entire scope without reference - revokes everything
 {
   const child = spawnSync(process.execPath, [

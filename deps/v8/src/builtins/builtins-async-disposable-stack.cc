@@ -8,6 +8,7 @@
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
 #include "src/common/globals.h"
+#include "src/debug/debug.h"
 #include "src/execution/isolate.h"
 #include "src/handles/maybe-handles.h"
 #include "src/objects/heap-object.h"
@@ -107,6 +108,9 @@ BUILTIN(AsyncDisposeFromSyncDispose) {
     isolate->clear_internal_exception();
     isolate->clear_pending_message();
     JSPromise::Reject(promise, direct_handle(exception, isolate));
+    if (isolate->debug()->IsRestartFrameScheduled()) {
+      return isolate->TerminateExecution();
+    }
   }
 
   //        f. Return promiseCapability.[[Promise]].
@@ -120,7 +124,7 @@ BUILTIN(AsyncDisposableStackConstructor) {
   isolate->CountUsage(v8::Isolate::kExplicitResourceManagement);
 
   // 1. If NewTarget is undefined, throw a TypeError exception.
-  if (!IsJSReceiver(*args.new_target(), isolate)) {
+  if (!IsJSReceiver(*args.new_target())) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate, NewTypeError(MessageTemplate::kConstructorNotFunction,
                               isolate->factory()->NewStringFromAsciiChecked(
@@ -210,6 +214,9 @@ BUILTIN(AsyncDisposableStackPrototypeDisposeAsync) {
     JSPromise::Reject(promise,
                       isolate->factory()->NewTypeError(
                           MessageTemplate::kNotAnAsyncDisposableStack));
+    if (isolate->debug()->IsRestartFrameScheduled()) {
+      return isolate->TerminateExecution();
+    }
     //   b. Return promiseCapability.[[Promise]].
     return *promise;
   }

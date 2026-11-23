@@ -1,10 +1,12 @@
+// Flags: --expose-internals --no-warnings
+
 'use strict';
 const common = require('../common');
 const assert = require('assert');
 const http = require('http');
 const net = require('net');
 const { duplexPair } = require('stream');
-const { HTTPParser } = require('_http_common');
+const { HTTPParser } = require('internal/http/common');
 // llhttp_set_lenient_header_value_relaxed() was added in llhttp 9.4.0.
 // On shared-library builds using an older system llhttp the constant is
 // exported as 0, so inbound-parsing tests must be skipped there.
@@ -232,7 +234,47 @@ if (kRelaxedInboundSupported) {
   // Should not throw - control chars allowed in insecure mode
   req.setHeader('X-Test', 'value\x01here');
   req.setHeader('X-Bel', 'ding\x07');
+  // Outgoing values are validated as in relaxed mode: NUL, CR, and LF are
+  // still rejected, as they would allow header injection.
+  for (const value of ['value\x00here', 'value\rhere', 'value\nhere']) {
+    assert.throws(() => req.setHeader('X-Test', value),
+                  { code: 'ERR_INVALID_CHAR' });
+    assert.throws(() => req.appendHeader('X-Test', value),
+                  { code: 'ERR_INVALID_CHAR' });
+  }
   req.destroy();
+}
+
+// ============================================================================
+// Test 11b: httpValidation: 'insecure' server response still rejects
+//           NUL, CR, and LF in outgoing header values
+// ============================================================================
+{
+  const server = http.createServer({
+    httpValidation: 'insecure',
+  }, common.mustCall((req, res) => {
+    for (const value of ['value\x00here', 'value\rhere', 'value\nhere']) {
+      assert.throws(() => res.setHeader('X-Test', value),
+                    { code: 'ERR_INVALID_CHAR' });
+      assert.throws(() => res.writeHead(200, { 'X-Test': value }),
+                    { code: 'ERR_INVALID_CHAR' });
+    }
+    res.setHeader('X-Custom', 'value\x01here');
+    res.end('ok');
+  }));
+
+  server.listen(0, common.mustCall(() => {
+    http.get({
+      port: server.address().port,
+      httpValidation: 'insecure',
+    }, common.mustCall((res) => {
+      assert.strictEqual(res.headers['x-custom'], 'value\x01here');
+      res.resume();
+      res.on('end', common.mustCall(() => {
+        server.close();
+      }));
+    }));
+  }));
 }
 
 // ============================================================================

@@ -16,6 +16,7 @@
 
 #include "include/v8-profiler.h"
 #include "src/base/hashing.h"
+#include "src/base/logging.h"
 #include "src/base/platform/time.h"
 #include "src/builtins/builtins.h"
 #include "src/execution/vm-state.h"
@@ -133,6 +134,7 @@ class CodeEntry {
       case CodeType::OTHER:
         return "other";
     }
+    UNREACHABLE();
   }
 
   // Returns the start address of the instruction segment represented by this
@@ -230,15 +232,13 @@ class CodeEntry {
   size_t AddRef() {
     DCHECK(is_ref_counted());
     DCHECK_LT(ref_count_, std::numeric_limits<size_t>::max());
-    ref_count_++;
-    return ref_count_;
+    return ++ref_count_;
   }
 
   size_t DecRef() {
     DCHECK(is_ref_counted());
     DCHECK_GT(ref_count_, 0UL);
-    ref_count_--;
-    return ref_count_;
+    return --ref_count_;
   }
 
   using EventField = base::BitField<LogEventListener::Event, 0, 4>;
@@ -424,6 +424,7 @@ class CpuProfile {
     StateTag state_tag;
     EmbedderStateTag embedder_state_tag;
     const std::optional<uint64_t> trace_id;
+    void* sample_context;
   };
 
   V8_EXPORT_PRIVATE CpuProfile(
@@ -441,7 +442,8 @@ class CpuProfile {
                LineAndColumn src_pos, bool update_stats,
                base::TimeDelta sampling_interval, StateTag state,
                EmbedderStateTag embedder_state,
-               const std::optional<uint64_t> trace_id = std::nullopt);
+               const std::optional<uint64_t> trace_id = std::nullopt,
+               void* sample_context = nullptr);
   void FinishProfile();
 
   const char* title() const { return title_; }
@@ -588,7 +590,8 @@ class V8_EXPORT_PRIVATE CpuProfilesCollection {
       EmbedderStateTag embedder_state_tag,
       Address native_context_address = kNullAddress,
       Address native_embedder_context_address = kNullAddress,
-      const std::optional<uint64_t> trace_id = std::nullopt);
+      const std::optional<uint64_t> trace_id = std::nullopt,
+      void* sample_context = nullptr);
 
   // Called from profile generator thread.
   void UpdateNativeContextAddressForCurrentProfiles(Address from, Address to);

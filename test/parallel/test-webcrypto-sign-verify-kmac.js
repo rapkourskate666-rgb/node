@@ -5,28 +5,15 @@ const common = require('../common');
 if (!common.hasCrypto)
   common.skip('missing crypto');
 
-const { hasFIPS, hasOpenSSL } = require('../common/crypto');
+const { isBoringSSL } = require('../common/crypto');
 
-if (!hasOpenSSL(3))
-  common.skip('requires OpenSSL >= 3');
+if (isBoringSSL)
+  common.skip('KMAC is not supported by BoringSSL');
 
 const assert = require('assert');
 const { subtle } = globalThis.crypto;
-const fips4 = hasFIPS(4);
 
 const vectors = require('../fixtures/crypto/kmac')();
-
-function isFipsUnsupported(err) {
-  return err.name === 'OperationError' &&
-    err.cause?.code === 'ERR_OSSL_EVP_UNSUPPORTED';
-}
-
-function isFips4Incompatible({ key, keyLength, outputLength }) {
-  const keyLengthInBits = keyLength ?? key.byteLength * 8;
-  return keyLengthInBits < 128 ||
-    keyLengthInBits % 8 !== 0 ||
-    outputLength % 8 !== 0;
-}
 
 async function testVerify({ algorithm,
                             key,
@@ -206,13 +193,8 @@ async function testSign({ algorithm,
   const variations = [];
 
   for (const vector of vectors) {
-    if (fips4 && isFips4Incompatible(vector)) {
-      variations.push(assert.rejects(testVerify(vector), isFipsUnsupported));
-      variations.push(assert.rejects(testSign(vector), isFipsUnsupported));
-    } else {
-      variations.push(testVerify(vector));
-      variations.push(testSign(vector));
-    }
+    variations.push(testVerify(vector));
+    variations.push(testSign(vector));
   }
 
   await Promise.all(variations);
@@ -227,97 +209,54 @@ async function testSign({ algorithm,
     ['sign', 'verify']);
   const algorithm = {
     name: 'KMAC128',
-    outputLength: fips4 ? 16 : 9,
+    outputLength: 16,
     customization: new Uint8Array(),
   };
   const data = new Uint8Array([1, 2, 3]);
 
-  if (fips4) {
-    await assert.rejects(
-      subtle.sign({ ...algorithm, outputLength: 9 }, key, data),
-      isFipsUnsupported);
-  }
-
   const signature = await subtle.sign(algorithm, key, data);
   assert.strictEqual(signature.byteLength, 2);
-  if (!fips4)
-    assert.strictEqual(new Uint8Array(signature)[1] & 0b01111111, 0);
   assert(await subtle.verify(algorithm, key, signature, data));
 
-  if (fips4) {
-    const signature128 = await subtle.sign({
-      ...algorithm,
-      outputLength: 128,
-    }, key, data);
-    assert.strictEqual(signature128.byteLength, 16);
-    assert(await subtle.verify({
-      ...algorithm,
-      outputLength: 128,
-    }, key, signature128, data));
-  } else {
-    const signature16 = new Uint8Array(await subtle.sign({
-      ...algorithm,
-      outputLength: 16,
-    }, key, data));
-    signature16[1] &= 0b10000000;
-    assert.notDeepStrictEqual(new Uint8Array(signature), signature16);
-  }
+  const signature128 = await subtle.sign({
+    ...algorithm,
+    outputLength: 128,
+  }, key, data);
+  assert.strictEqual(signature128.byteLength, 16);
+  assert(await subtle.verify({
+    ...algorithm,
+    outputLength: 128,
+  }, key, signature128, data));
 
   const invalidSignature = new Uint8Array(signature);
-  if (fips4)
-    invalidSignature[0] ^= 0b00000001;
-  else
-    invalidSignature[1] |= 0b00000001;
+  invalidSignature[0] ^= 0b00000001;
   assert(!(await subtle.verify(algorithm, key, invalidSignature, data)));
 
-  const nonByteKey = await subtle.importKey(
-    'raw-secret',
-    new Uint8Array([0xff, 0xff, 0xff, 0xff]),
-    { name: 'KMAC128', length: 25 },
-    false,
-    ['sign', 'verify']);
-  const nonByteKeySignature = subtle.sign({
-    ...algorithm,
-    outputLength: 16,
-  }, nonByteKey, data);
-  if (fips4) {
-    await assert.rejects(nonByteKeySignature, isFipsUnsupported);
-  } else {
-    const result = await nonByteKeySignature;
-    assert.strictEqual(result.byteLength, 2);
-    assert(await subtle.verify({
-      ...algorithm,
-      outputLength: 16,
-    }, nonByteKey, result, data));
-  }
+  const nonByteOutput = { ...algorithm, outputLength: 9 };
+  await assert.rejects(
+    subtle.sign(nonByteOutput, key, data),
+    { name: 'NotSupportedError', message: 'Invalid KmacParams outputLength' });
+  await assert.rejects(
+    subtle.verify(nonByteOutput, key, signature, data),
+    { name: 'NotSupportedError', message: 'Invalid KmacParams outputLength' });
+
+  await assert.rejects(
+    subtle.importKey(
+      'raw-secret',
+      new Uint8Array([0xff, 0xff, 0xff, 0xff]),
+      { name: 'KMAC128', length: 25 },
+      false,
+      ['sign', 'verify']),
+    { name: 'NotSupportedError', message: 'Invalid key length' });
 })().then(common.mustCall());
 
 (async function() {
-  const data = new Uint8Array([1, 2, 3]);
-
   for (const name of ['KMAC128', 'KMAC256']) {
-    for (const keyData of [
-      new Uint8Array(),
-      new Uint8Array([1]),
-      new Uint8Array([1, 2, 3]),
-    ]) {
-      const key = await subtle.importKey(
-        'raw-secret',
-        keyData,
-        { name },
-        true,
-        ['sign', 'verify']);
-      assert.strictEqual(key.algorithm.length, keyData.byteLength * 8);
-
-      const algorithm = { name, outputLength: 256 };
-      const signature = subtle.sign(algorithm, key, data);
-      if (fips4) {
-        await assert.rejects(signature, isFipsUnsupported);
-      } else {
-        const result = await signature;
-        assert.strictEqual(result.byteLength, 32);
-        assert(await subtle.verify(algorithm, key, result, data));
-      }
+    for (const byteLength of [0, 1, 2, 3]) {
+      await assert.rejects(
+        subtle.importKey(
+          'raw-secret', new Uint8Array(byteLength), name, true, ['sign', 'verify']),
+        { name: 'NotSupportedError', message: 'Invalid key length' });
     }
   }
 })().then(common.mustCall());

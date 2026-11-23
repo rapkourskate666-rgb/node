@@ -35,11 +35,11 @@ const nonStringInputs = [
 
 // zlib.Unzip classes need to get valid data, or else they'll throw.
 const unzips = [
-  zlib.Unzip(),
-  zlib.Gunzip(),
-  zlib.Inflate(),
-  zlib.InflateRaw(),
-  zlib.BrotliDecompress(),
+  new zlib.Unzip(),
+  new zlib.Gunzip(),
+  new zlib.Inflate(),
+  new zlib.InflateRaw(),
+  new zlib.BrotliDecompress(),
   new zlib.ZstdDecompress(),
 ];
 
@@ -87,6 +87,33 @@ Object.defineProperty(spoofedLength, 'byteLength', { get: () => 5000 });
     code: 'ERR_OUT_OF_RANGE',
   });
   deflate.close();
+}
+
+if (zlib.constants.BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH) {
+  // A block switch is invalid when the stream declares only one block type.
+  const invalidBlockSwitch = Buffer.from(
+    '200010414141fcffff07002228f00b60f7f41f000000',
+    'hex',
+  );
+  const expectedError = {
+    code: 'ERR__ERROR_FORMAT_BLOCK_SWITCH',
+    errno: zlib.constants.BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH,
+  };
+
+  assert.strictEqual(expectedError.errno, -17);
+  assert.throws(
+    () => zlib.brotliDecompressSync(invalidBlockSwitch),
+    expectedError,
+  );
+
+  const brotli = zlib.createBrotliDecompress();
+  brotli.resume();
+  brotli.on('error', common.expectsError(expectedError));
+  brotli.on('end', common.mustNotCall());
+  for (let i = 0; i < invalidBlockSwitch.length; i++) {
+    brotli.write(invalidBlockSwitch.subarray(i, i + 1));
+  }
+  brotli.end();
 }
 
 unzips.forEach(common.mustCall((uz, i) => {

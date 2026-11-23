@@ -257,7 +257,7 @@ class WasmFrameConstants : public TypedFrameConstants {
   // instruction that triggered the signal to the runtime. This is done by
   // setting a return address and then jumping to a builtin which will call
   // further to the runtime. As the return address we use the fault address +
-  // {kProtectedInstructionReturnAddressOffset}. Using the fault address itself
+  // {kTrappingInstructionReturnAddressOffset}. Using the fault address itself
   // would cause problems with safepoints and source positions.
   //
   // The problem with safepoints is that a safepoint has to be registered at the
@@ -270,7 +270,7 @@ class WasmFrameConstants : public TypedFrameConstants {
   // position of the faulty memory access, however, is recorded at the fault
   // address. Therefore the stack trace code would not find the source position
   // if we used the fault address as the return address.
-  static constexpr int kProtectedInstructionReturnAddressOffset = 1;
+  static constexpr int kTrappingInstructionReturnAddressOffset = 1;
 };
 
 #if V8_ENABLE_DRUMBRAKE
@@ -373,6 +373,10 @@ class WasmJspiFrameConstants : public JSToWasmWrapperFrameConstants {
   //        |   spill slots   |                     | GC scan scan_count slots
   //        |      ....       | <- spill_slot_base--|
   //        |- - - - - - - - -|                     |
+  // After switching back to a parent stack, its wrapper buffer is no longer
+  // needed. Preserve the parent's return address in this untagged slot while
+  // fulfilling or rejecting the promise, which can reenter JSPI.
+  static constexpr int kParentReturnAddressOffset = kWrapperBufferOffset;
   // This slot contains the number of slots at the top of the frame that need to
   // be scanned by the GC.
   static constexpr int kGCScanSlotCountOffset =
@@ -393,34 +397,22 @@ class WasmToJSWrapperConstants {
 };
 
 #if V8_ENABLE_DRUMBRAKE
-class BuiltinWasmInterpreterWrapperConstants : public TypedFrameConstants {
+class WasmInterpreterWrapperConstants : public JSToWasmWrapperFrameConstants {
  public:
   // This slot contains the number of slots at the top of the frame that need to
   // be scanned by the GC.
   static constexpr int kGCScanSlotCountOffset =
-      TYPED_FRAME_PUSHED_VALUE_OFFSET(0);
-  // The number of parameters passed to this function.
-  static constexpr int kInParamCountOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(1);
-  // The number of parameters according to the signature.
-  static constexpr int kParamCountOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(2);
-  // The number of return values according to the siganture.
-  static constexpr int kReturnCountOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(3);
-  // `reps_` of wasm::FunctionSig.
-  static constexpr int kSigRepsOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(4);
-  // The current valuetype in the function signature being converted.
-  static constexpr int kValueTypesArrayStartOffset =
-      TYPED_FRAME_PUSHED_VALUE_OFFSET(5);
-  // Array of arguments/return values.
-  static constexpr int kArgRetsAddressOffset =
-      TYPED_FRAME_PUSHED_VALUE_OFFSET(6);
-  // Whether the array is for arguments or return values.
-  static constexpr int kArgRetsIsArgsOffset =
-      TYPED_FRAME_PUSHED_VALUE_OFFSET(7);
-  // The index of the argument or return value being converted.
-  static constexpr int kCurrentIndexOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(8);
-  // Precomputed signature data.
-  static constexpr int kSignatureDataOffset =
-      TYPED_FRAME_PUSHED_VALUE_OFFSET(9);
+      TYPED_FRAME_PUSHED_VALUE_OFFSET(1);
+  // Tagged pointer to WasmTrustedInstanceData or WasmImportData.
+  static constexpr int kImplicitArgOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(2);
+  // Tagged pointer to a JS Array for result values.
+  static constexpr int kResultArrayOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(3);
+
+  // Offset in the wrapper buffer where the Torque builtin stores the
+  // FixedArray of converted reference parameters (or Undefined if none).
+  // Aliases kWrapperBufferGPReturnRegister2, which is unused by the
+  // interpreter path.
+  static constexpr size_t kWrapperBufferRefParamsArray = 48;
 };
 #endif  // V8_ENABLE_DRUMBRAKE
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -509,13 +501,15 @@ class BuiltinExitFrameConstants : public ExitFrameConstants {
   static constexpr int kTargetIndex = 1;
   static constexpr int kArgcIndex = 2;
 
-  // This padding is required only on arm64 to keep the SP 16-byte aligned.
+  // This padding is required on arm64 (and x64 with 16-byte stack alignment) to
+  // keep the SP 16-byte aligned.
   static constexpr int kOptionalPaddingIndex = 3;
-#if V8_TARGET_ARCH_ARM64
+#if V8_TARGET_ARCH_ARM64 || \
+    (V8_TARGET_ARCH_X64 && V8_X64_16BYTE_STACK_ALIGNMENT_BOOL)
   static constexpr int kNumExtraArgs = 4;
 #else
   static constexpr int kNumExtraArgs = 3;
-#endif  // V8_TARGET_ARCH_ARM64
+#endif
 
   static constexpr int kNumExtraArgsWithReceiver = kNumExtraArgs + 1;
 

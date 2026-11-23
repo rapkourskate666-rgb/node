@@ -102,8 +102,7 @@ transitioning builtin ArrayReduceLoopContinuation(
   // this means kPresent is false.
   typeswitch (accumulator) {
     case (TheHole): {
-      ThrowTypeError(
-          MessageTemplate::kReduceNoInitial, 'Array.prototype.reduce');
+      ThrowTypeError(MessageTemplate::kReduceNoInitial);
     }
     case (accumulator: JSAny): {
       return accumulator;
@@ -143,8 +142,7 @@ transitioning macro FastArrayReduce(
   }
   typeswitch (accumulator) {
     case (TheHole): {
-      ThrowTypeError(
-          MessageTemplate::kReduceNoInitial, 'Array.prototype.reduce');
+      ThrowTypeError(MessageTemplate::kReduceNoInitial);
     }
     case (accumulator: JSAny): {
       return accumulator;
@@ -152,7 +150,7 @@ transitioning macro FastArrayReduce(
   }
 }
 
-// https://tc39.github.io/ecma262/#sec-array.prototype.reduce
+// https://tc39.es/ecma262/#sec-array.prototype.reduce
 transitioning javascript builtin ArrayReduce(
     js-implicit context: NativeContext, receiver: JSAny)(...arguments): JSAny {
   try {

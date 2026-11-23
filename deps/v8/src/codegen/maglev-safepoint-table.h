@@ -11,7 +11,8 @@
 #include "src/codegen/safepoint-table-base.h"
 #include "src/common/assert-scope.h"
 #include "src/utils/allocation.h"
-#include "src/zone/zone-chunk-list.h"
+#include "src/utils/utils.h"
+#include "src/zone/zone-containers.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -73,6 +74,26 @@ class MaglevSafepointTable {
   int find_return_pc(int pc_offset);
 
   uint32_t stack_slots() { return stack_slots_; }
+
+  // Read only the PC offset from entry |index|, without decoding the rest.
+  int GetEntryPc(int index) const {
+    DCHECK_GT(length_, index);
+    Address entry_ptr =
+        safepoint_table_address_ + kHeaderSize + index * entry_size();
+    return read_bytes(&entry_ptr, pc_size());
+  }
+
+  // Read only the trampoline PC from entry |index|.  Requires has_deopt_data().
+  int GetEntryTrampolinePc(int index) const {
+    DCHECK(has_deopt_data());
+    DCHECK_GT(length_, index);
+    Address entry_ptr = safepoint_table_address_ + kHeaderSize +
+                        index * entry_size() + pc_size() + deopt_index_size();
+    int trampoline_pc = read_bytes(&entry_ptr, pc_size()) - 1;
+    DCHECK(trampoline_pc >= 0 ||
+           trampoline_pc == MaglevSafepointEntry::kNoTrampolinePC);
+    return trampoline_pc;
+  }
 
   MaglevSafepointEntry GetEntry(int index) const {
     DCHECK_GT(length_, index);
@@ -168,6 +189,24 @@ class MaglevSafepointTable {
     return result;
   }
 
+  // Binary search for an exact pc offset match.  Returns the index of the
+  // matching entry, or -1 if not found.
+  V8_INLINE int BinarySearchPc(int pc_offset) const {
+    int lo = 0, hi = length_;
+    while (lo < hi) {
+      int mid = lo + (hi - lo) / 2;
+      int mid_pc = GetEntryPc(mid);
+      if (mid_pc < pc_offset) {
+        lo = mid + 1;
+      } else if (mid_pc > pc_offset) {
+        hi = mid;
+      } else {
+        return mid;
+      }
+    }
+    return -1;
+  }
+
   DISALLOW_GARBAGE_COLLECTION(no_gc_)
 
   const Address instruction_start_;
@@ -204,19 +243,26 @@ class MaglevSafepointTableBuilder : public SafepointTableBuilderBase {
 
   class Safepoint {
    public:
+    Safepoint(const Safepoint&) = delete;
+    Safepoint& operator=(const Safepoint&) = delete;
+
+    ~Safepoint() { table_->entries_.push_back(entry_); }
+
     void DefineTaggedRegister(int reg_code) {
       DCHECK_LT(reg_code,
                 kBitsPerByte * sizeof(EntryBuilder::tagged_register_indexes));
-      entry_->tagged_register_indexes |= 1u << reg_code;
+      entry_.tagged_register_indexes |= 1u << reg_code;
     }
     void SetNumExtraSpillSlots(uint8_t num_slots) {
-      entry_->num_extra_spill_slots = num_slots;
+      entry_.num_extra_spill_slots = num_slots;
     }
 
    private:
     friend class MaglevSafepointTableBuilder;
-    explicit Safepoint(EntryBuilder* entry) : entry_(entry) {}
-    EntryBuilder* const entry_;
+    Safepoint(int pc, MaglevSafepointTableBuilder* table)
+        : entry_(pc), table_(table) {}
+    EntryBuilder entry_;
+    MaglevSafepointTableBuilder* const table_;
   };
 
   // Define a new safepoint for the current position in the body.
@@ -234,7 +280,7 @@ class MaglevSafepointTableBuilder : public SafepointTableBuilderBase {
 
  private:
   const uint32_t num_tagged_slots_;
-  ZoneChunkList<EntryBuilder> entries_;
+  ZoneVector<EntryBuilder> entries_;
 };
 
 }  // namespace internal

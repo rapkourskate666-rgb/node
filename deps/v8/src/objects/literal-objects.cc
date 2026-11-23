@@ -9,9 +9,9 @@
 #include "src/builtins/accessors.h"
 #include "src/common/globals.h"
 #include "src/execution/isolate.h"
-#include "src/heap/factory.h"
+#include "src/heap/factory-inl.h"
 #include "src/heap/local-factory-inl.h"
-#include "src/objects/dictionary.h"
+#include "src/objects/dictionary-inl.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/js-regexp.h"
 #include "src/objects/literal-objects-inl.h"
@@ -607,7 +607,8 @@ class ObjectDescriptor {
 
   void Finalize(IsolateT* isolate) {
     if (HasDictionaryProperties()) {
-      DCHECK_EQ(current_computed_index_, computed_properties_->length());
+      DCHECK_EQ(current_computed_index_,
+                computed_properties_->ulength().value());
       if (!V8_ENABLE_SWISS_NAME_DICTIONARY_BOOL) {
         properties_dictionary_template()->set_next_enumeration_index(
             next_enumeration_index_);
@@ -631,7 +632,7 @@ class ObjectDescriptor {
   int next_enumeration_index_ = PropertyDetails::kInitialIndex;
   int element_count_ = 0;
   int computed_count_ = 0;
-  int current_computed_index_ = 0;
+  uint32_t current_computed_index_ = 0;
 
   Handle<DescriptorArray> descriptor_array_template_;
 
@@ -806,20 +807,14 @@ Handle<ClassBoilerplate> ClassBoilerplate::New(IsolateT* isolate,
   static_desc.Finalize(isolate);
   instance_desc.Finalize(isolate);
 
-  auto result = Cast<ClassBoilerplate>(
-      factory->NewStruct(CLASS_BOILERPLATE_TYPE, allocation));
-
-  result->set_arguments_count(dynamic_argument_index);
-
-  result->set_static_properties_template(*static_desc.properties_template());
-  result->set_static_elements_template(*static_desc.elements_template());
-  result->set_static_computed_properties(*static_desc.computed_properties());
-
-  result->set_instance_properties_template(
-      *instance_desc.properties_template());
-  result->set_instance_elements_template(*instance_desc.elements_template());
-  result->set_instance_computed_properties(
-      *instance_desc.computed_properties());
+  Handle<ClassBoilerplate> result = indirect_handle(
+      factory->template New<ClassBoilerplate>(
+          allocation, dynamic_argument_index, static_desc.properties_template(),
+          static_desc.elements_template(), static_desc.computed_properties(),
+          instance_desc.properties_template(),
+          instance_desc.elements_template(),
+          instance_desc.computed_properties()),
+      isolate);
 
   return scope.CloseAndEscape(result);
 }
@@ -836,14 +831,13 @@ void ArrayBoilerplateDescription::BriefPrintDetails(std::ostream& os) {
 
 void RegExpBoilerplateDescription::BriefPrintDetails(std::ostream& os) {
   // Note: keep boilerplate layout synced with JSRegExp layout.
-  static_assert(JSRegExp::kDataOffset == JSObject::kHeaderSize);
-  static_assert(JSRegExp::kSourceOffset == JSRegExp::kDataOffset + kTaggedSize);
-  static_assert(JSRegExp::kFlagsOffset ==
-                JSRegExp::kSourceOffset + kTaggedSize);
-  static_assert(JSRegExp::kHeaderSize == JSRegExp::kFlagsOffset + kTaggedSize);
+  static_assert(offsetof(JSRegExp, data_) == JSObject::kHeaderSize);
+  static_assert(offsetof(JSRegExp, flags_) ==
+                offsetof(JSRegExp, data_) + kTaggedSize);
+  static_assert(JSRegExp::kHeaderSize ==
+                offsetof(JSRegExp, flags_) + kTaggedSize);
   IsolateForSandbox isolate = GetCurrentIsolateForSandbox();
-  os << " " << Brief(data(isolate)) << ", " << Brief(source()) << ", "
-     << flags();
+  os << " " << Brief(data(isolate)) << ", " << flags();
 }
 
 }  // namespace internal

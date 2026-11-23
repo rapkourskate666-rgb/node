@@ -5,6 +5,9 @@
 #ifndef V8_MAGLEV_MAGLEV_ASSEMBLER_H_
 #define V8_MAGLEV_MAGLEV_ASSEMBLER_H_
 
+#include "src/base/logging.h"
+#include "src/base/strong-alias.h"
+#include "src/codegen/atomic-memory-order.h"
 #include "src/codegen/machine-type.h"
 #include "src/codegen/macro-assembler.h"
 #include "src/common/globals.h"
@@ -97,7 +100,7 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
 
   MaglevAssembler(Isolate* isolate, Zone* zone,
                   MaglevCodeGenState* code_gen_state)
-      : MacroAssembler(isolate, zone, CodeObjectRequired::kNo),
+      : MacroAssembler(isolate, zone, CodeObjectRequired{false}),
         code_gen_state_(code_gen_state) {}
 
   static constexpr RegList GetAllocatableRegisters() {
@@ -116,6 +119,26 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
 #if defined(V8_TARGET_ARCH_RISCV64) || defined(V8_TARGET_ARCH_LOONG64)
   static constexpr Register GetFlagsRegister() { return kMaglevFlagsRegister; }
 #endif  // V8_TARGET_ARCH_RISCV64 || V8_TARGET_ARCH_LOONG64
+
+  // Whether the architecture has a register that always reads as zero, which
+  // can be stored instead of materializing a zero constant.
+  static constexpr bool HasZeroRegister() {
+#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_LOONG64)
+    return true;
+#else
+    return false;
+#endif
+  }
+  // The register that always reads as zero; only valid if HasZeroRegister().
+  static Register ZeroRegister() {
+#if defined(V8_TARGET_ARCH_ARM64)
+    return xzr;
+#elif defined(V8_TARGET_ARCH_LOONG64)
+    return zero_reg;
+#else
+    UNREACHABLE();
+#endif
+  }
 
   static constexpr DoubleRegList GetAllocatableDoubleRegisters() {
     return kAllocatableDoubleRegisters;
@@ -217,7 +240,7 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
     DecodeField<BitField>(result);
   }
 
-  enum StoreMode { kField, kElement };
+  enum StoreMode { kField, kFixedArrayElement };
   enum ValueIsCompressed { kValueIsDecompressed, kValueIsCompressed };
   enum ValueCanBeSmi { kValueCannotBeSmi, kValueCanBeSmi };
 
@@ -238,9 +261,11 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                                         ValueIsCompressed value_is_compressed,
                                         ValueCanBeSmi value_can_be_smi);
 
-  void CheckAndEmitDeferredIndirectPointerWriteBarrier(
+  void CheckAndEmitDeferredTrustedPointerWriteBarrier(
       Register object, int offset, Register value,
-      RegisterSnapshot register_snapshot, IndirectPointerTag tag);
+      RegisterSnapshot register_snapshot, TrustedPointerTag tag);
+
+  inline void MemoryBarrier(AtomicMemoryOrder order);
 
   // Preserves all registers that are in the register snapshot, but is otherwise
   // allowed to clobber both input registers if they are not in the snapshot.
@@ -258,6 +283,22 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                                         ValueCanBeSmi value_can_be_smi);
   inline void StoreTaggedFieldNoWriteBarrier(Register object, int offset,
                                              Register value);
+
+  // Whether tagged constants (Smis, read-only roots and compressed heap
+  // objects) can be stored as immediates, i.e. whether the overloads below are
+  // implemented.
+#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_LOONG64
+  static constexpr bool kSupportsStoreTaggedConstant = COMPRESS_POINTERS_BOOL;
+#else
+  static constexpr bool kSupportsStoreTaggedConstant = false;
+#endif
+  // Whether {value} is a constant that {StoreTaggedFieldNoWriteBarrier} can
+  // store as an immediate, without materializing it in a register.
+  static inline bool CanStoreTaggedConstant(ValueNode* value);
+  inline void StoreTaggedFieldNoWriteBarrier(Register object, int offset,
+                                             ValueNode* constant);
+  inline void StoreTaggedFieldNoWriteBarrier(Register object, int offset,
+                                             Handle<HeapObject> constant);
   inline void StoreTaggedSignedField(Register object, int offset,
                                      Register value);
   inline void StoreTaggedSignedField(Register object, int offset,
@@ -267,12 +308,20 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
 
   inline void AssertElidedWriteBarrier(Register object, Register value,
                                        RegisterSnapshot snapshot);
+  // For a constant {value} stored as an immediate (see
+  // {CanStoreTaggedConstant}); the constant is only materialized on the
+  // deferred verification path, so no register is needed for it here.
+  inline void AssertElidedWriteBarrier(Register object, ValueNode* value,
+                                       RegisterSnapshot snapshot);
+  inline void AssertElidedWriteBarrier(Register object,
+                                       compiler::HeapObjectRef value,
+                                       RegisterSnapshot snapshot);
 
 #ifdef V8_ENABLE_SANDBOX
 
   void StoreTrustedPointerFieldWithWriteBarrier(
       Register object, int offset, Register value,
-      RegisterSnapshot register_snapshot, IndirectPointerTag tag);
+      RegisterSnapshot register_snapshot, TrustedPointerTag tag);
   inline void StoreTrustedPointerFieldNoWriteBarrier(Register object,
                                                      int offset,
                                                      Register value);
@@ -280,6 +329,7 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
 
   inline void StoreField(MemOperand operand, Register value, int element_size);
   inline void ReverseByteOrder(Register value, int element_size);
+  inline void ReverseByteOrderUnsigned(Register value, int element_size);
 
   inline void BuildTypedArrayDataPointer(Register data_pointer,
                                          Register object);
@@ -290,6 +340,9 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                                    Register index, int element_size);
   inline void LoadDataViewElement(Register result, Register data_pointer,
                                   Register index, int element_size);
+  inline void LoadUnsignedDataViewElement(Register result,
+                                          Register data_pointer, Register index,
+                                          int element_size);
 
   enum class CharCodeMaskMode { kValueIsInRange, kMustApplyMask };
 
@@ -447,13 +500,17 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   inline void DecrementInt32(Register reg);
   inline void AddInt32(Register reg, int amount);
   inline void AddInt32(Register reg, Register other);
+  inline void AddInt32(Register dst, Register src, int amount);
   inline void AndInt32(Register reg, int mask);
+  inline void AndInt32(Register dst, Register src, int mask);
   inline void OrInt32(Register reg, int mask);
   inline void AndInt32(Register reg, Register other);
   inline void OrInt32(Register reg, Register other);
   inline void ShiftLeft(Register reg, int amount);
+  inline void ShiftRightLogical32(Register dst, Register src, int amount);
   inline void IncrementAddress(Register reg, int32_t delta);
   inline void LoadAddress(Register dst, MemOperand location);
+  inline void MakeWeak(Register result, Register object);
 
   inline void EmitEnterExitFrame(int extra_slots, StackFrame::Type frame_type,
                                  Register scratch);
@@ -475,7 +532,7 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
 #ifdef V8_TARGET_ARCH_64_BIT
   inline void Move(Register dst, intptr_t p);
 #endif
-  inline void Move(Register dst, IndirectPointerTag i);
+  inline void Move(Register dst, TrustedPointerTag i);
   inline void Move(DoubleRegister dst, double n);
   inline void Move(DoubleRegister dst, Float64 n);
   inline void Move(Register dst, Handle<HeapObject> obj);
@@ -496,6 +553,16 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   inline void LoadFloat64(DoubleRegister dst, MemOperand src);
   inline void StoreFloat64(MemOperand dst, DoubleRegister src);
 
+  inline void LoadUnalignedFloat32(DoubleRegister dst, Register base,
+                                   Register index);
+  inline void LoadUnalignedFloat32AndReverseByteOrder(DoubleRegister dst,
+                                                      Register base,
+                                                      Register index);
+  inline void StoreUnalignedFloat32(Register base, Register index,
+                                    DoubleRegister src);
+  inline void ReverseByteOrderAndStoreUnalignedFloat32(Register base,
+                                                       Register index,
+                                                       DoubleRegister src);
   inline void LoadUnalignedFloat64(DoubleRegister dst, Register base,
                                    Register index);
   inline void LoadUnalignedFloat64AndReverseByteOrder(DoubleRegister dst,
@@ -548,6 +615,10 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                                       InstanceType lower_limit,
                                       InstanceType higher_limit,
                                       AbortReason reason);
+#ifdef DEBUG
+  inline void AssertFloat64IsSmi(DoubleRegister value);
+  inline void AssertHoleyFloat64IsSmi(DoubleRegister value);
+#endif
   inline void BranchOnObjectTypeInRange(
       Register heap_object, InstanceType lower_limit, InstanceType higher_limit,
       Label* if_true, Label::Distance true_distance, bool fallthrough_when_true,
@@ -571,15 +642,10 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   inline void JumpIfStringMap(Register map, Label* target,
                               Label::Distance distance = Label::kFar,
                               bool jump_if_true = true);
-  inline void JumpIfSeqOneByteStringMap(Register map, Label* target,
-                                        Label::Distance distance = Label::kFar,
-                                        bool jump_if_true = true);
   inline void JumpIfString(Register heap_object, Label* target,
                            Label::Distance distance = Label::kFar);
   inline void JumpIfNotString(Register heap_object, Label* target,
                               Label::Distance distance = Label::kFar);
-  inline void JumpIfNotSeqOneByteString(Register heap_object, Label* target,
-                                        Label::Distance distance = Label::kFar);
   inline void CheckJSAnyIsStringAndBranch(Register heap_object, Label* if_true,
                                           Label::Distance true_distance,
                                           bool fallthrough_when_true,
@@ -672,6 +738,7 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                          Label* target, Label::Distance distance = Label::kFar);
 
   inline void Float64SilenceNan(DoubleRegister value);
+  inline void Float64ExtractHighWord32(Register dst, DoubleRegister src);
 #ifdef V8_ENABLE_UNDEFINED_DOUBLE
   inline void JumpIfUndefinedNan(DoubleRegister value, Register scratch,
                                  Label* target,
@@ -696,6 +763,12 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                             Label::Distance distance = Label::kFar);
   inline void JumpIfNotHoleNan(MemOperand operand, Label* target,
                                Label::Distance distance = Label::kFar);
+
+  inline void SubInt32(Register dst, Register src);
+  inline void SubInt32(Register dst, Register src1, Register src2);
+  inline void ShiftRightLogical32(Register dst, int32_t value);
+  inline void LoadBitsFromWord32(Register dst, Register src, int width,
+                                 int shift);
 
   inline void CompareInt32AndJumpIf(Register r1, Register r2, Condition cond,
                                     Label* target,
@@ -847,6 +920,9 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
       Register object, RegisterSnapshot& register_snapshot);
 
   void ResetLastYoungAllocation();
+
+  void TryOnStackReplacement(ReduceInterruptBudgetForLoop* node,
+                             FeedbackSlot feedback_slot);
 
   compiler::NativeContextRef native_context() const {
     return code_gen_state()->broker()->target_native_context();
@@ -1158,6 +1234,7 @@ inline Condition ToCondition(AssertCondition cond) {
     ASSERT_CONDITION(CASE)
 #undef CASE
   }
+  UNREACHABLE();
 }
 
 constexpr Condition ConditionFor(Operation operation) {

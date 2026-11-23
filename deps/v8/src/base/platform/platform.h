@@ -157,6 +157,9 @@ class V8_BASE_EXPORT OS {
   // part of V8::Initialize, at which point this function can probably be
   // merged into OS::Initialize.
   static void EnsureWin32MemoryAPILoaded();
+
+  // Convert utf-8 encoded string to utf-16 encoded.
+  static std::wstring ConvertUtf8StringToUtf16(const char* str);
 #endif
 
   // Check whether CET shadow stack is enabled.
@@ -268,12 +271,12 @@ class V8_BASE_EXPORT OS {
 
   // Safe formatting print. Ensures that str is always null-terminated.
   // Returns the number of chars written, or -1 if output was truncated.
-  static PRINTF_FORMAT(3, 4) int SNPrintF(char* str, int length,
+  static PRINTF_FORMAT(3, 4) int SNPrintF(char* str, size_t length,
                                           const char* format, ...);
-  static PRINTF_FORMAT(3, 0) int VSNPrintF(char* str, int length,
+  static PRINTF_FORMAT(3, 0) int VSNPrintF(char* str, size_t length,
                                            const char* format, va_list args);
 
-  static void StrNCpy(char* dest, int length, const char* src, size_t n);
+  static void StrNCpy(char* dest, size_t length, const char* src, size_t n);
 
   // Support for the profiler.  Can do nothing, in which case ticks
   // occurring in shared libraries will not be properly accounted for.
@@ -360,6 +363,13 @@ class V8_BASE_EXPORT OS {
 
   // Make part of the process's data memory read-only.
   static void SetDataReadOnly(void* address, size_t size);
+
+  // Returns the address untag mask for the current process (~0ULL if disabled).
+#if defined(V8_OS_LINUX)
+  static uint64_t GetAddressUntagMask();
+#else
+  static uint64_t GetAddressUntagMask() { return ~uint64_t{0}; }
+#endif  // defined(V8_OS_LINUX)
 
  private:
   // Assign a name to a memory region.
@@ -677,11 +687,34 @@ class V8_BASE_EXPORT Stack {
     operator void*() const { return reinterpret_cast<void*>(value); }
     operator uintptr_t() const { return value; }  // NOLINT
 
+    template <typename T>
+      requires std::is_convertible_v<T, StackSlot>
+    friend bool operator==(StackSlot slot, T other) {
+      return slot.value == StackSlot(other).value;
+    }
+    template <typename T>
+      requires std::is_convertible_v<T, StackSlot>
+    friend auto operator<=>(StackSlot slot, T other) {
+      return slot.value <=> StackSlot(other).value;
+    }
+
     uintptr_t value;
   };
 
   // Gets the start of the stack of the current thread.
   static StackSlot GetStackStart();
+  // Gets the custom start of the stack of the current thread if set, otherwise
+  // the OS-reported stack start.
+  static StackSlot GetEffectiveStackStart();
+  // Gets the lowest address that the stack can grow to.
+  static StackSlot GetReservedStackLimit();
+
+  // On Windows, the TEB's StackLimit changes during execution as the stack
+  // grows. Expose a function to get it.
+  static StackSlot GetCommittedStackLimit();
+
+  // Sets the TEB's StackLimit and StackBase on Windows.
+  static void SetCurrentThreadStackBounds(uintptr_t limit, uintptr_t base);
 
   // Returns the current stack top. Works correctly with ASAN and SafeStack.
   //
@@ -707,6 +740,18 @@ class V8_BASE_EXPORT Stack {
 
 #undef DEFAULT_CURRENT_FRAME_ADDRESS
 
+  // Sets the start of the stack of the current thread and returns the previous
+  // value.
+  static StackSlot SetCurrentThreadStackStart(
+      StackSlot stack_start = GetCurrentFrameAddress());
+  // TODO(540324230): Remove once Blink correctly sets the stack start for
+  // all non-main threads.
+  static bool HasCustomCurrentThreadStackStart();
+
+  // Checks that [top, start) is a valid stack segment.
+  static void ValidateStackSegment(const void* start, const void* top,
+                                   bool check_for_tls);
+
   // Returns the real stack frame if slot is part of a fake frame, and slot
   // otherwise.
   static StackSlot GetRealStackAddressForSlot(StackSlot slot) {
@@ -727,8 +772,9 @@ class V8_BASE_EXPORT Stack {
 
  private:
   // Return the current thread stack start pointer.
-  static StackSlot GetStackStartUnchecked();
-  static Stack::StackSlot ObtainCurrentThreadStackStart();
+  static StackSlot ObtainCurrentThreadStackStart();
+  // Lowest address that the stack can grow to.
+  static StackSlot ObtainCurrentThreadStackReservedLimit();
 
   friend class heap::base::Stack;
 };

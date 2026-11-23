@@ -135,6 +135,9 @@ create it.
 the state file is a JSON file that contains an array of run attempts.
 Each run attempt is an object mapping successful tests to the attempt they have passed in.
 The key identifying a test in this map is the test file path, with the line and column where the test is defined.
+When tests run with process isolation and a test is defined outside of the test file being run,
+for example in a helper shared by several test files,
+the key is prefixed with the path of that test file.
 in a case where a test defined in a specific location is run multiple times,
 for example within a function or a loop,
 a counter will be appended to the key, to disambiguate the test runs.
@@ -160,6 +163,8 @@ in this example, there are two run attempts, with two tests defined in `test.js`
 the first test succeeded on the first attempt, and the second test succeeded on the second attempt.
 
 When the `--test-rerun-failures` option is used, the test runner will only run tests that have not yet passed.
+A `todo` test that fails counts as not yet passed and is rerun, even though its failure does not
+cause the test run to fail.
 
 ```bash
 node --test-rerun-failures /path/to/state/file
@@ -353,6 +358,14 @@ it.todo('should do the thing', { expectFailure: true }, () => {
 
 ## `only` tests
 
+To prevent exclusive tests from accidentally excluding tests in CI, use
+[`--test-forbid-only`][] or the `forbidOnly` option of [`run()`][]. When enabled,
+declaring a test or suite with `only: true` or calling `testContext.runOnly(true)`
+fails the run. This includes the `.only()` shorthands and applies with either
+isolation mode, even when `--test-only` is also enabled. Name filtering, TODO
+markers, and expected failures cannot suppress detected violations. Declarations
+inside callbacks that are never executed are not checked.
+
 If Node.js is started with the [`--test-only`][] command-line option, or test
 isolation is disabled, it is possible to skip all tests except for a selected
 subset by passing the `only` option to the tests that should run. When a test
@@ -491,8 +504,8 @@ added:
 
 Tags annotate tests and suites with arbitrary string labels. The
 [`--experimental-test-tag-filter`][] CLI flag (or the `testTagFilters`
-option on [`run()`][]) selects tests whose tag set contains every
-provided filter value.
+option on [`run()`][]) selects tests by a boolean expression over those
+labels.
 
 Tags are an alternative to encoding metadata into test names. They are
 useful for cross-cutting axes such as subsystem, speed bucket, flakiness,
@@ -525,37 +538,89 @@ describe('database', { tags: ['db'] }, () => {
 });
 ```
 
-Tag values must be non-empty strings. Tags are matched case-insensitively;
-the canonical form is lowercase. Duplicates within a single `tags` array
-are collapsed on the lowercased form, preserving the first-seen
-declaration order.
+Tag values must be non-empty strings that contain no whitespace, no
+operator characters (`& | ! ( ) *`), and are not the reserved words
+`'and'`, `'or'`, or `'not'` in any casing. Tags are matched
+case-insensitively; the canonical form is lowercase. Duplicates within a
+single `tags` array are collapsed on the lowercased form, preserving the
+first-seen declaration order.
 
 Hooks (`before`, `after`, `beforeEach`, `afterEach`) do not declare their
 own tags. They run as part of their owning suite, which carries the
 suite's tags.
 
-### Filtering by tag
+### Filtering syntax
 
-Each [`--experimental-test-tag-filter`][] value is a literal tag name. A
-test runs only when its tag set contains that name. The flag may be
-specified more than once; tests must match **every** filter to run. The
-same applies to the `testTagFilters` array on [`run()`][]. Filters are
-case-insensitive and AND'd with [`--test-name-pattern`][],
-[`--test-skip-pattern`][], and `.only` filtering.
+The filter expression supports:
 
-Untagged tests are excluded under any non-empty filter, since the filter
-requires the tag to be present.
+* Identifiers—any non-whitespace, non-operator characters. A literal
+  identifier matches a tag of the same value (case-insensitive).
+* `*` wildcards inside an identifier match any sequence of characters.
+  A bare `*` matches any tagged test.
+* Boolean operators with two equivalent forms:
+  * `and` / `&&`
+  * `or` / `||`
+  * `not` / `!`
+* Parentheses for grouping.
 
-### Reading tags from inside a test
+The word forms (`and`, `or`, `not`) require whitespace separation; the
+punctuation forms do not.
+
+#### Operator precedence
+
+The expression is evaluated with the standard precedence
+`not > and > or`. Binary operators are left-associative.
+
+| Expression     | Equivalent grouping |
+| -------------- | ------------------- |
+| `a or b and c` | `a or (b and c)`    |
+| `not a and b`  | `(not a) and b`     |
+
+Use parentheses to override:
+
+| Expression                     | Selects                                    |
+| ------------------------------ | ------------------------------------------ |
+| `(unit or smoke) and not slow` | unit-or-smoke tests that are not also slow |
+| `db && !flaky`                 | db tests that are not flaky                |
+| `*`                            | every tagged test                          |
+
+#### Untagged tests
+
+Untagged tests behave as if they have an empty tag set. As a result:
+
+| Filter expression        | Untagged test | Why                                              |
+| ------------------------ | ------------- | ------------------------------------------------ |
+| `db`                     | excluded      | Positive match against an empty tag set is false |
+| `*`                      | excluded      | The bare wildcard requires at least one tag      |
+| `db or unit`             | excluded      | Both branches are false against an empty tag set |
+| `not flaky`              | included      | Negation against an empty tag set is true        |
+| `not flaky and not slow` | included      | Both negations are true against an empty tag set |
+| `db or not flaky`        | included      | The negated branch is true                       |
+
+For example, `--experimental-test-tag-filter='not flaky'` runs every test
+that is not tagged `flaky`, including all untagged tests.
+
+#### Composing multiple filters
+
+[`--experimental-test-tag-filter`][] may be specified more than once on the
+command line. Multiple expressions compose by AND—a test must satisfy
+every expression to run. The same applies to passing an array to
+`testTagFilters` on [`run()`][]. The tag filter is also AND'd with
+[`--test-name-pattern`][], [`--test-skip-pattern`][], and `.only`
+filtering.
+
+#### Reading tags from inside a test
 
 The [`TestContext`][] object exposes the test's tags as a frozen array
 through [`context.tags`][], so tests can branch on their own metadata.
 
-### Errors
+#### Errors
 
 A tag value that violates the validation rules above throws
 `ERR_INVALID_ARG_VALUE` at the registration site, before any test runs.
-A non-array `tags` value throws `ERR_INVALID_ARG_TYPE`.
+A non-array `tags` value throws `ERR_INVALID_ARG_TYPE`. A malformed
+filter expression on the CLI causes the test runner to exit with a
+non-zero status before running any test files.
 
 ## Extraneous asynchronous activity
 
@@ -598,9 +663,13 @@ test('a test that creates asynchronous activity', (t) => {
 added:
   - v19.2.0
   - v18.13.0
+changes:
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/66708
+    description: Watch mode is now stable.
 -->
 
-> Stability: 1 - Experimental
+> Stability: 2 - Stable
 
 The Node.js test runner supports running in watch mode by passing the `--watch` flag:
 
@@ -830,13 +899,12 @@ test runner functionality:
 
 * `--test` - Prevented to avoid recursive test execution
 * `--experimental-test-coverage` - Managed by the test runner
-* `--experimental-test-tag-filter` - Filter values are validated by the parent
+* `--experimental-test-tag-filter` - Filter expressions are validated by the parent
   process and re-emitted to child processes
 * `--watch` - Watch mode is handled at the parent level
-* `--experimental-default-config-file` - Config file loading is handled by the parent
 * `--test-reporter` - Reporting is managed by the parent process
 * `--test-reporter-destination` - Output destinations are controlled by the parent
-* `--experimental-config-file` - Config file paths are managed by the parent
+* `--config-file` - Config file paths are managed by the parent
 * `--test-randomize` - Randomization is managed by the parent process and
   propagated to child processes
 * `--test-random-seed` - Randomization seed is managed by the parent process and
@@ -1653,6 +1721,9 @@ added:
   - v18.9.0
   - v16.19.0
 changes:
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/66578
+    description: Added the `forbidOnly` option.
   - version:
      - v26.2.0
      - v24.19.0
@@ -1709,6 +1780,9 @@ changes:
   * `forceExit` {boolean} Configures the test runner to exit the process once
     all known tests have finished executing even if the event loop would
     otherwise remain active. **Default:** `false`.
+  * `forbidOnly` {boolean} Fail the run when a test or suite is declared with
+    `only: true` or `testContext.runOnly(true)` is called. See [`only` tests](#only-tests).
+    **Default:** the value of [`--test-forbid-only`][].
   * `globPatterns` {Array} An array containing the list of glob patterns to
     match test files. This option cannot be used together with `files`.
     **Default:** Same as [running tests from the command line][].
@@ -1746,10 +1820,11 @@ changes:
     For each test that is executed, any corresponding test hooks, such as
     `beforeEach()`, are also run.
     **Default:** `undefined`.
-  * `testTagFilters` {string|string\[]} A tag name, or an array of tag names,
-    used to filter tests by their declared tags. Tests must contain every
-    listed tag to run. Equivalent to passing [`--experimental-test-tag-filter`][]
-    on the command line. See [Test tags][]. **Default:** `undefined`.
+  * `testTagFilters` {string|string\[]} A boolean expression, or an array of
+    boolean expressions, used to filter tests by their declared tags.
+    Multiple expressions compose by AND. Equivalent to passing
+    [`--experimental-test-tag-filter`][] on the command line. See
+    [Test tags][]. **Default:** `undefined`.
   * `timeout` {number} A number of milliseconds the test execution will
     fail after.
     If unspecified, subtests inherit this value from their parent.
@@ -2412,6 +2487,89 @@ test('changes a mock behavior once', (t) => {
 });
 ```
 
+### `ctx.mockRejectedValue(reason)`
+
+<!-- YAML
+added: v27.0.0-alpha.0.0.0
+-->
+
+* `reason` {any} The value the returned promise rejects with.
+
+Changes the mock's implementation to a function that returns a promise rejected
+with `reason`. This is shorthand for
+`ctx.mockImplementation(() => Promise.reject(reason))`.
+
+```js
+test('mocks a rejected value', async (t) => {
+  const fn = t.mock.fn();
+
+  fn.mock.mockRejectedValue(new Error('boom'));
+  await assert.rejects(fn(), { message: 'boom' });
+});
+```
+
+### `ctx.mockResolvedValue(value)`
+
+<!-- YAML
+added: v27.0.0-alpha.0.0.0
+-->
+
+* `value` {any} The value the returned promise resolves with.
+
+Changes the mock's implementation to a function that returns a promise resolved
+with `value`. This is shorthand for
+`ctx.mockImplementation(() => Promise.resolve(value))`.
+
+```js
+test('mocks a resolved value', async (t) => {
+  const fn = t.mock.fn();
+
+  fn.mock.mockResolvedValue(42);
+  assert.strictEqual(await fn(), 42);
+});
+```
+
+### `ctx.mockReturnValue(value)`
+
+<!-- YAML
+added: v27.0.0-alpha.0.0.0
+-->
+
+* `value` {any} The value returned by the mock.
+
+Changes the mock's implementation to a function that returns `value`. This is
+shorthand for `ctx.mockImplementation(() => value)`.
+
+```js
+test('mocks a return value', (t) => {
+  const fn = t.mock.fn();
+
+  fn.mock.mockReturnValue(42);
+  assert.strictEqual(fn(), 42);
+  assert.strictEqual(fn(), 42);
+});
+```
+
+### `ctx.mockThrownValue(value)`
+
+<!-- YAML
+added: v27.0.0-alpha.0.0.0
+-->
+
+* `value` {any} The value thrown by the mock.
+
+Changes the mock's implementation to a function that throws `value`. This is
+shorthand for `ctx.mockImplementation(() => { throw value; })`.
+
+```js
+test('mocks a thrown value', (t) => {
+  const fn = t.mock.fn();
+
+  fn.mock.mockThrownValue(new Error('boom'));
+  assert.throws(fn, { message: 'boom' });
+});
+```
+
 ### `ctx.resetCalls()`
 
 <!-- YAML
@@ -2728,10 +2886,8 @@ Node.js builtin modules. Any references to the original module prior to mocking 
 order to enable module mocking, Node.js must be started with the
 [`--experimental-test-module-mocks`][] command-line flag.
 
-**Note**: [module customization hooks][] registered via the **synchronous** API effect resolution of
-the `specifier` provided to `mock.module`. Customization hooks registered via the **asynchronous**
-API are currently ignored (because the test runner's loader is synchronous, and node does not
-support multi-chain / cross-chain loading).
+**Note**: [module customization hooks][] registered with `module.registerHooks()` affect resolution of
+the `specifier` provided to `mock.module`.
 
 The following example demonstrates how a mock is created for a module.
 
@@ -3456,7 +3612,9 @@ added:
   - v18.9.0
   - v16.19.0
 changes:
-  - version: v26.6.0
+  - version:
+     - v26.6.0
+     - v24.20.0
     pr-url: https://github.com/nodejs/node/pull/64309
     description: Added `entryFile` to events forwarded from child processes
                  when tests run with process isolation.
@@ -3524,6 +3682,74 @@ Global events are emitted once per test run:
 
 The root test also emits [`'test:plan'`][] and [`'test:diagnostic'`][] events
 at the end of the run to report run level totals.
+
+### Event lifecycle
+
+The tables above group the events; the diagram below places them on a
+timeline. The declaration ordered events form the main spine, buffered so that
+a reporter sees them in source order, while each execution ordered twin is
+emitted immediately, when the work actually happens. In particular,
+[`'test:start'`][] marks when a test begins _reporting_ its own and its
+subtests' status, not when its body begins executing; that moment is
+[`'test:dequeue'`][].
+
+```text
+                     node:test reporter event lifecycle
+   main spine = DECLARATION order (buffered; matches source order)
+   right side = EXECUTION order (emitted immediately); ◄ marks each twin
+
+  LEAF TEST
+  ─────────
+   ┌──────────────┐                   test:enqueue
+   │ test:start   │ ◄──── twins ────  (queued for execution;
+   └──────────────┘                    type: 'suite' | 'test')
+        │  begins REPORTING           test:dequeue
+        │  (not the start of          (about to run; emitted right
+        │   the test body)             before the test body runs)
+        │
+        │     [ between the twins, on the execution timeline, the test
+        │       body runs: context.log() emits test:log live, and
+        │       test:stdout / test:stderr stream with --test ]
+        │
+        ▼
+   ┌───────────────────────┐
+   │ test:pass │ test:fail │ ◄──── twin ────  test:complete
+   └───────────────────────┘   result         (details.passed says which)
+        │
+        ▼
+   test:diagnostic    the test's own context.diagnostic() messages,
+                      buffered while it runs, flushed after its result
+
+
+  SUITE / PARENT TEST   (each subtest is the whole LEAF flow above)
+  ───────────────────
+   test:start ─► [ full flow of each subtest ... ] ─►
+        test:plan (count = subtests) ─► test:pass │ test:fail ─►
+        test:diagnostic
+
+
+  RUN-LEVEL FINALE   (root, after all top-level tests)
+  ────────────────
+   test:plan         top-level count
+        │
+        ▼
+   test:diagnostic   x N   tests, suites, pass, fail, cancelled,
+        │                  skipped, todo, duration_ms (+ coverage errors)
+        ▼
+   test:coverage     only if coverage is enabled
+        │
+        ▼
+   test:summary  ─►  stream ends
+
+
+  INTERRUPTION   (SIGINT, e.g. Ctrl+C, while tests are still running)
+  ────────────
+   test:interrupted   the innermost tests still running at that moment
+        │             (not emitted if none were running)
+        ▼
+   the run exits immediately — the buffered spine never flushes, so
+   neither the finale above nor those tests' own results are emitted
+```
 
 ### Event: `'test:coverage'`
 
@@ -3772,7 +3998,9 @@ since the parent runner only knows about file-level tests. When using
 ### Event: `'test:log'`
 
 <!-- YAML
-added: v26.6.0
+added:
+ - v26.6.0
+ - v24.20.0
 -->
 
 * `data` {Object}
@@ -4235,6 +4463,46 @@ test('test', (t) => {
 });
 ```
 
+#### `context.assert.callCount(fn, times[, message])`
+
+<!-- YAML
+added: v26.12.0
+-->
+
+* `fn` {Function} A mock function created by the test runner's mocking API.
+* `times` {integer} The expected number of calls.
+* `message` {string} Optional error message.
+
+Asserts that the mock function `fn` has been called exactly `times` times.
+
+```js
+test('mock was called twice', (t) => {
+  const fn = t.mock.fn();
+  fn();
+  fn();
+  t.assert.callCount(fn, 2);
+});
+```
+
+#### `context.assert.called(fn[, message])`
+
+<!-- YAML
+added: v26.12.0
+-->
+
+* `fn` {Function} A mock function created by the test runner's mocking API.
+* `message` {string} Optional error message.
+
+Asserts that the mock function `fn` has been called at least once.
+
+```js
+test('mock was called', (t) => {
+  const fn = t.mock.fn();
+  fn();
+  t.assert.called(fn);
+});
+```
+
 #### `context.assert.fileSnapshot(value, path[, options])`
 
 <!-- YAML
@@ -4273,6 +4541,52 @@ This function differs from `context.assert.snapshot()` in the following ways:
 
 These differences allow snapshot files to better support features such as syntax
 highlighting.
+
+#### `context.assert.lastCalledWith(fn[, ...args])`
+
+<!-- YAML
+added: v26.12.0
+-->
+
+* `fn` {Function} A mock function created by the test runner's mocking API.
+* `...args` {any} The expected arguments.
+
+Asserts that the most recent call to the mock function `fn` received arguments
+deeply and strictly equal to `args`, using the same comparison as
+[`assert.deepStrictEqual()`][].
+
+```js
+test('mock was last called with arguments', (t) => {
+  const fn = t.mock.fn();
+  fn(1);
+  fn(2);
+  t.assert.lastCalledWith(fn, 2);
+});
+```
+
+#### `context.assert.nthCalledWith(fn, n[, ...args])`
+
+<!-- YAML
+added: v26.12.0
+-->
+
+* `fn` {Function} A mock function created by the test runner's mocking API.
+* `n` {integer} The 1-based index of the call to check.
+* `...args` {any} The expected arguments.
+
+Asserts that the `n`th call to the mock function `fn` received arguments
+deeply and strictly equal to `args`, using the same comparison as
+[`assert.deepStrictEqual()`][]. `n` starts at `1`, so
+`t.assert.nthCalledWith(fn, 1)` checks `fn.mock.calls[0]`.
+
+```js
+test('mock was called with arguments on the second call', (t) => {
+  const fn = t.mock.fn();
+  fn(1);
+  fn(2);
+  t.assert.nthCalledWith(fn, 2, 2);
+});
+```
 
 #### `context.assert.snapshot(value[, options])`
 
@@ -4330,7 +4644,9 @@ test('top level test', (t) => {
 ### `context.log(message[, data])`
 
 <!-- YAML
-added: v26.6.0
+added:
+ - v26.6.0
+ - v24.20.0
 -->
 
 * `message` {string} Message to be reported.
@@ -4448,7 +4764,9 @@ The unique identifier of the worker running the current test file. This value is
 derived from the `NODE_TEST_WORKER_ID` environment variable. When running tests
 with `--test-isolation=process` (the default), each test file runs in a separate
 child process and is assigned a worker ID from 1 to N, where N is the number of
-concurrent workers. When running with `--test-isolation=none`, all tests run in
+concurrent workers. A worker ID is never shared by two test files running at the
+same time. Once a test file finishes, its worker ID is reused by the next test
+file that starts. When running with `--test-isolation=none`, all tests run in
 the same process and the worker ID is always 1. This value is `undefined` when
 not running in a test context.
 
@@ -4457,7 +4775,7 @@ server ports) across concurrent test files:
 
 ```mjs
 import { test } from 'node:test';
-import { process } from 'node:process';
+import process from 'node:process';
 
 test('database operations', async (t) => {
   // Worker ID is available via context
@@ -4824,6 +5142,32 @@ The attempt number of the suite. This value is zero-based, so the first attempt 
 the second attempt is `1`, and so on. This property is useful in conjunction with the
 `--test-rerun-failures` option to determine the attempt number of the current run.
 
+### `context.tags`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+> Stability: 1.0 - Early development
+
+* Type: {string\[]}
+
+A frozen array of the suite's flattened lowercased tags, in declaration
+order, including any tags inherited from ancestor suites. Empty when the
+suite has no tags. See [Test tags][].
+
+### `context.workerId`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+* Type: {number|undefined}
+
+The unique identifier of the worker running the current test file. This value
+is derived from the `NODE_TEST_WORKER_ID` environment variable, and is
+`undefined` when not running in a test context.
+
 ### `context.diagnostic(message)`
 
 <!-- YAML
@@ -4846,7 +5190,9 @@ test.describe('my suite', (suite) => {
 ### `context.log(message[, data])`
 
 <!-- YAML
-added: v26.6.0
+added:
+ - v26.6.0
+ - v24.20.0
 -->
 
 * `message` {string} Message to be reported.
@@ -4889,6 +5235,7 @@ test.describe('my suite', (suite) => {
 [`--test-concurrency`]: cli.md#--test-concurrency
 [`--test-coverage-exclude`]: cli.md#--test-coverage-exclude
 [`--test-coverage-include`]: cli.md#--test-coverage-include
+[`--test-forbid-only`]: cli.md#--test-forbid-only
 [`--test-name-pattern`]: cli.md#--test-name-pattern
 [`--test-only`]: cli.md#--test-only
 [`--test-reporter-destination`]: cli.md#--test-reporter-destination
@@ -4906,6 +5253,7 @@ test.describe('my suite', (suite) => {
 [`SuiteContext`]: #class-suitecontext
 [`TestContext`]: #class-testcontext
 [`TracingChannel`]: diagnostics_channel.md#class-tracingchannel
+[`assert.deepStrictEqual()`]: assert.md#assertdeepstrictequalactual-expected-message
 [`assert.throws`]: assert.md#assertthrowsfn-error-message
 [`context.diagnostic`]: #contextdiagnosticmessage
 [`context.log`]: #contextlogmessage-data
@@ -4920,7 +5268,7 @@ test.describe('my suite', (suite) => {
 [`suite()`]: #suitename-options-fn
 [`test()`]: #testname-options-fn
 [code coverage]: #collecting-code-coverage
-[configuration files]: cli.md#--experimental-config-filepath---experimental-config-file
+[configuration files]: cli.md#--config-filepath---config-file
 [describe options]: #describename-options-fn
 [it options]: #testname-options-fn
 [module customization hooks]: module.md#customization-hooks

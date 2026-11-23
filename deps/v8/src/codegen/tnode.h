@@ -98,7 +98,7 @@ struct CppHeapPointerHandleT : Uint32T {
   static constexpr MachineType kMachineType = MachineType::Uint32();
 };
 
-struct IndirectPointerHandleT : Uint32T {
+struct TrustedPointerHandleT : Uint32T {
   static constexpr MachineType kMachineType = MachineType::Uint32();
 };
 
@@ -149,7 +149,7 @@ using TaggedT = IntPtrT;
 #endif
 
 #ifdef V8_ENABLE_SANDBOX
-using TrustedPointerT = IndirectPointerHandleT;
+using TrustedPointerT = TrustedPointerHandleT;
 #else
 using TrustedPointerT = TaggedT;
 #endif
@@ -194,11 +194,12 @@ struct MachineTypeOf<Object> {
   static constexpr MachineType value = MachineType::AnyTagged();
 };
 template <>
-struct MachineTypeOf<MaybeObject> {
+struct MachineTypeOf<MaybeWeak<HeapObject>> {
+  // TODO(leszeks): Can this be TaggedPointer?
   static constexpr MachineType value = MachineType::AnyTagged();
 };
 template <>
-struct MachineTypeOf<MaybeWeak<HeapObject>> {
+struct MachineTypeOf<Weak<HeapObject>> {
   // TODO(leszeks): Can this be TaggedPointer?
   static constexpr MachineType value = MachineType::AnyTagged();
 };
@@ -217,17 +218,17 @@ struct MachineTypeOf<TaggedIndex> {
 template <class HeapObjectSubtype>
 struct MachineTypeOf<
     HeapObjectSubtype,
-    std::enable_if_t<std::is_base_of_v<HeapObject, HeapObjectSubtype> ||
-                     std::is_base_of_v<HeapObjectLayout, HeapObjectSubtype>>> {
+    std::enable_if_t<std::is_base_of_v<HeapObject, HeapObjectSubtype>>> {
   static constexpr MachineType value = MachineType::TaggedPointer();
 };
 
 template <class HeapObjectSubtype>
 constexpr MachineType MachineTypeOf<
     HeapObjectSubtype,
-    std::enable_if_t<std::is_base_of_v<HeapObject, HeapObjectSubtype> ||
-                     std::is_base_of_v<HeapObjectLayout, HeapObjectSubtype>>>::
-    value;
+    std::enable_if_t<std::is_base_of_v<HeapObject, HeapObjectSubtype>>>::value;
+
+template <class T>
+struct MachineTypeOf<ReadOnly<T>> : MachineTypeOf<T> {};
 
 template <>
 struct MachineTypeOf<ExternalReference> {
@@ -375,6 +376,11 @@ template <class... Ts, class... Us>
 struct types_have_common_values<Union<Ts...>, Union<Us...>> {
   static const bool value =
       std::disjunction_v<types_have_common_values<Ts, Union<Us...>>...>;
+};
+// Extra special hack to allow conversion from MaybeObject to TaggedIndex.
+template <>
+struct types_have_common_values<TaggedIndex, MaybeObject> {
+  static const bool value = true;
 };
 
 // TNode<T> is an SSA value with the static type tag T, which is one of the

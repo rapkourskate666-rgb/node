@@ -8,11 +8,11 @@
 #include "src/sandbox/isolate.h"
 // Include the non-inl header before the rest of the headers.
 
-#include "src/execution/isolate-inl.h"
+#include "src/execution/isolate.h"
 #include "src/heap/heap-layout-inl.h"
 #include "src/objects/heap-object.h"
 #include "src/sandbox/external-pointer-table-inl.h"
-#include "src/sandbox/indirect-pointer-tag.h"
+#include "src/sandbox/trusted-pointer-tag.h"
 
 namespace v8::internal {
 
@@ -34,31 +34,34 @@ JSDispatchTable& IsolateForSandbox::GetJSDispatchTable() {
   return isolate_->js_dispatch_table();
 }
 
-CodePointerTable::Space* IsolateForSandbox::GetCodePointerTableSpaceFor(
-    Address owning_slot) {
-  return ReadOnlyHeap::Contains(owning_slot)
-             ? isolate_->read_only_heap()->code_pointer_space()
-             : isolate_->heap()->code_pointer_space();
-}
-
 TrustedPointerTable& IsolateForSandbox::GetTrustedPointerTableFor(
-    IndirectPointerTagRange tag_range) {
+    TrustedPointerTagRange tag_range) {
   return IsSharedTrustedPointerType(tag_range)
              ? isolate_->shared_trusted_pointer_table()
              : isolate_->trusted_pointer_table();
 }
 
 TrustedPointerTable::Space* IsolateForSandbox::GetTrustedPointerTableSpaceFor(
-    IndirectPointerTagRange tag_range) {
-  return IsSharedTrustedPointerType(tag_range)
-             ? isolate_->shared_trusted_pointer_space()
-             : isolate_->heap()->trusted_pointer_space();
+    TrustedPointerTagRange tag_range, Address host) {
+  if (V8_UNLIKELY(IsSharedTrustedPointerType(tag_range))) {
+    DCHECK(!ReadOnlyHeap::Contains(host));
+    return isolate_->shared_trusted_pointer_space();
+  }
+
+  if (V8_UNLIKELY(ReadOnlyHeap::Contains(host))) {
+    return isolate_->heap()->read_only_trusted_pointer_space();
+  }
+
+  return isolate_->heap()->trusted_pointer_space();
 }
 
 ExternalPointerTag IsolateForSandbox::GetExternalPointerTableTagFor(
     Tagged<HeapObject> witness, ExternalPointerHandle handle) {
-  DCHECK(!HeapLayout::InWritableSharedSpace(witness));
-  return isolate_->external_pointer_table().GetTag(handle);
+  if (HeapLayout::InWritableSharedSpace(witness)) {
+    return isolate_->shared_external_pointer_table().GetTag(handle);
+  } else {
+    return isolate_->external_pointer_table().GetTag(handle);
+  }
 }
 
 bool IsolateForSandbox::SharesPointerTablesWith(IsolateForSandbox other) const {
@@ -101,7 +104,7 @@ IsolateForPointerCompression::GetExternalPointerTableSpaceFor(
     return isolate_->heap()->read_only_external_pointer_space();
   }
 
-  if (HeapLayout::InYoungGeneration(HeapObject::FromAddress(host))) {
+  if (TrustedHeapLayout::InYoungGeneration(HeapObject::FromAddress(host))) {
     return isolate_->heap()->young_external_pointer_space();
   }
 

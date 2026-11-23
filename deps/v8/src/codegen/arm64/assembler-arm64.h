@@ -946,6 +946,33 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // Store-release exclusive half-word.
   void stlxrh(const Register& rs, const Register& rt, const Register& rn);
 
+  // Store-release byte (unscaled offset) [Armv8.4].
+  void stlurb(const Register& rt, const MemOperand& dst);
+
+  // Store-release half-word (unscaled offset) [Armv8.4].
+  void stlurh(const Register& rt, const MemOperand& dst);
+
+  // Store-release word or doubleword (unscaled offset) [Armv8.4].
+  void stlur(const Register& rt, const MemOperand& dst);
+
+  // Load-acquire RCpc byte (unscaled offset) [Armv8.4].
+  void ldapurb(const Register& rt, const MemOperand& src);
+
+  // Load-acquire RCpc signed byte (unscaled offset) [Armv8.4].
+  void ldapursb(const Register& rt, const MemOperand& src);
+
+  // Load-acquire RCpc half-word (unscaled offset) [Armv8.4].
+  void ldapurh(const Register& rt, const MemOperand& src);
+
+  // Load-acquire RCpc signed half-word (unscaled offset) [Armv8.4].
+  void ldapursh(const Register& rt, const MemOperand& src);
+
+  // Load-acquire RCpc word or doubleword (unscaled offset) [Armv8.4].
+  void ldapur(const Register& rt, const MemOperand& src);
+
+  // Load-acquire RCpc signed word (unscaled offset) [Armv8.4].
+  void ldapursw(const Register& rt, const MemOperand& src);
+
   // Compare and Swap word or doubleword in memory [Armv8.1].
   void cas(const Register& rs, const Register& rt, const MemOperand& src);
 
@@ -2767,6 +2794,16 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void eor3(const VRegister& vd, const VRegister& vn, const VRegister& vm,
             const VRegister& va);
 
+  // 64-bit exclusive-OR and rotate.
+  void xar(const VRegister& vd, const VRegister& vn, const VRegister& vm,
+           unsigned imm);
+
+  // Gather lower bits from positions selected by bitmask
+  void bext(const ZRegister& zd, const ZRegister& zn, const ZRegister& zm);
+
+  // Multiply (unpredicated).
+  void mul(const ZRegister& zd, const ZRegister& zn, const ZRegister& zm);
+
   // Copy a string into the instruction stream, including the terminating
   // nullptr character. The instruction pointer (pc_) is then aligned correctly
   // for subsequent instructions.
@@ -3022,6 +3059,22 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     }
   }
 
+  static Instr SVESize(const ZRegister& zd) {
+    DCHECK(zd.HasLaneSize());
+    switch (zd.LaneSizeInBytes()) {
+      case 1:
+        return SVE_B;
+      case 2:
+        return SVE_H;
+      case 4:
+        return SVE_S;
+      case 8:
+        return SVE_D;
+      default:
+        UNREACHABLE();
+    }
+  }
+
   static Instr ImmNEONHLM(int index, int num_bits) {
     int h, l, m;
     if (num_bits == 3) {
@@ -3189,6 +3242,8 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   inline const Register& AppropriateZeroRegFor(const CPURegister& reg) const;
 
   void LoadStore(const CPURegister& rt, const MemOperand& addr, LoadStoreOp op);
+  void LoadStoreRCpcUnscaledOffset(const Register& rt, const MemOperand& addr,
+                                   LoadStoreRCpcUnscaledOffsetOp op);
   inline void LoadStoreScaledImmOffset(Instr memop, int offset, unsigned size);
   inline void LoadStoreUnscaledImmOffset(Instr memop, int offset);
   inline void LoadStoreWRegOffset(Instr memop, const Register& regoffset);
@@ -3513,9 +3568,6 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 #endif
 
  private:
-  // Avoid overflows for displacements etc.
-  static const int kMaximalBufferSize = 512 * MB;
-
   // If a veneer is emitted for a branch instruction, that instruction must be
   // removed from the associated label's link chain so that the assembler does
   // not later attempt (likely unsuccessfully) to patch it to branch directly to

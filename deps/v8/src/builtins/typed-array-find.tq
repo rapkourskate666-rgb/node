@@ -7,7 +7,7 @@
 namespace typed_array {
 const kBuiltinNameFind: constexpr string = '%TypedArray%.prototype.find';
 
-// https://tc39.github.io/ecma262/#sec-%typedarray%.prototype.find
+// https://tc39.es/ecma262/#sec-%typedarray%.prototype.find
 transitioning macro FindAllElements(
     implicit context: Context)(
     attachedArrayAndLength: typed_array::ValidJSTypedArrayAndLength,
@@ -51,7 +51,7 @@ transitioning macro FindAllElements(
   return Undefined;
 }
 
-// https://tc39.github.io/ecma262/#sec-%typedarray%.prototype.find
+// https://tc39.es/ecma262/#sec-%typedarray%.prototype.find
 transitioning javascript builtin TypedArrayPrototypeFind(
     js-implicit context: NativeContext, receiver: JSAny)(...arguments): JSAny {
   // arguments[0] = callback
@@ -71,7 +71,7 @@ transitioning javascript builtin TypedArrayPrototypeFind(
   } label NotCallable deferred {
     ThrowCalledNonCallable(arguments[0]);
   } label NotTypedArray deferred {
-    ThrowTypeError(MessageTemplate::kNotTypedArray, kBuiltinNameFind);
+    ThrowTypeError(MessageTemplate::kNotTypedArray);
   } label Fail deferred {
     ThrowTypeError(
         MessageTemplate::kTypedArrayValidateErrorOperation, kBuiltinNameFind);

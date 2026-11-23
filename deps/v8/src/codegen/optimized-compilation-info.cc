@@ -61,9 +61,10 @@ OptimizedCompilationInfo::OptimizedCompilationInfo(
   }
 }
 
-OptimizedCompilationInfo::OptimizedCompilationInfo(
-    base::Vector<const char> debug_name, Zone* zone, CodeKind code_kind,
-    Builtin builtin)
+OptimizedCompilationInfo::OptimizedCompilationInfo(std::string_view debug_name,
+                                                   Zone* zone,
+                                                   CodeKind code_kind,
+                                                   Builtin builtin)
     : isolate_unsafe_(nullptr),
       code_kind_(code_kind),
       builtin_(builtin),
@@ -74,7 +75,7 @@ OptimizedCompilationInfo::OptimizedCompilationInfo(
                  (code_kind_ == CodeKind::BUILTIN ||
                   code_kind_ == CodeKind::BYTECODE_HANDLER));
   SetTracingFlags(
-      PassesFilter(debug_name, base::CStrVector(v8_flags.trace_turbo_filter)));
+      PassesFilter(debug_name, v8_flags.trace_turbo_filter.value()));
   ConfigureFlags();
   DCHECK(!has_shared_info());
 }
@@ -174,11 +175,9 @@ std::unique_ptr<char[]> OptimizedCompilationInfo::GetDebugName() const {
   if (!shared_info().is_null()) {
     return shared_info()->DebugNameCStr();
   }
-  base::Vector<const char> name_vec = debug_name_;
-  if (name_vec.empty()) name_vec = base::ArrayVector("unknown");
-  std::unique_ptr<char[]> name(new char[name_vec.length() + 1]);
-  memcpy(name.get(), name_vec.begin(), name_vec.length());
-  name[name_vec.length()] = '\0';
+  const std::string& name_str = debug_name_.empty() ? "unknown" : debug_name_;
+  std::unique_ptr<char[]> name(new char[name_str.length() + 1]);
+  memcpy(name.get(), name_str.c_str(), name_str.length() + 1);
   return name;
 }
 

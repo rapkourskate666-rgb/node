@@ -32,7 +32,7 @@ TEST_F(DebugPropertyIteratorTest, WalksPrototypeChain) {
                   .FromMaybe(false));
 
   Local<Object> prototype = Object::New(isolate());
-  ASSERT_TRUE(object->SetPrototypeV2(context(), prototype).FromMaybe(false));
+  ASSERT_TRUE(object->SetPrototype(context(), prototype).FromMaybe(false));
   ASSERT_TRUE(prototype
                   ->CreateDataProperty(context(),
                                        String::NewFromUtf8Literal(
@@ -45,7 +45,7 @@ TEST_F(DebugPropertyIteratorTest, WalksPrototypeChain) {
   ASSERT_FALSE(iterator->Done());
   EXPECT_TRUE(iterator->is_own());
   char name_buffer[100];
-  iterator->name().As<v8::String>()->WriteUtf8V2(
+  iterator->name().As<v8::String>()->WriteUtf8(
       isolate(), name_buffer, sizeof(name_buffer),
       String::WriteFlags::kNullTerminate);
   EXPECT_EQ("own_property", std::string(name_buffer));
@@ -53,7 +53,7 @@ TEST_F(DebugPropertyIteratorTest, WalksPrototypeChain) {
 
   ASSERT_FALSE(iterator->Done());
   EXPECT_TRUE(iterator->is_own());
-  iterator->name().As<v8::String>()->WriteUtf8V2(
+  iterator->name().As<v8::String>()->WriteUtf8(
       isolate(), name_buffer, sizeof(name_buffer),
       String::WriteFlags::kNullTerminate);
   EXPECT_EQ("own_property", std::string(name_buffer));
@@ -61,7 +61,7 @@ TEST_F(DebugPropertyIteratorTest, WalksPrototypeChain) {
 
   ASSERT_FALSE(iterator->Done());
   EXPECT_FALSE(iterator->is_own());
-  iterator->name().As<v8::String>()->WriteUtf8V2(
+  iterator->name().As<v8::String>()->WriteUtf8(
       isolate(), name_buffer, sizeof(name_buffer),
       String::WriteFlags::kNullTerminate);
   EXPECT_EQ("prototype_property", std::string(name_buffer));
@@ -98,7 +98,7 @@ TEST_F(DebugPropertyIteratorTest, DoestWalksPrototypeChainIfInaccesible) {
   ASSERT_FALSE(iterator->Done());
   EXPECT_TRUE(iterator->is_own());
   char name_buffer[100];
-  iterator->name().As<v8::String>()->WriteUtf8V2(
+  iterator->name().As<v8::String>()->WriteUtf8(
       isolate(), name_buffer, sizeof(name_buffer),
       String::WriteFlags::kNullTerminate);
   EXPECT_EQ("own_property", std::string(name_buffer));
@@ -156,44 +156,6 @@ TEST_F(DebugPropertyIteratorTest, SkipsIndicesOnTypedArrays) {
     ASSERT_TRUE(iterator->Advance().FromMaybe(false));
   }
 }
-
-#if V8_CAN_CREATE_SHARED_HEAP_BOOL
-
-using SharedObjectDebugPropertyIteratorTest = TestJSSharedMemoryWithContext;
-
-TEST_F(SharedObjectDebugPropertyIteratorTest, SharedStruct) {
-  TryCatch try_catch(isolate());
-
-  const char source_text[] =
-      "let S = new SharedStructType(['field', 'another_field']);"
-      "new S();";
-
-  auto shared_struct =
-      RunJS(context(), source_text)->ToObject(context()).ToLocalChecked();
-  auto iterator = PropertyIterator::Create(context(), shared_struct);
-
-  ASSERT_NE(iterator, nullptr);
-  ASSERT_FALSE(iterator->Done());
-  EXPECT_TRUE(iterator->is_own());
-  char name_buffer[64];
-  iterator->name().As<v8::String>()->WriteUtf8V2(
-      isolate(), name_buffer, sizeof(name_buffer),
-      String::WriteFlags::kNullTerminate);
-  EXPECT_EQ("field", std::string(name_buffer));
-  ASSERT_TRUE(iterator->Advance().FromMaybe(false));
-
-  ASSERT_FALSE(iterator->Done());
-  EXPECT_TRUE(iterator->is_own());
-  iterator->name().As<v8::String>()->WriteUtf8V2(
-      isolate(), name_buffer, sizeof(name_buffer),
-      String::WriteFlags::kNullTerminate);
-  EXPECT_EQ("another_field", std::string(name_buffer));
-  ASSERT_TRUE(iterator->Advance().FromMaybe(false));
-
-  ASSERT_FALSE(iterator->Done());
-}
-
-#endif  // V8_CAN_CREATE_SHARED_HEAP_BOOL
 
 }  // namespace
 }  // namespace debug

@@ -16,6 +16,7 @@
 
 namespace v8 {
 namespace internal {
+namespace regexp {
 
 /*
  * This assembler uses the following register assignment convention
@@ -87,7 +88,7 @@ RegExpMacroAssemblerIA32::RegExpMacroAssemblerIA32(Isolate* isolate, Zone* zone,
                                                    int registers_to_save)
     : NativeRegExpMacroAssembler(isolate, zone, mode),
       masm_(std::make_unique<MacroAssembler>(
-          isolate, CodeObjectRequired::kYes,
+          isolate, CodeObjectRequired{true},
           NewAssemblerBuffer(kRegExpCodeSize))),
       no_root_array_scope_(masm_.get()),
       num_registers_(registers_to_save),
@@ -120,7 +121,6 @@ void RegExpMacroAssemblerIA32::AdvanceCurrentPosition(int by) {
   }
 }
 
-
 void RegExpMacroAssemblerIA32::AdvanceRegister(int reg, int by) {
   DCHECK_LE(0, reg);
   DCHECK_GT(num_registers_, reg);
@@ -128,7 +128,6 @@ void RegExpMacroAssemblerIA32::AdvanceRegister(int reg, int by) {
     __ add(register_location(reg), Immediate(by));
   }
 }
-
 
 void RegExpMacroAssemblerIA32::Backtrack() {
   CheckPreemption();
@@ -155,11 +154,7 @@ void RegExpMacroAssemblerIA32::Backtrack() {
   __ jmp(ebx);
 }
 
-
-void RegExpMacroAssemblerIA32::Bind(Label* label) {
-  __ bind(label);
-}
-
+void RegExpMacroAssemblerIA32::Bind(Label* label) { __ bind(label); }
 
 void RegExpMacroAssemblerIA32::CheckCharacter(uint32_t c, Label* on_equal) {
   __ cmp(current_character(), c);
@@ -196,7 +191,7 @@ void RegExpMacroAssemblerIA32::CheckFixedLengthLoop(Label* on_equal) {
   __ cmp(edi, Operand(backtrack_stackpointer(), 0));
   __ j(not_equal, &fallthrough, Label::kNear);
   __ add(backtrack_stackpointer(), Immediate(kSystemPointerSize));  // Pop.
-  BranchOrBacktrack(on_equal);
+  GoTo(on_equal);
   __ bind(&fallthrough);
 }
 
@@ -306,7 +301,7 @@ void RegExpMacroAssemblerIA32::CheckNotBackReferenceIgnoreCase(
     // Restore original values before failing.
     __ pop(backtrack_stackpointer());
     __ pop(edi);
-    BranchOrBacktrack(on_no_match);
+    GoTo(on_no_match);
 
     __ bind(&success);
     // Restore original value before continuing.
@@ -444,7 +439,7 @@ void RegExpMacroAssemblerIA32::CheckNotBackReference(int start_reg,
   __ bind(&fail);
   // Restore backtrack stackpointer.
   __ pop(backtrack_stackpointer());
-  BranchOrBacktrack(on_no_match);
+  GoTo(on_no_match);
 
   __ bind(&success);
   // Move current character position to position after match.
@@ -461,16 +456,13 @@ void RegExpMacroAssemblerIA32::CheckNotBackReference(int start_reg,
   __ bind(&fallthrough);
 }
 
-
 void RegExpMacroAssemblerIA32::CheckNotCharacter(uint32_t c,
                                                  Label* on_not_equal) {
   __ cmp(current_character(), c);
   BranchOrBacktrack(not_equal, on_not_equal);
 }
 
-
-void RegExpMacroAssemblerIA32::CheckCharacterAfterAnd(uint32_t c,
-                                                      uint32_t mask,
+void RegExpMacroAssemblerIA32::CheckCharacterAfterAnd(uint32_t c, uint32_t mask,
                                                       Label* on_equal) {
   if (c == 0) {
     __ test(current_character(), Immediate(mask));
@@ -481,7 +473,6 @@ void RegExpMacroAssemblerIA32::CheckCharacterAfterAnd(uint32_t c,
   }
   BranchOrBacktrack(equal, on_equal);
 }
-
 
 void RegExpMacroAssemblerIA32::CheckNotCharacterAfterAnd(uint32_t c,
                                                          uint32_t mask,
@@ -560,9 +551,8 @@ bool RegExpMacroAssemblerIA32::CheckCharacterNotInRangeArray(
   return true;
 }
 
-void RegExpMacroAssemblerIA32::CheckBitInTable(
-    Handle<ByteArray> table,
-    Label* on_bit_set) {
+void RegExpMacroAssemblerIA32::CheckBitInTable(Handle<ByteArray> table,
+                                               Label* on_bit_set) {
   __ mov(eax, Immediate(table));
   Register index = current_character();
   if (mode() != LATIN1 || kTableMask != String::kMaxOneByteCharCode) {
@@ -577,11 +567,12 @@ void RegExpMacroAssemblerIA32::CheckBitInTable(
 
 void RegExpMacroAssemblerIA32::SkipUntilBitInTable(
     int cp_offset, Handle<ByteArray> table, Handle<ByteArray> nibble_table,
-    int advance_by, Label* on_match, Label* on_no_match) {
+    int advance_by, int bounds_check_offset, Label* on_match,
+    Label* on_no_match) {
   // TODO(pthier): Optimize. Table can be loaded outside of the loop.
   Label again;
   Bind(&again);
-  LoadCurrentCharacter(cp_offset, on_no_match, true);
+  LoadCurrentCharacter(cp_offset, on_no_match, true, 1, bounds_check_offset);
   CheckBitInTable(table, on_match);
   AdvanceCurrentPosition(advance_by);
   GoTo(&again);
@@ -716,40 +707,30 @@ void RegExpMacroAssemblerIA32::Fail() {
 }
 
 void RegExpMacroAssemblerIA32::LoadRegExpStackPointerFromMemory(Register dst) {
-  ExternalReference ref =
-      ExternalReference::address_of_regexp_stack_stack_pointer(isolate());
-  __ mov(dst, __ ExternalReferenceAsOperand(ref, dst));
+  __ mov(dst, RegExpStackField(Stack::kStackPointerOffset));
 }
 
-void RegExpMacroAssemblerIA32::StoreRegExpStackPointerToMemory(
-    Register src, Register scratch) {
-  ExternalReference ref =
-      ExternalReference::address_of_regexp_stack_stack_pointer(isolate());
-  __ mov(__ ExternalReferenceAsOperand(ref, scratch), src);
+void RegExpMacroAssemblerIA32::StoreRegExpStackPointerToMemory(Register src) {
+  __ mov(RegExpStackField(Stack::kStackPointerOffset), src);
 }
 
 void RegExpMacroAssemblerIA32::PushRegExpBasePointer(Register stack_pointer,
                                                      Register scratch) {
-  ExternalReference ref =
-      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
-  __ mov(scratch, __ ExternalReferenceAsOperand(ref, scratch));
+  __ mov(scratch, RegExpStackField(Stack::kMemoryTopOffset));
   __ sub(scratch, stack_pointer);
   __ mov(Operand(ebp, kRegExpStackBasePointerOffset), scratch);
 }
 
 void RegExpMacroAssemblerIA32::PopRegExpBasePointer(Register stack_pointer_out,
                                                     Register scratch) {
-  ExternalReference ref =
-      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
   __ mov(scratch, Operand(ebp, kRegExpStackBasePointerOffset));
-  __ mov(stack_pointer_out,
-         __ ExternalReferenceAsOperand(ref, stack_pointer_out));
+  __ mov(stack_pointer_out, RegExpStackField(Stack::kMemoryTopOffset));
   __ sub(stack_pointer_out, scratch);
-  StoreRegExpStackPointerToMemory(stack_pointer_out, scratch);
+  StoreRegExpStackPointerToMemory(stack_pointer_out);
 }
 
 DirectHandle<HeapObject> RegExpMacroAssemblerIA32::GetCode(
-    DirectHandle<String> source, RegExpFlags flags) {
+    DirectHandle<RegExpData> re_data, Flags flags) {
   Label return_eax;
   // Finalize code - write the entry point code now we know how many
   // registers we need.
@@ -817,12 +798,12 @@ DirectHandle<HeapObject> RegExpMacroAssemblerIA32::GetCode(
     __ jmp(&return_eax);
 
     __ bind(&stack_limit_hit);
-    __ push(backtrack_stackpointer());
+    StoreRegExpStackPointerToMemory(backtrack_stackpointer());
     CallCheckStackGuardState(ebx, extra_space_for_variables);
-    __ pop(backtrack_stackpointer());
     __ or_(eax, eax);
     // If returned value is non-zero, we exit with the returned value as result.
     __ j(not_zero, &return_eax);
+    LoadRegExpStackPointerFromMemory(backtrack_stackpointer());
 
     __ bind(&stack_ok);
   }
@@ -1015,7 +996,7 @@ DirectHandle<HeapObject> RegExpMacroAssemblerIA32::GetCode(
   if (check_preempt_label_.is_linked()) {
     SafeCallTarget(&check_preempt_label_);
 
-    StoreRegExpStackPointerToMemory(backtrack_stackpointer(), edi);
+    StoreRegExpStackPointerToMemory(backtrack_stackpointer());
 
     __ push(edi);
 
@@ -1043,7 +1024,7 @@ DirectHandle<HeapObject> RegExpMacroAssemblerIA32::GetCode(
     __ push(esi);
     __ push(edi);
 
-    StoreRegExpStackPointerToMemory(backtrack_stackpointer(), edi);
+    StoreRegExpStackPointerToMemory(backtrack_stackpointer());
 
     // Call GrowStack(isolate).
     static const int kNumArguments = 1;
@@ -1085,64 +1066,52 @@ DirectHandle<HeapObject> RegExpMacroAssemblerIA32::GetCode(
           .set_self_reference(masm_->CodeObject())
           .set_empty_source_position_table()
           .Build();
-  PROFILE(masm_->isolate(),
-          RegExpCodeCreateEvent(Cast<AbstractCode>(code), source, flags));
+  LogCode(masm_->isolate(), code, re_data, flags);
   return Cast<HeapObject>(code);
 }
 
-void RegExpMacroAssemblerIA32::GoTo(Label* to) { BranchOrBacktrack(to); }
+void RegExpMacroAssemblerIA32::GoTo(Label* to) {
+  __ jmp(to ? to : &backtrack_label_);
+}
 
-void RegExpMacroAssemblerIA32::IfRegisterGE(int reg,
-                                            int comparand,
+void RegExpMacroAssemblerIA32::IfRegisterGE(int reg, int comparand,
                                             Label* if_ge) {
   __ cmp(register_location(reg), Immediate(comparand));
   BranchOrBacktrack(greater_equal, if_ge);
 }
 
-
-void RegExpMacroAssemblerIA32::IfRegisterLT(int reg,
-                                            int comparand,
+void RegExpMacroAssemblerIA32::IfRegisterLT(int reg, int comparand,
                                             Label* if_lt) {
   __ cmp(register_location(reg), Immediate(comparand));
   BranchOrBacktrack(less, if_lt);
 }
 
-
-void RegExpMacroAssemblerIA32::IfRegisterEqPos(int reg,
-                                               Label* if_eq) {
+void RegExpMacroAssemblerIA32::IfRegisterEqPos(int reg, Label* if_eq) {
   __ cmp(edi, register_location(reg));
   BranchOrBacktrack(equal, if_eq);
 }
 
-
 RegExpMacroAssembler::IrregexpImplementation
-    RegExpMacroAssemblerIA32::Implementation() {
+RegExpMacroAssemblerIA32::Implementation() {
   return kIA32Implementation;
 }
 
-
-void RegExpMacroAssemblerIA32::PopCurrentPosition() {
-  Pop(edi);
-}
-
+void RegExpMacroAssemblerIA32::PopCurrentPosition() { Pop(edi); }
 
 void RegExpMacroAssemblerIA32::PopRegister(int register_index) {
   Pop(eax);
   __ mov(register_location(register_index), eax);
 }
 
-
 void RegExpMacroAssemblerIA32::PushBacktrack(Label* label) {
   Push(Immediate::CodeRelativeOffset(label));
   CheckStackLimit();
 }
 
-
 void RegExpMacroAssemblerIA32::PushCurrentPosition() {
   Push(edi);
   CheckStackLimit();
 }
-
 
 void RegExpMacroAssemblerIA32::PushRegister(int register_index,
                                             StackCheckFlag check_stack_limit) {
@@ -1155,29 +1124,22 @@ void RegExpMacroAssemblerIA32::PushRegister(int register_index,
   }
 }
 
-
 void RegExpMacroAssemblerIA32::ReadCurrentPositionFromRegister(int reg) {
   __ mov(edi, register_location(reg));
 }
 
 void RegExpMacroAssemblerIA32::WriteStackPointerToRegister(int reg) {
-  ExternalReference stack_top_address =
-      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
-  __ mov(eax, __ ExternalReferenceAsOperand(stack_top_address, eax));
+  __ mov(eax, RegExpStackField(Stack::kMemoryTopOffset));
   __ sub(eax, backtrack_stackpointer());
   __ mov(register_location(reg), eax);
 }
 
 void RegExpMacroAssemblerIA32::ReadStackPointerFromRegister(int reg) {
-  ExternalReference stack_top_address =
-      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
-  __ mov(backtrack_stackpointer(),
-         __ ExternalReferenceAsOperand(stack_top_address,
-                                       backtrack_stackpointer()));
+  __ mov(backtrack_stackpointer(), RegExpStackField(Stack::kMemoryTopOffset));
   __ sub(backtrack_stackpointer(), register_location(reg));
 }
 
-void RegExpMacroAssemblerIA32::SetCurrentPositionFromEnd(int by)  {
+void RegExpMacroAssemblerIA32::SetCurrentPositionFromEnd(int by) {
   Label after_position;
   __ cmp(edi, -by * char_size());
   __ j(greater_equal, &after_position, Label::kNear);
@@ -1189,18 +1151,15 @@ void RegExpMacroAssemblerIA32::SetCurrentPositionFromEnd(int by)  {
   __ bind(&after_position);
 }
 
-
 void RegExpMacroAssemblerIA32::SetRegister(int register_index, int to) {
   DCHECK(register_index >= num_saved_registers_);  // Reserved for positions!
   __ mov(register_location(register_index), Immediate(to));
 }
 
-
 bool RegExpMacroAssemblerIA32::Succeed() {
   __ jmp(&success_label_);
   return global();
 }
-
 
 void RegExpMacroAssemblerIA32::WriteCurrentPositionToRegister(int reg,
                                                               int cp_offset) {
@@ -1211,7 +1170,6 @@ void RegExpMacroAssemblerIA32::WriteCurrentPositionToRegister(int reg,
     __ mov(register_location(reg), eax);
   }
 }
-
 
 void RegExpMacroAssemblerIA32::ClearRegisters(int reg_from, int reg_to) {
   DCHECK(reg_from <= reg_to);
@@ -1245,6 +1203,14 @@ Operand RegExpMacroAssemblerIA32::StaticVariable(const ExternalReference& ext) {
   return Operand(ext.address(), RelocInfo::EXTERNAL_REFERENCE);
 }
 
+Operand RegExpMacroAssemblerIA32::RegExpStackField(int offset) {
+  ExternalReference ref =
+      ExternalReference::address_of_regexp_stack_thread_local(isolate());
+  // Not an external reference of its own: the field address is derived from
+  // one, and regexp code is never serialized.
+  return Operand(ref.address() + offset, RelocInfo::NO_INFO);
+}
+
 // Helper function for reading a value out of a stack frame.
 template <typename T>
 static T& frame_entry(Address re_frame, int frame_offset) {
@@ -1261,8 +1227,8 @@ int RegExpMacroAssemblerIA32::CheckStackGuardState(Address* return_address,
                                                    Address raw_code,
                                                    Address re_frame,
                                                    uintptr_t extra_space) {
-  Tagged<InstructionStream> re_code =
-      SbxCast<InstructionStream>(Tagged<Object>(raw_code));
+  Tagged<InstructionStream> re_code = SbxCast<InstructionStream>(
+      TrustedCast<TrustedObject>(Tagged<Object>(raw_code)));
   return NativeRegExpMacroAssembler::CheckStackGuardState(
       frame_entry<Isolate*>(re_frame, kIsolateOffset),
       frame_entry<int>(re_frame, kStartIndexOffset),
@@ -1284,7 +1250,6 @@ Operand RegExpMacroAssemblerIA32::register_location(int register_index) {
                  kRegisterZeroOffset - register_index * kSystemPointerSize);
 }
 
-
 void RegExpMacroAssemblerIA32::CheckPosition(int cp_offset,
                                              Label* on_outside_input) {
   if (cp_offset >= 0) {
@@ -1295,14 +1260,6 @@ void RegExpMacroAssemblerIA32::CheckPosition(int cp_offset,
     __ cmp(eax, Operand(ebp, kStringStartMinusOneOffset));
     BranchOrBacktrack(less_equal, on_outside_input);
   }
-}
-
-void RegExpMacroAssemblerIA32::BranchOrBacktrack(Label* to) {
-  if (to == nullptr) {
-    Backtrack();
-    return;
-  }
-  __ jmp(to);
 }
 
 void RegExpMacroAssemblerIA32::BranchOrBacktrack(Condition condition,
@@ -1317,18 +1274,13 @@ void RegExpMacroAssemblerIA32::SafeCall(Label* to) {
   __ bind(&return_to);
 }
 
-
 void RegExpMacroAssemblerIA32::SafeReturn() {
   __ pop(ebx);
   __ add(ebx, Immediate(masm_->CodeObject()));
   __ jmp(ebx);
 }
 
-
-void RegExpMacroAssemblerIA32::SafeCallTarget(Label* name) {
-  __ bind(name);
-}
-
+void RegExpMacroAssemblerIA32::SafeCallTarget(Label* name) { __ bind(name); }
 
 void RegExpMacroAssemblerIA32::Push(Register source) {
   DCHECK(source != backtrack_stackpointer());
@@ -1337,13 +1289,11 @@ void RegExpMacroAssemblerIA32::Push(Register source) {
   __ mov(Operand(backtrack_stackpointer(), 0), source);
 }
 
-
 void RegExpMacroAssemblerIA32::Push(Immediate value) {
   // Notice: This updates flags, unlike normal Push.
   __ sub(backtrack_stackpointer(), Immediate(kSystemPointerSize));
   __ mov(Operand(backtrack_stackpointer(), 0), value);
 }
-
 
 void RegExpMacroAssemblerIA32::Pop(Register target) {
   DCHECK(target != backtrack_stackpointer());
@@ -1351,7 +1301,6 @@ void RegExpMacroAssemblerIA32::Pop(Register target) {
   // Notice: This updates flags, unlike normal Pop.
   __ add(backtrack_stackpointer(), Immediate(kSystemPointerSize));
 }
-
 
 void RegExpMacroAssemblerIA32::CheckPreemption() {
   // Check for preemption.
@@ -1366,12 +1315,9 @@ void RegExpMacroAssemblerIA32::CheckPreemption() {
   __ bind(&no_preempt);
 }
 
-
 void RegExpMacroAssemblerIA32::CheckStackLimit() {
   Label no_stack_overflow;
-  ExternalReference stack_limit =
-      ExternalReference::address_of_regexp_stack_limit_address(isolate());
-  __ cmp(backtrack_stackpointer(), StaticVariable(stack_limit));
+  __ cmp(backtrack_stackpointer(), RegExpStackField(Stack::kLimitOffset));
   __ j(above, &no_stack_overflow, Label::kNear);
 
   SafeCall(&stack_overflow_label_);
@@ -1383,9 +1329,8 @@ void RegExpMacroAssemblerIA32::AssertAboveStackLimitMinusSlack() {
   DCHECK(v8_flags.slow_debug_code);
   Label no_stack_overflow;
   ASM_CODE_COMMENT_STRING(masm_.get(), "AssertAboveStackLimitMinusSlack");
-  auto l = ExternalReference::address_of_regexp_stack_limit_address(isolate());
-  __ mov(eax, __ ExternalReferenceAsOperand(l, eax));
-  __ sub(eax, Immediate(RegExpStack::kStackLimitSlackSize));
+  __ mov(eax, RegExpStackField(Stack::kLimitOffset));
+  __ sub(eax, Immediate(Stack::kStackLimitSlackSize));
   __ cmp(backtrack_stackpointer(), eax);
   __ j(above, &no_stack_overflow, Label::kNear);
   __ int3();
@@ -1416,9 +1361,9 @@ void RegExpMacroAssemblerIA32::LoadCurrentCharacterUnchecked(int cp_offset,
   }
 }
 
-
 #undef __
 
+}  // namespace regexp
 }  // namespace internal
 }  // namespace v8
 

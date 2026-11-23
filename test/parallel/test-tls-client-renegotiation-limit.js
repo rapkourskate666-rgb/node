@@ -25,13 +25,13 @@ if (!common.hasCrypto) {
   common.skip('missing crypto');
 }
 
-const { opensslCli } = require('../common/crypto');
+const { opensslCli, isBoringSSL } = require('../common/crypto');
 
 if (!opensslCli) {
   common.skip('node compiled without OpenSSL CLI.');
 }
 
-if (process.features.openssl_is_boringssl) {
+if (isBoringSSL) {
   require('../common/boringssl').testRenegotiationUnsupported();
   return;
 }
@@ -60,6 +60,7 @@ function test(next) {
   const options = {
     cert: fixtures.readKey('rsa_cert.crt'),
     key: fixtures.readKey('rsa_private.pem'),
+    allowRenegotiation: true,
   };
 
   const server = tls.createServer(options, common.mustCall((conn) => {
@@ -76,6 +77,7 @@ function test(next) {
       host: server.address().host,
       port: server.address().port,
       rejectUnauthorized: false,
+      allowRenegotiation: true,
     };
     const client = tls.connect(options, spam);
 

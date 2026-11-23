@@ -15,6 +15,7 @@
 #include "ncrypto.h"
 
 #include <algorithm>
+#include <array>
 #include <climits>
 #include <cstdio>
 #include <memory>
@@ -22,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#if OPENSSL_VERSION_NUMBER >= 0x30200000L && !defined(OPENSSL_NO_COMP_ALG)
+#if defined(TLSEXT_comp_cert_limit) && !defined(OPENSSL_NO_COMP_ALG)
 #define NODE_OPENSSL_HAS_CERT_COMP 1
 #endif
 
@@ -50,12 +51,14 @@ namespace node::crypto {
 constexpr size_t kSizeOf_DH = 144;
 constexpr size_t kSizeOf_EC_KEY = 80;
 constexpr size_t kSizeOf_EVP_CIPHER_CTX = 168;
+constexpr size_t kSizeOf_EVP_MAC_CTX = 16;
 constexpr size_t kSizeOf_EVP_MD_CTX = 48;
 constexpr size_t kSizeOf_EVP_PKEY = 72;
 constexpr size_t kSizeOf_EVP_PKEY_CTX = 80;
 constexpr size_t kSizeOf_HMAC_CTX = 32;
 constexpr size_t kSizeOf_SSL_CTX = 240;
 constexpr size_t kSizeOf_X509 = 128;
+constexpr size_t kSizeOf_X509_REQ = 128;
 
 template <typename T>
 constexpr T NumBitsToBytes(T bits) {
@@ -66,6 +69,8 @@ constexpr T NumBitsToBytes(T bits) {
 // what went wrong, or std::nullopt when there was nothing to do or the
 // options were applied successfully.
 std::optional<std::string> ProcessFipsOptions();
+bool IsFipsEnabled();
+void InstallFipsIndicatorCallback();
 
 bool InitCryptoOnce(v8::Isolate* isolate);
 void InitCryptoOnce();
@@ -109,14 +114,16 @@ void Decode(const v8::FunctionCallbackInfo<v8::Value>& args,
   V(DERIVING_BITS_FAILED, "Deriving bits failed")                              \
   V(ECDH_FAILED, "ECDH key agreement failed")                                  \
   V(ENCAPSULATION_FAILED, "Encapsulation failed")                              \
-  V(ENGINE_NOT_FOUND, "Engine \"%s\" was not found")                           \
   V(HKDF_FAILED, "HKDF derivation failed")                                     \
   V(INVALID_KEY_TYPE, "Invalid key type")                                      \
   V(KEY_GENERATION_JOB_FAILED, "Key generation job failed")                    \
   V(KMAC_FAILED, "KMAC derivation failed")                                     \
   V(OK, "Ok")                                                                  \
   V(PBKDF2_FAILED, "PBKDF2 derivation failed")                                 \
-  V(SCRYPT_FAILED, "scrypt derivation failed")
+  V(SCRYPT_FAILED, "scrypt derivation failed")                                 \
+  V(X509_GENERATION_FAILED, "X.509 certificate generation failed")             \
+  V(X509_REQUEST_VERIFICATION_FAILED,                                          \
+    "Certificate request signature verification failed")
 
 enum class NodeCryptoError {
 #define V(CODE, DESCRIPTION) CODE,
@@ -224,6 +231,15 @@ class ByteSource final {
     return ncrypto::BignumPointer(data<unsigned char>(), size());
   }
 
+  inline ByteSource ToCopy() const {
+    if (empty()) return {};
+    CHECK_NOT_NULL(data_);
+    auto data = MallocOpenSSL<char>(size());
+    CHECK_NOT_NULL(data);
+    memcpy(data, data_, size());
+    return ByteSource::Allocated(data, size());
+  }
+
   // Creates a v8::BackingStore that takes over responsibility for
   // any allocated data. The ByteSource will be reset with size = 0
   // after being called.
@@ -285,6 +301,43 @@ enum CryptoJobMode { kCryptoJobAsync, kCryptoJobSync, kCryptoJobWebCrypto };
 CryptoJobMode GetCryptoJobMode(v8::Local<v8::Value> args);
 bool IsCryptoJobAsync(CryptoJobMode mode);
 
+struct DigestOptions final : public MemoryRetainer {
+  struct Parameter {
+    const char* name;
+    const char* key;
+  };
+  static constexpr std::array kParameters = {
+      Parameter{"functionName", "function-name"},
+      Parameter{"customization", "customization"},
+  };
+  std::array<std::optional<std::string>, kParameters.size()> values;
+
+  DigestOptions() = default;
+  DigestOptions(DigestOptions&& other) noexcept = default;
+  DigestOptions& operator=(DigestOptions&& other) noexcept = default;
+
+  bool empty() const {
+    for (const auto& value : values) {
+      if (value.has_value()) return false;
+    }
+    return true;
+  }
+
+  bool Initialize(ncrypto::EVPMDCtxPointer* ctx,
+                  const EVP_MD* digest,
+                  const char** unsupported_option = nullptr) const;
+
+  void MemoryInfo(MemoryTracker* tracker) const override;
+  SET_MEMORY_INFO_NAME(DigestOptions)
+  SET_SELF_SIZE(DigestOptions)
+};
+
+v8::Maybe<void> GetDigestOptions(
+    const v8::FunctionCallbackInfo<v8::Value>& args,
+    unsigned int offset,
+    const EVP_MD* digest,
+    DigestOptions* options);
+
 v8::MaybeLocal<v8::Value> CreateWebCryptoJobError(Environment* env,
                                                   v8::Local<v8::Value> cause);
 
@@ -302,7 +355,7 @@ class CryptoJob : public AsyncWrap, public ThreadPoolWork {
                      CryptoJobMode mode,
                      AdditionalParams&& params)
       : AsyncWrap(env, object, type),
-        ThreadPoolWork(env, "crypto"),
+        ThreadPoolWork(env, ThreadPoolWorkType::kCrypto),
         mode_(mode),
         params_(std::move(params)) {
     // If the CryptoJob is async, then the instance will be
@@ -732,8 +785,8 @@ class ArrayBufferOrViewContents final {
   }
 
   template <typename M>
+    requires(sizeof(M) == 1)
   void CopyTo(M* dest, size_t len) const {
-    static_assert(sizeof(M) == 1, "sizeof(M) must equal 1");
     len = std::min(len, size());
     if (len > 0 && data() != nullptr) {
       memcpy(dest, data(), len);

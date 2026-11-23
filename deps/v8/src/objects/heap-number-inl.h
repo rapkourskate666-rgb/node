@@ -8,14 +8,17 @@
 #include "src/objects/heap-number.h"
 // Include the non-inl header before the rest of the headers.
 
-#include "src/base/memory.h"
-#include "src/objects/primitive-heap-object-inl.h"
-
-// Has to be the last include (doesn't have include guards):
-#include "src/objects/object-macros.h"
+#include "src/objects/heap-object-set-map-inl.h"
+#include "src/roots/roots-inl.h"
 
 namespace v8 {
 namespace internal {
+
+HeapNumber::HeapNumber(const AllocationWitness& witness, double value)
+    : PrimitiveHeapObject(witness.roots().heap_number_map()), value_(value) {}
+
+HeapNumber::HeapNumber(const AllocationWitness& witness, Float64 value)
+    : PrimitiveHeapObject(witness.roots().heap_number_map()), value_(value) {}
 
 double HeapNumber::value() const { return value_.value(); }
 void HeapNumber::set_value(double value) {
@@ -28,9 +31,12 @@ void HeapNumber::set_value_as_bits(uint64_t bits) {
   value_.set_value_as_bits(bits);
 }
 
+UninitializedHeapNumber::UninitializedHeapNumber(
+    const AllocationWitness& witness)
+    : HeapObject(witness.roots().uninitialized_heap_number_map()),
+      value_(0.0) {}
+
 }  // namespace internal
 }  // namespace v8
-
-#include "src/objects/object-macros-undef.h"
 
 #endif  // V8_OBJECTS_HEAP_NUMBER_INL_H_

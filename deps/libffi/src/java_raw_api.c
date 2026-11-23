@@ -58,7 +58,8 @@ ffi_java_raw_size (ffi_cif *cif)
 	  result += 2 * FFI_SIZEOF_JAVA_RAW;
 	  break;
 	case FFI_TYPE_STRUCT:
-	  /* No structure parameters in Java.	*/
+	case FFI_TYPE_VECTOR:
+	  /* No structure or vector parameters in Java.	*/
 	  abort();
 	case FFI_TYPE_COMPLEX:
 	  /* Not supported yet.  */
@@ -342,10 +343,14 @@ ffi_prep_java_raw_closure_loc (ffi_java_raw_closure* cl,
 {
   ffi_status status;
 
+  /* Pass the closure itself as user_data, not codeloc: with static
+     trampolines codeloc points into the read-only trampoline code table,
+     so ffi_java_translate_args would read cl->fun/cl->user_data from the
+     wrong memory and make a wild indirect call (GHSA-w6j9-w53f-2857).  */
   status = ffi_prep_closure_loc ((ffi_closure*) cl,
 				 cif,
 				 &ffi_java_translate_args,
-				 codeloc,
+				 cl,
 				 codeloc);
   if (status == FFI_OK)
     {

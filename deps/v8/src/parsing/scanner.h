@@ -95,6 +95,40 @@ class Utf16CharacterStream {
     }
   }
 
+  // Like AdvanceUntil, but additionally reports each contiguous range of
+  // skipped-over (i.e. {check} returned false) code units via
+  // {on_range}(start, end) before the underlying buffer is refilled and
+  // before returning. The code unit that terminated the scan is not part of
+  // the range. This lets callers bulk-process consumed characters instead of
+  // handling them one by one inside {check}.
+  template <typename FunctionType, typename RangeCallback>
+  V8_INLINE base::uc32 AdvanceUntilRange(FunctionType check,
+                                         RangeCallback on_range) {
+    while (true) {
+      const uint16_t* range_start = buffer_cursor_;
+      auto next_cursor_pos =
+          std::find_if(buffer_cursor_, buffer_end_, [&check](uint16_t raw_c0_) {
+            base::uc32 c0_ = static_cast<base::uc32>(raw_c0_);
+            return check(c0_);
+          });
+
+      if (next_cursor_pos != range_start) {
+        on_range(range_start, next_cursor_pos);
+      }
+
+      if (next_cursor_pos == buffer_end_) {
+        buffer_cursor_ = buffer_end_;
+        if (!ReadBlockChecked(pos())) {
+          buffer_cursor_++;
+          return kEndOfInput;
+        }
+      } else {
+        buffer_cursor_ = next_cursor_pos + 1;
+        return static_cast<base::uc32>(*next_cursor_pos);
+      }
+    }
+  }
+
   // Go back one by one character in the input stream.
   // This undoes the most recent Advance().
   inline void Back() {
@@ -265,9 +299,9 @@ class V8_EXPORT_PRIVATE Scanner {
     Location() : beg_pos(0), end_pos(0) { }
 
     int length() const { return end_pos - beg_pos; }
-    bool IsValid() const { return base::IsInRange(beg_pos, 0, end_pos); }
+    bool IsValid() const { return beg_pos >= 0 && beg_pos <= end_pos; }
 
-    static Location invalid() { return Location(-1, 0); }
+    static Location invalid() { return Location(-1, -1); }
 
     int beg_pos;
     int end_pos;
@@ -288,6 +322,11 @@ class V8_EXPORT_PRIVATE Scanner {
   Token::Value Next();
   // Returns the token following peek()
   Token::Value PeekAhead();
+  // Checks the character after peek(); declines if lookahead is buffered.
+  bool HasImmediateCommaOrRightBracket() const {
+    return next_next().token == Token::kUninitialized &&
+           (c0_ == ',' || c0_ == ']');
+  }
   // Returns the token following PeekAhead()
   Token::Value PeekAheadAhead();
   // Returns the current token again.
@@ -416,7 +455,7 @@ class V8_EXPORT_PRIVATE Scanner {
   // Returns true if a pattern is scanned.
   bool ScanRegExpPattern();
   // Scans the input as regular expression flags. Returns the flags on success.
-  std::optional<RegExpFlags> ScanRegExpFlags();
+  std::optional<regexp::Flags> ScanRegExpFlags();
 
   // Scans the input as a template literal
   Token::Value ScanTemplateContinuation() {
@@ -425,12 +464,18 @@ class V8_EXPORT_PRIVATE Scanner {
     return ScanTemplateSpan();
   }
 
-  template <typename IsolateT>
-  DirectHandle<String> SourceUrl(IsolateT* isolate) const;
-  template <typename IsolateT>
-  DirectHandle<String> SourceMappingUrl(IsolateT* isolate) const;
-  template <typename IsolateT>
-  DirectHandle<String> DebugId(IsolateT* isolate) const;
+  // Source locations of the values of the debug magic comments. A location is
+  // invalid if there was no such comment, or if the last one was malformed; it
+  // is empty if the last one had an empty value. In both cases there is no
+  // value.
+  struct DebugMagicCommentLocations {
+    Location source_url = Location::invalid();
+    Location source_mapping_url = Location::invalid();
+    Location debug_id = Location::invalid();
+  };
+  const DebugMagicCommentLocations& debug_magic_comment_locations() const {
+    return debug_magic_comment_locations_;
+  }
 
   bool SawSourceMappingUrlMagicCommentAtSign() const {
     return saw_source_mapping_url_magic_comment_at_sign_;
@@ -563,6 +608,11 @@ class V8_EXPORT_PRIVATE Scanner {
     c0_ = source_->AdvanceUntil(check);
   }
 
+  template <typename FunctionType, typename RangeCallback>
+  V8_INLINE void AdvanceUntilRange(FunctionType check, RangeCallback on_range) {
+    c0_ = source_->AdvanceUntilRange(check, on_range);
+  }
+
   bool CombineSurrogatePair() {
     DCHECK(!unibrow::Utf16::IsLeadSurrogate(kEndOfInput));
     if (unibrow::Utf16::IsLeadSurrogate(c0_)) {
@@ -678,6 +728,12 @@ class V8_EXPORT_PRIVATE Scanner {
   Token::Value SkipSingleLineComment();
   Token::Value SkipMagicComment(base::uc32 hash_or_at_sign);
   void TryToParseMagicComment(base::uc32 hash_or_at_sign);
+  // Scans the value of a magic comment, starting at the '=', calling on_char
+  // for each value character. Returns the value's location, or
+  // Location::invalid() if anything but whitespace follows the value on the
+  // line.
+  template <typename CharCallback>
+  Location ScanMagicCommentValue(CharCallback on_char);
   Token::Value SkipMultiLineComment();
   // Scans a possible HTML comment -- begins with '<!'.
   Token::Value ScanHtmlComment();
@@ -763,10 +819,7 @@ class V8_EXPORT_PRIVATE Scanner {
   // Whether this scanner encountered an HTML comment.
   bool found_html_comment_;
 
-  // Values parsed from magic comments.
-  LiteralBuffer source_url_;
-  LiteralBuffer source_mapping_url_;
-  LiteralBuffer debug_id_;
+  DebugMagicCommentLocations debug_magic_comment_locations_;
   bool saw_source_mapping_url_magic_comment_at_sign_ = false;
   bool saw_magic_comment_compile_hints_all_ = false;
   bool saw_non_comment_ = false;

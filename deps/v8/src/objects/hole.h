@@ -13,8 +13,10 @@
 namespace v8 {
 namespace internal {
 
+V8_OBJECT class Hole : public HeapObject {
+  V8_IT_OWN_TYPE;
+  V8_IT_NO_AUTO_DISPATCH;
 
-V8_OBJECT class Hole : public HeapObjectLayout {
  public:
   DECL_VERIFIER(Hole)
   DECL_PRINTER(Hole)
@@ -23,7 +25,7 @@ V8_OBJECT class Hole : public HeapObjectLayout {
 
  private:
   friend class Heap;
-  friend class Isolate;
+  friend class ReadOnlyHeap;
 
   // TODO(leszeks): Make it smaller if able and needed.
   static constexpr int kPayloadSize = 64 * KB;
@@ -35,10 +37,14 @@ V8_OBJECT class Hole : public HeapObjectLayout {
 
 #define DEFINE_HOLE_TYPE(Name, name, Root) \
   V8_OBJECT class Name : public Hole {     \
+    V8_IT_REUSE_PARENT;                    \
   } V8_OBJECT_END;
 
 HOLE_LIST(DEFINE_HOLE_TYPE)
 #undef DEFINE_HOLE_TYPE
+#ifndef V8_ENABLE_TDZ_HOLE
+using TdzHole = TheHole;
+#endif
 
 }  // namespace internal
 }  // namespace v8

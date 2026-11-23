@@ -17,6 +17,7 @@
 #ifdef V8_TEMPORAL_SUPPORT
 #include "src/objects/js-temporal-objects-inl.h"
 #endif  // V8_TEMPORAL_SUPPORT
+#include "src/objects/object-conversions-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/strings/string-stream.h"
 
@@ -54,16 +55,16 @@ Tagged<Object> SetDateValue(Isolate* isolate, DirectHandle<JSDate> date,
 
 }  // namespace
 
-// ES #sec-date-constructor
+// https://tc39.es/ecma262/#sec-date-constructor
 BUILTIN(DateConstructor) {
   HandleScope scope(isolate);
-  if (IsUndefined(*args.new_target(), isolate)) {
+  if (IsUndefined(*args.new_target())) {
     double const time_val =
         static_cast<double>(JSDate::CurrentTimeValue(isolate));
     DateBuffer buffer = ToDateString(time_val, isolate->date_cache(),
                                      ToDateStringMode::kLocalDateAndTime);
-    RETURN_RESULT_OR_FAILURE(
-        isolate, isolate->factory()->NewStringFromUtf8(base::VectorOf(buffer)));
+    RETURN_RESULT_OR_FAILURE(isolate, isolate->factory()->NewStringFromUtf8(
+                                          {buffer.data(), buffer.size()}));
   }
   // [Construct]
   int const argc = args.length() - 1;
@@ -738,8 +739,8 @@ BUILTIN(DatePrototypeToDateString) {
   CHECK_RECEIVER(JSDate, date, "Date.prototype.toDateString");
   DateBuffer buffer = ToDateString(date->value(), isolate->date_cache(),
                                    ToDateStringMode::kLocalDate);
-  RETURN_RESULT_OR_FAILURE(
-      isolate, isolate->factory()->NewStringFromUtf8(base::VectorOf(buffer)));
+  RETURN_RESULT_OR_FAILURE(isolate, isolate->factory()->NewStringFromUtf8(
+                                        {buffer.data(), buffer.size()}));
 }
 
 // ES6 section 20.3.4.36 Date.prototype.toISOString ( )
@@ -753,8 +754,8 @@ BUILTIN(DatePrototypeToISOString) {
   }
   DateBuffer buffer = ToDateString(time_val, isolate->date_cache(),
                                    ToDateStringMode::kISODateAndTime);
-  RETURN_RESULT_OR_FAILURE(
-      isolate, isolate->factory()->NewStringFromUtf8(base::VectorOf(buffer)));
+  RETURN_RESULT_OR_FAILURE(isolate, isolate->factory()->NewStringFromUtf8(
+                                        {buffer.data(), buffer.size()}));
 }
 
 // ES6 section 20.3.4.41 Date.prototype.toString ( )
@@ -763,8 +764,8 @@ BUILTIN(DatePrototypeToString) {
   CHECK_RECEIVER(JSDate, date, "Date.prototype.toString");
   DateBuffer buffer = ToDateString(date->value(), isolate->date_cache(),
                                    ToDateStringMode::kLocalDateAndTime);
-  RETURN_RESULT_OR_FAILURE(
-      isolate, isolate->factory()->NewStringFromUtf8(base::VectorOf(buffer)));
+  RETURN_RESULT_OR_FAILURE(isolate, isolate->factory()->NewStringFromUtf8(
+                                        {buffer.data(), buffer.size()}));
 }
 
 // ES6 section 20.3.4.42 Date.prototype.toTimeString ( )
@@ -773,12 +774,12 @@ BUILTIN(DatePrototypeToTimeString) {
   CHECK_RECEIVER(JSDate, date, "Date.prototype.toTimeString");
   DateBuffer buffer = ToDateString(date->value(), isolate->date_cache(),
                                    ToDateStringMode::kLocalTime);
-  RETURN_RESULT_OR_FAILURE(
-      isolate, isolate->factory()->NewStringFromUtf8(base::VectorOf(buffer)));
+  RETURN_RESULT_OR_FAILURE(isolate, isolate->factory()->NewStringFromUtf8(
+                                        {buffer.data(), buffer.size()}));
 }
 
 #ifdef V8_INTL_SUPPORT
-// ecma402 #sup-date.prototype.tolocaledatestring
+// https://tc39.es/ecma402/#sup-date.prototype.tolocaledatestring
 BUILTIN(DatePrototypeToLocaleDateString) {
   HandleScope scope(isolate);
 
@@ -798,7 +799,7 @@ BUILTIN(DatePrototypeToLocaleDateString) {
                    method_name));                            // method_name
 }
 
-// ecma402 #sup-date.prototype.tolocalestring
+// https://tc39.es/ecma402/#sup-date.prototype.tolocalestring
 BUILTIN(DatePrototypeToLocaleString) {
   HandleScope scope(isolate);
 
@@ -818,7 +819,7 @@ BUILTIN(DatePrototypeToLocaleString) {
                    method_name));                           // method_name
 }
 
-// ecma402 #sup-date.prototype.tolocaletimestring
+// https://tc39.es/ecma402/#sup-date.prototype.tolocaletimestring
 BUILTIN(DatePrototypeToLocaleTimeString) {
   HandleScope scope(isolate);
 
@@ -845,8 +846,8 @@ BUILTIN(DatePrototypeToUTCString) {
   CHECK_RECEIVER(JSDate, date, "Date.prototype.toUTCString");
   DateBuffer buffer = ToDateString(date->value(), isolate->date_cache(),
                                    ToDateStringMode::kUTCDateAndTime);
-  RETURN_RESULT_OR_FAILURE(
-      isolate, isolate->factory()->NewStringFromUtf8(base::VectorOf(buffer)));
+  RETURN_RESULT_OR_FAILURE(isolate, isolate->factory()->NewStringFromUtf8(
+                                        {buffer.data(), buffer.size()}));
 }
 
 // ES6 section B.2.4.1 Date.prototype.getYear ( )
@@ -924,7 +925,7 @@ BUILTIN(DatePrototypeToJson) {
 }
 
 #ifdef V8_TEMPORAL_SUPPORT
-// Temporal #sec-date.prototype.totemporalinstant
+// https://tc39.es/proposal-temporal/#sec-date.prototype.totemporalinstant
 BUILTIN(DatePrototypeToTemporalInstant) {
   HandleScope scope(isolate);
   CHECK_RECEIVER(JSDate, date, "Date.prototype.toTemporalInstant");

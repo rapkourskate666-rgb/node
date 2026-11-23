@@ -7,6 +7,7 @@
 
 #include <optional>
 
+#include "src/base/export-template.h"
 #include "src/common/globals.h"
 
 #if V8_ENABLE_WEBASSEMBLY
@@ -50,8 +51,13 @@ class FlagValue {
   // use it for computing other constants.
   constexpr T value() const { return value_; }
 
-  // Assign a new value (defined below).
+  // Assign a new value (defined below). This does not update the Flag metadata
+  // or check for contradictions.
   inline FlagValue<T>& operator=(T new_value);
+
+  // Set a new value (updates Flag metadata and checks for flag contradictions).
+  EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
+  void Set(T new_value);
 
  private:
   T value_;
@@ -73,9 +79,27 @@ struct alignas(kMinimumOSPageSize) FlagValues {
 
 V8_EXPORT_PRIVATE extern FlagValues v8_flags;
 
+// Controls the behavior of the flag processing logic, such as how
+// contradictory flags or implication cycles are handled.
+enum class FlagProcessingMode {
+  // Flag errors lead to abnormal termination (via Abort). This is typically
+  // the default behavior as it clearly indicates flag misconfigurations.
+  kAbortOnError,
+  // Flag errors lead to termination via Exit(-1). This is useful for automated
+  // bug detection systems that may set custom flags. This way, flag
+  // misconfigurations are not treated as crashes but only as failed executions.
+  kExitOnError,
+  // Flag contradictions are explicitly ignored. This can be useful when
+  // fuzzing with random flags that are likely to contradict each other. In
+  // these cases, the testcase will still be executed and the last
+  // specification of each flag will be used.
+  kIgnoreContradictions
+};
+
 // The global list of all flags.
 class V8_EXPORT_PRIVATE FlagList {
  public:
+  static FlagProcessingMode GetFlagProcessingMode();
   class HelpOptions {
    public:
     enum ExitBehavior : bool { kExit = true, kDontExit = false };

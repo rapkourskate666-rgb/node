@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "test/wasm-api-tests/wasm-api-test.h"
-
 #include <mutex>
 #include <thread>
+
+#include "src/base/platform/platform.h"
+#include "src/wasm/c-api.h"
+#include "test/wasm-api-tests/wasm-api-test.h"
 
 namespace v8 {
 namespace internal {
@@ -26,7 +28,18 @@ own<Trap> Callback(void* env, const vec<Val>& args, vec<Val>& results) {
 }
 
 void Main(Engine* engine, Shared<Module>* shared, std::mutex* mutex, int id) {
+  v8::StackStartScope stack_start_scope;
   own<Store> store = Store::make(engine);
+
+  // The physical stack size for std::thread on macOS is 512KB.
+  // We set V8's stack limit to the maximum possible size that fits:
+  // 512KB minus the safety margin.
+  v8::Isolate* isolate =
+      reinterpret_cast<::wasm::StoreImpl*>(store.get())->isolate();
+  uintptr_t stack_start = v8::base::Stack::GetStackStart();
+  uintptr_t limit = stack_start - 512 * KB + V8_STACK_LIMIT_MARGIN_KB * KB;
+  isolate->SetStackLimit(limit);
+
   own<Module> module = Module::obtain(store.get(), shared);
   EXPECT_NE(nullptr, module.get());
   for (int i = 0; i < kIterationsPerThread; i++) {
@@ -62,15 +75,13 @@ TEST_F(WasmCapiTest, Threads) {
   // Create module.
   ValueType i32_type[] = {kWasmI32};
   FunctionSig param_i32(0, 1, i32_type);
-  uint32_t callback_index =
-      builder()->AddImport(base::CStrVector("callback"), &param_i32);
-  uint32_t global_index =
-      builder()->AddGlobalImport(base::CStrVector("id"), kWasmI32, false);
+  uint32_t callback_index = builder()->AddImport("callback", &param_i32);
+  uint32_t global_index = builder()->AddGlobalImport("id", kWasmI32, false);
 
   uint8_t code[] = {
       WASM_CALL_FUNCTION(callback_index, WASM_GLOBAL_GET(global_index))};
   FunctionSig empty_sig(0, 0, nullptr);
-  AddExportedFunction(base::CStrVector("run"), code, sizeof(code), &empty_sig);
+  AddExportedFunction("run", code, sizeof(code), &empty_sig);
   Compile();
   own<Shared<Module>> shared = module()->share();
 

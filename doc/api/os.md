@@ -298,42 +298,42 @@ The properties available on the assigned network address object include:
 
 ```json
 {
-  "lo:": [
+  "lo": [
     {
-      "address:": "127.0.0.1",
-      "netmask:": "255.0.0.0",
-      "family:": "IPv4",
-      "mac:": "00:00:00:00:00:00",
-      "internal:": true,
-      "cidr:": "127.0.0.1/8"
+      "address": "127.0.0.1",
+      "netmask": "255.0.0.0",
+      "family": "IPv4",
+      "mac": "00:00:00:00:00:00",
+      "internal": true,
+      "cidr": "127.0.0.1/8"
     },
     {
-      "address:": "::1",
-      "netmask:": "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
-      "family:": "IPv6",
-      "mac:": "00:00:00:00:00:00",
-      "scopeid:": 0,
-      "internal:": true,
-      "cidr:": "::1/128"
+      "address": "::1",
+      "netmask": "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+      "family": "IPv6",
+      "mac": "00:00:00:00:00:00",
+      "scopeid": 0,
+      "internal": true,
+      "cidr": "::1/128"
     }
   ],
-  "eth0:": [
+  "eth0": [
     {
-      "address:": "192.168.1.108",
-      "netmask:": "255.255.255.0",
-      "family:": "IPv4",
-      "mac:": "01:02:03:0a:0b:0c",
-      "internal:": false,
-      "cidr:": "192.168.1.108/24"
+      "address": "192.168.1.108",
+      "netmask": "255.255.255.0",
+      "family": "IPv4",
+      "mac": "01:02:03:0a:0b:0c",
+      "internal": false,
+      "cidr": "192.168.1.108/24"
     },
     {
-      "address:": "fe80::a00:27ff:fe4e:66a1",
-      "netmask:": "ffff:ffff:ffff:ffff::",
-      "family:": "IPv6",
-      "mac:": "01:02:03:0a:0b:0c",
-      "scopeid:": 1,
-      "internal:": false,
-      "cidr:": "fe80::a00:27ff:fe4e:66a1/64"
+      "address": "fe80::a00:27ff:fe4e:66a1",
+      "netmask": "ffff:ffff:ffff:ffff::",
+      "family": "IPv6",
+      "mac": "01:02:03:0a:0b:0c",
+      "scopeid": 1,
+      "internal": false,
+      "cidr": "fe80::a00:27ff:fe4e:66a1/64"
     }
   ]
 }
@@ -503,6 +503,33 @@ On POSIX systems, the operating system release is determined by calling
 [`uname(3)`][]. On Windows, `RtlGetVersion()` is used, and if it is not
 available, `GetVersionExW()` will be used. See
 <https://en.wikipedia.org/wiki/Uname#Examples> for more information.
+
+## `os.guessFileDescriptorType(fd)`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+* `fd` {integer} The file descriptor number to try and guess the type of.
+
+* Returns: {string}
+
+Returns the type of the file descriptor passed in. If `fd` is not a non-negative
+32-bit integer, an [`ERR_INVALID_FD`][] error is thrown. If `fd` does not refer
+to an open file descriptor, `'UNKNOWN'` is returned.
+A common use case for this function is checking whether standard input is passed into your process,
+and if it is, if it can be consumed by the process. For example, on Unix systems, if the type is `TTY`, it means
+you can prompt the user for new data while the process is running, and if it's `FILE` or `PIPE`, it means there is data
+available, but you shouldn't try to prompt for more.
+
+Currently, the following types for a file descriptor can be returned:
+
+* `'TCP'`
+* `'TTY'`
+* `'UDP'`
+* `'FILE'`
+* `'PIPE'`
+* `'UNKNOWN'`
 
 ## OS constants
 
@@ -1370,6 +1397,7 @@ The following process scheduling constants are exported by
 
 [Android building]: https://github.com/nodejs/node/blob/HEAD/BUILDING.md#android
 [EUID]: https://en.wikipedia.org/wiki/User_identifier#Effective_user_ID
+[`ERR_INVALID_FD`]: errors.md#err_invalid_fd
 [`SystemError`]: errors.md#class-systemerror
 [`process.arch`]: process.md#processarch
 [`process.platform`]: process.md#processplatform

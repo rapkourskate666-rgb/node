@@ -22,6 +22,8 @@ extern runtime GrowableSharedArrayBufferByteLength(
 
 const kFloat16ArrayFeature: constexpr UseCounterFeature
     generates 'v8::Isolate::kFloat16Array';
+const kBigIntFeature: constexpr UseCounterFeature
+    generates 'v8::Isolate::kBigInt';
 
 extern macro TypedArrayBuiltinsAssembler::IsTrackArrayBufferViewsEnabled():
     bool;
@@ -108,6 +110,8 @@ transitioning macro AllocateTypedArray(
   if (typedArray.elements_kind == ElementsKind::FLOAT16_ELEMENTS ||
       typedArray.elements_kind == ElementsKind::RAB_GSAB_FLOAT16_ELEMENTS) {
     IncrementUseCounter(context, SmiConstant(kFloat16ArrayFeature));
+  } else if (IsBigInt64ElementsKind(typedArray.elements_kind)) {
+    IncrementUseCounter(context, SmiConstant(kBigIntFeature));
   }
   return typedArray;
 }
@@ -181,7 +185,7 @@ transitioning macro ConstructByLength(
 }
 
 // 22.2.4.4 TypedArray ( object )
-// ES #sec-typedarray-object
+// https://tc39.es/ecma262/#sec-typedarray-object
 transitioning macro ConstructByArrayLike(
     implicit context: Context)(map: Map, arrayLike: HeapObject,
     length: uintptr,
@@ -235,7 +239,7 @@ transitioning macro ConstructByArrayLike(
 }
 
 // 22.2.4.4 TypedArray ( object )
-// ES #sec-typedarray-object
+// https://tc39.es/ecma262/#sec-typedarray-object
 transitioning macro ConstructByIterable(
     implicit context: Context)(iterable: JSReceiver,
     iteratorFn: Callable): never
@@ -273,7 +277,7 @@ transitioning macro ConstructByIterable(
 }
 
 // 22.2.4.3 TypedArray ( typedArray )
-// ES #sec-typedarray-typedarray
+// https://tc39.es/ecma262/#sec-typedarray-typedarray
 transitioning macro ConstructByTypedArray(
     implicit context: Context)(srcTypedArray: JSTypedArray): never
     labels IfConstructByArrayLike(JSTypedArray, uintptr) {
@@ -290,7 +294,7 @@ transitioning macro ConstructByTypedArray(
 }
 
 // 22.2.4.5 TypedArray ( buffer, byteOffset, length )
-// ES #sec-initializetypedarrayfromarraybuffer
+// https://tc39.es/ecma262/#sec-initializetypedarrayfromarraybuffer
 transitioning macro ConstructByArrayBuffer(
     implicit context: Context)(target: JSFunction, newTarget: JSReceiver,
     buffer: JSArrayBuffer, byteOffset: JSAny, length: JSAny): JSTypedArray {
@@ -465,7 +469,7 @@ transitioning macro ConstructByJSReceiver(
 }
 
 // 22.2.4 The TypedArray Constructors
-// ES #sec-typedarray-constructors
+// https://tc39.es/ecma262/#sec-typedarray-constructors
 transitioning builtin CreateTypedArray(
     context: Context, target: JSFunction, newTarget: JSReceiver, arg1: JSAny,
     arg2: JSAny, arg3: JSAny): JSTypedArray {
@@ -488,7 +492,7 @@ transitioning builtin CreateTypedArray(
             IfIteratorNotCallable;
       }
       // The first argument was a number or fell through and is treated as
-      // a number. https://tc39.github.io/ecma262/#sec-typedarray-length
+      // a number. https://tc39.es/ecma262/#sec-typedarray-length
       case (lengthObj: JSAny): {
         goto IfConstructByLength(lengthObj);
       }
@@ -539,7 +543,11 @@ transitioning macro TypedArraySpeciesCreateMaybeOOB(
       newObj = Construct(constructor, arg0);
     } else {
       dcheck(numArgs == 3);
-      newObj = Construct(constructor, arg0, arg1, arg2);
+      if (arg2 == Undefined) {
+        newObj = Construct(constructor, arg0, arg1);
+      } else {
+        newObj = Construct(constructor, arg0, arg1, arg2);
+      }
     }
 
     return PartiallyValidateTypedArrayMaybeOOB(

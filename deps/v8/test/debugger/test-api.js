@@ -210,7 +210,15 @@ class DebugWrapper {
 
     const scopeObject =
         { value : () => details[kScopeDetailsObjectIndex],
-          property : (prop) => details[kScopeDetailsObjectIndex][prop],
+          property : (prop) => {
+            // Unavailable variables (e.g. stack-allocated variables of outer
+            // functions) are exposed as accessors that throw on access.
+            try {
+              return details[kScopeDetailsObjectIndex][prop];
+            } catch (e) {
+              return undefined;
+            }
+          },
           properties : scopeObjectProperties,
           propertyNames : () => Object.keys(details[kScopeDetailsObjectIndex])
               .map((key, _) => key),
@@ -383,6 +391,8 @@ class DebugWrapper {
              scopeIndex : () => scope_index,
              frameIndex : () => frame.callFrameId,
              scopeObject : () => this.execStateScopeObject(scope.object),
+             evaluate : (expr, throw_on_side_effect) =>
+                 this.evaluateOnCallFrame(frame, expr, throw_on_side_effect, scope_index),
              setVariableValue :
                 (name, value) => this.setVariableValue(frame, scope_index,
                                                        name, value),
@@ -562,13 +572,14 @@ class DebugWrapper {
            };
   }
 
-  evaluateOnCallFrame(frame, expr, throw_on_side_effect = false) {
+  evaluateOnCallFrame(frame, expr, throw_on_side_effect = false, scope_number = undefined) {
     const frameid = frame.callFrameId;
     const {msgid, msg} = this.createMessage(
         "Debugger.evaluateOnCallFrame",
         { callFrameId : frameid,
           expression : expr,
           throwOnSideEffect : throw_on_side_effect,
+          scopeNumber : scope_number,
         });
     this.sendMessage(msg);
     const reply = this.takeReplyChecked(msgid);

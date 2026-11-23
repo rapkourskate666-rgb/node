@@ -669,9 +669,15 @@ added:
 
 * `windowSize` {number}
 
-Sets the local endpoint's window size.
+Sets the local endpoint's connection-level window size.
 The `windowSize` is the total window size to set, not
 the delta.
+
+Increases take effect immediately, but decreases only apply as the window
+already advertised to the peer is consumed, since a window that has been
+advertised cannot be retracted. To use a window smaller than the default from
+the start of the connection, set the `connectionWindowSize` option when
+creating the server or client session instead.
 
 ```mjs
 import { createServer } from 'node:http2';
@@ -723,7 +729,9 @@ registered as a listener on the `'timeout'` event.
 <!-- YAML
 added: v8.4.0
 changes:
-  - version: v26.6.0
+  - version:
+     - v26.6.0
+     - v24.20.0
     pr-url: https://github.com/nodejs/node/pull/64427
     description: Calling `destroy` no longer throws and instead destroys the
                  `Http2Session`.
@@ -1273,10 +1281,7 @@ destroyed.
 
 <!-- YAML
 added: v8.4.0
-changes:
-  - version: REPLACEME
-    pr-url: https://github.com/nodejs/node/pull/63249
-    description: Documentation-only deprecation.
+deprecated: v27.0.0-alpha.0.0.0
 -->
 
 > Stability: 0 - Deprecated. Use `'close'` and `'error'` plus
@@ -1303,7 +1308,7 @@ the `http2stream.rstCode` property.
 <!-- YAML
 added: v8.4.0
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/63249
     description: >-
       Also emitted on peer-initiated resets that arrive before
@@ -1397,9 +1402,12 @@ option must be set for this event to be emitted.
 
 <!-- YAML
 added: v8.4.0
+deprecated: v27.0.0-alpha.0.0.0
 -->
 
 * Type: {boolean}
+
+> Stability: 0 - Deprecated
 
 `true` if the `Http2Stream` was closed while the writable side was
 still open. When set, the `'aborted'` event was emitted.
@@ -1751,7 +1759,7 @@ stream.on('push', (headers, flags) => {
 <!-- YAML
 added: v8.4.0
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/63249
     description: >-
       If no `'response'` listener is attached when the response headers
@@ -1810,13 +1818,20 @@ used exclusively on HTTP/2 Servers. `Http2Stream` instances on the server
 provide additional methods such as `http2stream.pushStream()` and
 `http2stream.respond()` that are only relevant on the server.
 
-#### `http2stream.additionalHeaders(headers)`
+#### `http2stream.additionalHeaders(headers[, callback])`
 
 <!-- YAML
 added: v8.4.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67470
+    description: Added the `callback` argument.
 -->
 
 * `headers` {HTTP/2 Headers Object}
+* `callback` {Function} Optional, called once the `HEADERS` frame has been
+  written to the socket, or with an error if it could not be written.
+  * `err` {Error|null}
 
 Sends an additional informational `HEADERS` frame to the connected HTTP/2 peer.
 
@@ -2842,6 +2857,9 @@ Throws `ERR_INVALID_ARG_TYPE` for invalid `settings` argument.
 <!-- YAML
 added: v8.4.0
 changes:
+  - version: v26.11.0
+    pr-url: https://github.com/nodejs/node/pull/65619
+    description: Added the `connectionWindowSize` option.
   - version:
      - v25.7.0
      - v24.15.0
@@ -2917,9 +2935,12 @@ changes:
     limit to be exceeded, but new `Http2Stream` instances will be rejected
     while this limit is exceeded. The current number of `Http2Stream` sessions,
     the current memory use of the header compression tables, header blocks
-    retained by open streams, current data queued to be sent, and
-    unacknowledged `PING` and `SETTINGS` frames are all counted towards the
-    current limit. **Default:** `10`.
+    retained by open streams, current data queued to be sent, inbound DATA
+    frames retained by undrained streams, and unacknowledged `PING` and
+    `SETTINGS` frames are all counted towards the current limit. When the limit
+    is exceeded the session stops reading from the socket (applying
+    backpressure) until the application consumes the queued data. **Default:**
+    `10`.
   * `maxHeaderListPairs` {number} Sets the maximum number of header entries.
     This is similar to [`server.maxHeadersCount`][] or
     [`request.maxHeadersCount`][] in the `node:http` module. The minimum value
@@ -2959,6 +2980,13 @@ changes:
     error that should tell the peer to not open any more streams, continuing
     to open streams is therefore regarded as a sign of a misbehaving peer.
     **Default:** `100`.
+  * `connectionWindowSize` {number} Sets the initial flow control window for
+    each session, in bytes. This is the total amount of data the remote peer
+    may send across all streams before it has to wait for a `WINDOW_UPDATE`.
+    The equivalent per-stream limit is `settings.initialWindowSize`. The
+    minimum allowed value is `1` and the maximum is 2<sup>31</sup>-1. Values
+    below 65535 will not take effect until the initial protocol-default
+    window of 65535 has been used.
   * `settings` {HTTP/2 Settings Object} The initial settings to send to the
     remote peer upon connection.
   * `streamResetBurst` {number} and `streamResetRate` {number} Sets the rate
@@ -3070,6 +3098,9 @@ server.listen(8000);
 <!-- YAML
 added: v8.4.0
 changes:
+  - version: v26.11.0
+    pr-url: https://github.com/nodejs/node/pull/65619
+    description: Added the `connectionWindowSize` option.
   - version:
      - v25.7.0
      - v24.15.0
@@ -3139,9 +3170,12 @@ changes:
     limit to be exceeded, but new `Http2Stream` instances will be rejected
     while this limit is exceeded. The current number of `Http2Stream` sessions,
     the current memory use of the header compression tables, header blocks
-    retained by open streams, current data queued to be sent, and
-    unacknowledged `PING` and `SETTINGS` frames are all counted towards the
-    current limit. **Default:** `10`.
+    retained by open streams, current data queued to be sent, inbound DATA
+    frames retained by undrained streams, and unacknowledged `PING`
+    and `SETTINGS` frames are all counted towards the current limit. When the
+    limit is exceeded the session stops reading from the socket (applying
+    backpressure) until the application consumes the queued data. **Default:**
+    `10`.
   * `maxHeaderListPairs` {number} Sets the maximum number of header entries.
     This is similar to [`server.maxHeadersCount`][] or
     [`request.maxHeadersCount`][] in the `node:http` module. The minimum value
@@ -3178,6 +3212,14 @@ changes:
     error that should tell the peer to not open any more streams, continuing
     to open streams is therefore regarded as a sign of a misbehaving peer.
     **Default:** `100`.
+  * `connectionWindowSize` {number} Sets the initial flow control window for
+    each session, in bytes. This is the total amount of data the remote peer
+    may send across all streams before it has to wait for a `WINDOW_UPDATE`.
+    The equivalent per-stream limit is `settings.initialWindowSize`. The
+    minimum allowed value is `1` and the maximum is 2<sup>31</sup>-1. Values
+    below 65535 will not take effect until the initial protocol-default
+    window of 65535 has been used.
+    **Default:** `33554432`.
   * `settings` {HTTP/2 Settings Object} The initial settings to send to the
     remote peer upon connection.
   * `streamResetBurst` {number} and `streamResetRate` {number} Sets the rate
@@ -3274,6 +3316,9 @@ server.listen(8443);
 <!-- YAML
 added: v8.4.0
 changes:
+  - version: v26.11.0
+    pr-url: https://github.com/nodejs/node/pull/65619
+    description: Added the `connectionWindowSize` option.
   - version:
       - v15.10.0
       - v14.16.0
@@ -3320,9 +3365,16 @@ changes:
     limit to be exceeded, but new `Http2Stream` instances will be rejected
     while this limit is exceeded. The current number of `Http2Stream` sessions,
     the current memory use of the header compression tables, header blocks
-    retained by open streams, current data queued to be sent, and
+    retained by open streams, current data queued to be sent, inbound DATA
+    frames retained by undrained streams, and
     unacknowledged `PING` and `SETTINGS` frames are all counted towards the
-    current limit. **Default:** `10`.
+    current limit. When the limit is exceeded the session stops reading from the
+    socket (applying backpressure) until the application consumes the queued data.
+    For received headers on locally initiated streams, including
+    informational responses and trailers, queued outbound data across the session
+    is excluded from the memory check. Retained headers still count towards the
+    limit. This exception does not apply to server push streams.
+    **Default:** `10`.
   * `maxHeaderListPairs` {number} Sets the maximum number of header entries.
     This is similar to [`server.maxHeadersCount`][] or
     [`request.maxHeadersCount`][] in the `node:http` module. The minimum value
@@ -3361,6 +3413,14 @@ changes:
   * `protocol` {string} The protocol to connect with, if not set in the
     `authority`. Value may be either `'http:'` or `'https:'`. **Default:**
     `'https:'`
+  * `connectionWindowSize` {number} Sets the initial flow control window for
+    this session, in bytes. This is the total amount of data the remote peer
+    may send across all streams before it has to wait for a `WINDOW_UPDATE`.
+    The equivalent per-stream limit is `settings.initialWindowSize`. The
+    minimum allowed value is `1` and the maximum is 2<sup>31</sup>-1. Values
+    below 65535 will not take effect until the initial protocol-default
+    window of 65535 has been used.
+    **Default:** `33554432`.
   * `settings` {HTTP/2 Settings Object} The initial settings to send to the
     remote peer upon connection.
   * `remoteCustomSettings` {Array} The array of integer values determines the
@@ -3409,6 +3469,142 @@ client.close();
 <!-- YAML
 added: v8.4.0
 -->
+
+#### Header name constants
+
+The `HTTP2_HEADER_*` constants provide names for HTTP/2 pseudo-headers and
+known HTTP header names. Using these string constants is optional. For example,
+`http2.constants.HTTP2_HEADER_CONTENT_TYPE` is equal to `'content-type'`.
+For APIs that accept regular header names,
+`http2.constants.HTTP2_HEADER_CONTENT_TYPE`, `'content-type'`, and
+`'Content-Type'` have the same effect; Node.js serializes the name in
+lower-case.
+
+Regular header constants can be used with the compatibility API wherever the
+corresponding literal header name is accepted. In compatibility API request
+handlers, prefer `request.method`, `request.authority`, `request.scheme`, and
+`request.url` for the corresponding pseudo-headers. Other incoming
+pseudo-headers remain available through `request.headers`. Set response status
+through `response.statusCode` or the `statusCode` argument to
+`response.writeHead()`. Passing `HTTP2_HEADER_STATUS` (`':status'`) to
+`response.setHeader()` or in `response.writeHead()`'s headers object throws
+`ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED`. `HTTP2_HEADER_PROTOCOL` is a request
+pseudo-header and cannot be sent in a response.
+
+Incoming header object keys are lower-case, so use a constant or a lower-case
+literal when accessing them as object properties. Using a constant does not
+change header validation, and the availability of a constant does not imply
+that the header is valid in every HTTP/2 context. See [HTTP/2 Headers Object][]
+and [Invalid character handling in header names and values][] for details about
+header casing and validation.
+
+##### Pseudo-header constants
+
+`HTTP2_HEADER_METHOD`, `HTTP2_HEADER_AUTHORITY`, `HTTP2_HEADER_SCHEME`, and
+`HTTP2_HEADER_PATH` identify request pseudo-headers. `HTTP2_HEADER_STATUS`
+identifies the response pseudo-header. `HTTP2_HEADER_PROTOCOL` identifies the
+extended `CONNECT` request pseudo-header. Pseudo-headers are not permitted in
+trailers.
+
+| Constant                                 | Value          |
+| ---------------------------------------- | -------------- |
+| `http2.constants.HTTP2_HEADER_STATUS`    | `':status'`    |
+| `http2.constants.HTTP2_HEADER_METHOD`    | `':method'`    |
+| `http2.constants.HTTP2_HEADER_AUTHORITY` | `':authority'` |
+| `http2.constants.HTTP2_HEADER_SCHEME`    | `':scheme'`    |
+| `http2.constants.HTTP2_HEADER_PATH`      | `':path'`      |
+| `http2.constants.HTTP2_HEADER_PROTOCOL`  | `':protocol'`  |
+
+##### Regular header constants
+
+The `HTTP2_HEADER_CONNECTION`, `HTTP2_HEADER_UPGRADE`,
+`HTTP2_HEADER_HTTP2_SETTINGS`, `HTTP2_HEADER_KEEP_ALIVE`,
+`HTTP2_HEADER_PROXY_CONNECTION`, and `HTTP2_HEADER_TRANSFER_ENCODING`
+constants identify connection-specific headers that HTTP/2 does not permit.
+`HTTP2_HEADER_TE` is permitted only when its value is `'trailers'`.
+
+| Constant                                                        | Value                                |
+| --------------------------------------------------------------- | ------------------------------------ |
+| `http2.constants.HTTP2_HEADER_ACCEPT_ENCODING`                  | `'accept-encoding'`                  |
+| `http2.constants.HTTP2_HEADER_ACCEPT_LANGUAGE`                  | `'accept-language'`                  |
+| `http2.constants.HTTP2_HEADER_ACCEPT_RANGES`                    | `'accept-ranges'`                    |
+| `http2.constants.HTTP2_HEADER_ACCEPT`                           | `'accept'`                           |
+| `http2.constants.HTTP2_HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS` | `'access-control-allow-credentials'` |
+| `http2.constants.HTTP2_HEADER_ACCESS_CONTROL_ALLOW_HEADERS`     | `'access-control-allow-headers'`     |
+| `http2.constants.HTTP2_HEADER_ACCESS_CONTROL_ALLOW_METHODS`     | `'access-control-allow-methods'`     |
+| `http2.constants.HTTP2_HEADER_ACCESS_CONTROL_ALLOW_ORIGIN`      | `'access-control-allow-origin'`      |
+| `http2.constants.HTTP2_HEADER_ACCESS_CONTROL_EXPOSE_HEADERS`    | `'access-control-expose-headers'`    |
+| `http2.constants.HTTP2_HEADER_ACCESS_CONTROL_REQUEST_HEADERS`   | `'access-control-request-headers'`   |
+| `http2.constants.HTTP2_HEADER_ACCESS_CONTROL_REQUEST_METHOD`    | `'access-control-request-method'`    |
+| `http2.constants.HTTP2_HEADER_AGE`                              | `'age'`                              |
+| `http2.constants.HTTP2_HEADER_AUTHORIZATION`                    | `'authorization'`                    |
+| `http2.constants.HTTP2_HEADER_CACHE_CONTROL`                    | `'cache-control'`                    |
+| `http2.constants.HTTP2_HEADER_CONNECTION`                       | `'connection'`                       |
+| `http2.constants.HTTP2_HEADER_CONTENT_DISPOSITION`              | `'content-disposition'`              |
+| `http2.constants.HTTP2_HEADER_CONTENT_ENCODING`                 | `'content-encoding'`                 |
+| `http2.constants.HTTP2_HEADER_CONTENT_LENGTH`                   | `'content-length'`                   |
+| `http2.constants.HTTP2_HEADER_CONTENT_TYPE`                     | `'content-type'`                     |
+| `http2.constants.HTTP2_HEADER_COOKIE`                           | `'cookie'`                           |
+| `http2.constants.HTTP2_HEADER_DATE`                             | `'date'`                             |
+| `http2.constants.HTTP2_HEADER_ETAG`                             | `'etag'`                             |
+| `http2.constants.HTTP2_HEADER_FORWARDED`                        | `'forwarded'`                        |
+| `http2.constants.HTTP2_HEADER_HOST`                             | `'host'`                             |
+| `http2.constants.HTTP2_HEADER_IF_MODIFIED_SINCE`                | `'if-modified-since'`                |
+| `http2.constants.HTTP2_HEADER_IF_NONE_MATCH`                    | `'if-none-match'`                    |
+| `http2.constants.HTTP2_HEADER_IF_RANGE`                         | `'if-range'`                         |
+| `http2.constants.HTTP2_HEADER_LAST_MODIFIED`                    | `'last-modified'`                    |
+| `http2.constants.HTTP2_HEADER_LINK`                             | `'link'`                             |
+| `http2.constants.HTTP2_HEADER_LOCATION`                         | `'location'`                         |
+| `http2.constants.HTTP2_HEADER_RANGE`                            | `'range'`                            |
+| `http2.constants.HTTP2_HEADER_REFERER`                          | `'referer'`                          |
+| `http2.constants.HTTP2_HEADER_SERVER`                           | `'server'`                           |
+| `http2.constants.HTTP2_HEADER_SET_COOKIE`                       | `'set-cookie'`                       |
+| `http2.constants.HTTP2_HEADER_STRICT_TRANSPORT_SECURITY`        | `'strict-transport-security'`        |
+| `http2.constants.HTTP2_HEADER_TRANSFER_ENCODING`                | `'transfer-encoding'`                |
+| `http2.constants.HTTP2_HEADER_TE`                               | `'te'`                               |
+| `http2.constants.HTTP2_HEADER_UPGRADE_INSECURE_REQUESTS`        | `'upgrade-insecure-requests'`        |
+| `http2.constants.HTTP2_HEADER_UPGRADE`                          | `'upgrade'`                          |
+| `http2.constants.HTTP2_HEADER_USER_AGENT`                       | `'user-agent'`                       |
+| `http2.constants.HTTP2_HEADER_VARY`                             | `'vary'`                             |
+| `http2.constants.HTTP2_HEADER_X_CONTENT_TYPE_OPTIONS`           | `'x-content-type-options'`           |
+| `http2.constants.HTTP2_HEADER_X_FRAME_OPTIONS`                  | `'x-frame-options'`                  |
+| `http2.constants.HTTP2_HEADER_KEEP_ALIVE`                       | `'keep-alive'`                       |
+| `http2.constants.HTTP2_HEADER_PROXY_CONNECTION`                 | `'proxy-connection'`                 |
+| `http2.constants.HTTP2_HEADER_X_XSS_PROTECTION`                 | `'x-xss-protection'`                 |
+| `http2.constants.HTTP2_HEADER_ALT_SVC`                          | `'alt-svc'`                          |
+| `http2.constants.HTTP2_HEADER_CONTENT_SECURITY_POLICY`          | `'content-security-policy'`          |
+| `http2.constants.HTTP2_HEADER_EARLY_DATA`                       | `'early-data'`                       |
+| `http2.constants.HTTP2_HEADER_EXPECT_CT`                        | `'expect-ct'`                        |
+| `http2.constants.HTTP2_HEADER_ORIGIN`                           | `'origin'`                           |
+| `http2.constants.HTTP2_HEADER_PURPOSE`                          | `'purpose'`                          |
+| `http2.constants.HTTP2_HEADER_TIMING_ALLOW_ORIGIN`              | `'timing-allow-origin'`              |
+| `http2.constants.HTTP2_HEADER_X_FORWARDED_FOR`                  | `'x-forwarded-for'`                  |
+| `http2.constants.HTTP2_HEADER_PRIORITY`                         | `'priority'`                         |
+| `http2.constants.HTTP2_HEADER_ACCEPT_CHARSET`                   | `'accept-charset'`                   |
+| `http2.constants.HTTP2_HEADER_ACCESS_CONTROL_MAX_AGE`           | `'access-control-max-age'`           |
+| `http2.constants.HTTP2_HEADER_ALLOW`                            | `'allow'`                            |
+| `http2.constants.HTTP2_HEADER_CONTENT_LANGUAGE`                 | `'content-language'`                 |
+| `http2.constants.HTTP2_HEADER_CONTENT_LOCATION`                 | `'content-location'`                 |
+| `http2.constants.HTTP2_HEADER_CONTENT_MD5`                      | `'content-md5'`                      |
+| `http2.constants.HTTP2_HEADER_CONTENT_RANGE`                    | `'content-range'`                    |
+| `http2.constants.HTTP2_HEADER_DNT`                              | `'dnt'`                              |
+| `http2.constants.HTTP2_HEADER_EXPECT`                           | `'expect'`                           |
+| `http2.constants.HTTP2_HEADER_EXPIRES`                          | `'expires'`                          |
+| `http2.constants.HTTP2_HEADER_FROM`                             | `'from'`                             |
+| `http2.constants.HTTP2_HEADER_IF_MATCH`                         | `'if-match'`                         |
+| `http2.constants.HTTP2_HEADER_IF_UNMODIFIED_SINCE`              | `'if-unmodified-since'`              |
+| `http2.constants.HTTP2_HEADER_MAX_FORWARDS`                     | `'max-forwards'`                     |
+| `http2.constants.HTTP2_HEADER_PREFER`                           | `'prefer'`                           |
+| `http2.constants.HTTP2_HEADER_PROXY_AUTHENTICATE`               | `'proxy-authenticate'`               |
+| `http2.constants.HTTP2_HEADER_PROXY_AUTHORIZATION`              | `'proxy-authorization'`              |
+| `http2.constants.HTTP2_HEADER_REFRESH`                          | `'refresh'`                          |
+| `http2.constants.HTTP2_HEADER_RETRY_AFTER`                      | `'retry-after'`                      |
+| `http2.constants.HTTP2_HEADER_TRAILER`                          | `'trailer'`                          |
+| `http2.constants.HTTP2_HEADER_TK`                               | `'tk'`                               |
+| `http2.constants.HTTP2_HEADER_VIA`                              | `'via'`                              |
+| `http2.constants.HTTP2_HEADER_WARNING`                          | `'warning'`                          |
+| `http2.constants.HTTP2_HEADER_WWW_AUTHENTICATE`                 | `'www-authenticate'`                 |
+| `http2.constants.HTTP2_HEADER_HTTP2_SETTINGS`                   | `'http2-settings'`                   |
 
 #### Error codes for `RST_STREAM` and `GOAWAY`
 
@@ -3542,7 +3738,7 @@ For incoming headers:
 * The `:status` header is converted to `number`.
 * Duplicates of `:status`, `:method`, `:authority`, `:scheme`, `:path`,
   `:protocol`, `age`, `authorization`, `access-control-allow-credentials`,
-  `access-control-max-age`, `access-control-request-method`, `content-encoding`,
+  `access-control-max-age`, `access-control-request-method`,
   `content-language`, `content-length`, `content-location`, `content-md5`,
   `content-range`, `content-type`, `date`, `dnt`, `etag`, `expires`, `from`,
   `host`, `if-match`, `if-modified-since`, `if-none-match`, `if-range`,
@@ -3657,6 +3853,9 @@ properties.
 * `initialWindowSize` {number} Specifies the _sender's_ initial window size in
   bytes for stream-level flow control. The minimum allowed value is 0. The
   maximum allowed value is 2<sup>32</sup>-1. **Default:** `4194304`.
+  This is a per-stream limit; the window for the connection as a whole is
+  configured separately with the `connectionWindowSize` option of
+  [`http2.createServer()`][] or [`http2.connect()`][].
 * `maxFrameSize` {number} Specifies the size in bytes of the largest frame
   payload. The minimum allowed value is 16,384. The maximum allowed value is
   2<sup>24</sup>-1. **Default:** `16384`.
@@ -3976,9 +4175,10 @@ API:
 ```mjs
 import { createServer } from 'node:http2';
 const server = createServer((req, res) => {
-  res.setHeader('Content-Type', 'text/html');
-  res.setHeader('X-Foo', 'bar');
-  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'X-Foo': 'bar',
+  });
   res.end('ok');
 });
 ```
@@ -3986,9 +4186,10 @@ const server = createServer((req, res) => {
 ```cjs
 const http2 = require('node:http2');
 const server = http2.createServer((req, res) => {
-  res.setHeader('Content-Type', 'text/html');
-  res.setHeader('X-Foo', 'bar');
-  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'X-Foo': 'bar',
+  });
   res.end('ok');
 });
 ```
@@ -4080,7 +4281,10 @@ data.
 
 <!-- YAML
 added: v8.4.0
+deprecated: v27.0.0-alpha.0.0.0
 -->
+
+> Stability: 0 - Deprecated
 
 The `'aborted'` event is emitted whenever a `Http2ServerRequest` instance
 is closed while the underlying writable side is still open.
@@ -4098,9 +4302,12 @@ Just like `'end'`, this event occurs only once per response.
 
 <!-- YAML
 added: v10.1.0
+deprecated: v27.0.0-alpha.0.0.0
 -->
 
 * Type: {boolean}
+
+> Stability: 0 - Deprecated
 
 The `request.aborted` property will be `true` if the request has
 been aborted.
@@ -4704,6 +4911,45 @@ const server = http2.createServer((req, res) => {
 });
 ```
 
+#### `response.setHeaders(headers)`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+* `headers` {Headers|Map}
+
+Sets multiple header values for implicit headers.
+`headers` must be an instance of [`Headers`][] or `Map`.
+If a header already exists in the to-be-sent headers,
+its value will be replaced.
+
+```js
+const headers = new Headers({ foo: 'bar' });
+response.setHeaders(headers);
+```
+
+or
+
+```js
+const headers = new Map([['foo', 'bar']]);
+response.setHeaders(headers);
+```
+
+When headers have been set with [`response.setHeaders()`][],
+they will be merged with any headers passed to [`response.writeHead()`][],
+with the headers passed to [`response.writeHead()`][] given precedence.
+
+```js
+// Returns content-type = text/plain
+const server = http2.createServer((req, res) => {
+  const headers = new Headers({ 'Content-Type': 'text/html' });
+  res.setHeaders(headers);
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('ok');
+});
+```
+
 #### `response.setTimeout(msecs[, callback])`
 
 <!-- YAML
@@ -4857,23 +5103,40 @@ Returns `true` if the entire data was flushed successfully to the kernel
 buffer. Returns `false` if all or part of the data was queued in user memory.
 `'drain'` will be emitted when the buffer is free again.
 
-#### `response.writeContinue()`
+#### `response.writeContinue([callback])`
 
 <!-- YAML
 added: v8.4.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67470
+    description: Added the `callback` argument.
 -->
+
+* `callback` {Function} Optional, called once the informational headers
+  have been written to the socket, or with an error if they could not be
+  written. It is not called if nothing is sent.
+  * `err` {Error|null}
 
 Sends a status `100 Continue` to the client, indicating that the request body
 should be sent. See the [`'checkContinue'`][] event on `Http2Server` and
 `Http2SecureServer`.
 
-#### `response.writeEarlyHints(hints)`
+#### `response.writeEarlyHints(hints[, callback])`
 
 <!-- YAML
 added: v18.11.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67470
+    description: Added the `callback` argument.
 -->
 
 * `hints` {Object}
+* `callback` {Function} Optional, called once the informational headers
+  have been written to the socket, or with an error if they could not be
+  written. It is not called if nothing is sent.
+  * `err` {Error|null}
 
 Sends a status `103 Early Hints` to the client with a Link header,
 indicating that the user agent can preload/preconnect the linked resources.
@@ -4897,12 +5160,16 @@ response.writeEarlyHints({
 });
 ```
 
-#### `response.writeInformation(statusCode[, headers])`
+#### `response.writeInformation(statusCode[, headers[, callback]])`
 
 <!-- YAML
 added:
   - v26.2.0
   - v24.18.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67470
+    description: Added the `callback` argument.
 -->
 
 * `statusCode` {number} An HTTP 1xx informational status code, between `100`
@@ -4910,6 +5177,10 @@ added:
   allowed in HTTP/2.
 * `headers` {Object} An optional object of headers to send with the
   informational response.
+* `callback` {Function} Optional, called once the informational headers
+  have been written to the socket, or with an error if they could not be
+  written. It is not called if nothing is sent.
+  * `err` {Error|null}
 
 Sends an arbitrary HTTP 1xx informational response, equivalent in HTTP/2 to a
 `HEADERS` frame whose `:status` pseudo-header is a 1xx code. May be called
@@ -5087,6 +5358,7 @@ you need to implement any fall-back behavior yourself.
 [HTTP/2 Settings Object]: #settings-object
 [HTTP/2 Unencrypted]: https://http2.github.io/faq/#does-http2-require-encryption
 [HTTPS]: https.md
+[Invalid character handling in header names and values]: #invalid-character-handling-in-header-names-and-values
 [Performance Observer]: perf_hooks.md
 [RFC 7838]: https://tools.ietf.org/html/rfc7838
 [RFC 8336]: https://tools.ietf.org/html/rfc8336
@@ -5101,6 +5373,7 @@ you need to implement any fall-back behavior yourself.
 [`Duplex`]: stream.md#class-streamduplex
 [`ERR_HTTP2_STREAM_ABORTED`]: errors.md#err_http2_stream_aborted
 [`ERR_HTTP2_STREAM_ERROR`]: errors.md#err_http2_stream_error
+[`Headers`]: globals.md#class-headers
 [`Http2ServerRequest`]: #class-http2http2serverrequest
 [`Http2ServerResponse`]: #class-http2http2serverresponse
 [`Http2Session` and Sockets]: #http2session-and-sockets
@@ -5111,6 +5384,7 @@ you need to implement any fall-back behavior yourself.
 [`http.createServer()`]: http.md#httpcreateserveroptions-requestlistener
 [`http2.SecureServer`]: #class-http2secureserver
 [`http2.Server`]: #class-http2server
+[`http2.connect()`]: #http2connectauthority-options-listener
 [`http2.createSecureServer()`]: #http2createsecureserveroptions-onrequesthandler
 [`http2.createServer()`]: #http2createserveroptions-onrequesthandler
 [`http2stream.pushStream()`]: #http2streampushstreamheaders-options-callback
@@ -5128,12 +5402,13 @@ you need to implement any fall-back behavior yourself.
 [`request.socket`]: #requestsocket
 [`response.end()`]: #responseenddata-encoding-callback
 [`response.setHeader()`]: #responsesetheadername-value
+[`response.setHeaders()`]: #responsesetheadersheaders
 [`response.socket`]: #responsesocket
 [`response.writableEnded`]: #responsewritableended
 [`response.write()`]: #responsewritechunk-encoding-callback
 [`response.write(data, encoding)`]: http.md#responsewritechunk-encoding-callback
-[`response.writeContinue()`]: #responsewritecontinue
-[`response.writeEarlyHints()`]: #responsewriteearlyhintshints
+[`response.writeContinue()`]: #responsewritecontinuecallback
+[`response.writeEarlyHints()`]: #responsewriteearlyhintshints-callback
 [`response.writeHead()`]: #responsewriteheadstatuscode-statusmessage-headers
 [`server.close()`]: #serverclosecallback
 [`server.maxHeadersCount`]: http.md#servermaxheaderscount

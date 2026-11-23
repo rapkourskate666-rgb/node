@@ -774,6 +774,9 @@ the API is not useful.
 
 <!-- YAML
 changes:
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/65074
+    description: Runtime deprecation.
   - version:
     - v6.12.0
     - v4.8.6
@@ -784,9 +787,10 @@ changes:
     description: Documentation-only deprecation.
 -->
 
-Type: Documentation-only
+Type: Runtime
 
-The [`domain`][] module is deprecated and should not be used.
+The [`domain`][] module is deprecated and should not be used. Loading the
+module emits a runtime deprecation warning.
 
 ### DEP0033: `EventEmitter.listenerCount()`
 
@@ -2228,6 +2232,9 @@ or `module.exports` instead.
 
 <!-- YAML
 changes:
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/64777
+    description: End-of-Life.
   - version: v23.0.0
     pr-url: https://github.com/nodejs/node/pull/55019
     description: Runtime deprecation.
@@ -2236,9 +2243,9 @@ changes:
     description: Documentation-only deprecation.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
-The [`crypto.fips`][] property is deprecated. Please use `crypto.setFips()`
+The `crypto.fips` property is no longer supported. Use `crypto.setFips()`
 and `crypto.getFips()` instead.
 
 An automated migration is available ([source](https://github.com/nodejs/userland-migrations/tree/main/recipes/crypto-fips-to-getFips)).
@@ -2315,7 +2322,7 @@ npx codemod @nodejs/timers-deprecations
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/61095
     description: End-of-Life.
   - version: v10.0.0
@@ -3495,6 +3502,9 @@ npx codemod@latest @nodejs/crypto-rsa-pss-update
 
 <!-- YAML
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67488
+    description: End-of-Life.
   - version: v17.0.0
     pr-url: https://github.com/nodejs/node/pull/40117
     description: Runtime deprecation.
@@ -3504,10 +3514,11 @@ changes:
                  with `--pending-deprecation` support.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
-The remapping of specifiers ending in `"/"` like `import 'pkg/x/'` is deprecated
-for package `"exports"` and `"imports"` pattern resolutions.
+The remapping of specifiers ending in `"/"` like `import 'pkg/x/'` is no longer
+supported for package `"exports"` and `"imports"` pattern resolutions. Such
+specifiers throw an [`ERR_INVALID_MODULE_SPECIFIER`][] error.
 
 ### DEP0156: `.aborted` property and `'abort'`, `'aborted'` event in `http`
 
@@ -3751,6 +3762,9 @@ that will be removed in a future V8 release.
 
 <!-- YAML
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67488
+    description: End-of-Life.
   - version: v19.0.0
     pr-url: https://github.com/nodejs/node/pull/44495
     description: Runtime deprecation.
@@ -3760,12 +3774,12 @@ changes:
                  with `--pending-deprecation` support.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
 Package imports and exports targets mapping into paths including a double slash
-(of _"/"_ or _"\\"_) are deprecated and will fail with a resolution validation
-error in a future release. This same deprecation also applies to pattern matches
-starting or ending in a slash.
+(of _"/"_ or _"\\"_) throw an [`ERR_INVALID_PACKAGE_TARGET`][] error. Pattern
+matches starting or ending in a slash, or containing a double slash, throw an
+[`ERR_INVALID_MODULE_SPECIFIER`][] error.
 
 ### DEP0167: Weak `DiffieHellmanGroup` instances (`modp1`, `modp2`, `modp5`)
 
@@ -4024,6 +4038,9 @@ npx codemod@latest @nodejs/dirent-path-to-parent-path
 
 <!-- YAML
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67490
+    description: End-of-Life.
   - version: v22.0.0
     pr-url: https://github.com/nodejs/node/pull/51880
     description: Runtime deprecation.
@@ -4034,11 +4051,13 @@ changes:
     description: Documentation-only deprecation.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
-Calling `Hash` class directly with `Hash()` or `new Hash()` is
-deprecated due to being internals, not intended for public use.
-Please use the [`crypto.createHash()`][] method to create Hash instances.
+Calling `Hash` class directly with `Hash()` or `new Hash()` throws an
+`ERR_ILLEGAL_CONSTRUCTOR` error. The constructor is internal and not intended
+for public use. Use the [`crypto.createHash()`][] method to create Hash
+instances. The class remains exported, so `instanceof crypto.Hash` checks
+continue to work.
 
 ### DEP0180: `fs.Stats` constructor
 
@@ -4061,6 +4080,9 @@ deprecated due to being internals, not intended for public use.
 
 <!-- YAML
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67490
+    description: End-of-Life.
   - version: v22.0.0
     pr-url: https://github.com/nodejs/node/pull/52071
     description: Runtime deprecation.
@@ -4069,11 +4091,13 @@ changes:
     description: Documentation-only deprecation.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
-Calling `Hmac` class directly with `Hmac()` or `new Hmac()` is
-deprecated due to being internals, not intended for public use.
-Please use the [`crypto.createHmac()`][] method to create Hmac instances.
+Calling `Hmac` class directly with `Hmac()` or `new Hmac()` throws an
+`ERR_ILLEGAL_CONSTRUCTOR` error. The constructor is internal and not intended
+for public use. Use the [`crypto.createHmac()`][] method to create Hmac
+instances. The class remains exported, so `instanceof crypto.Hmac` checks
+continue to work.
 
 ### DEP0182: Short GCM authentication tags without explicit `authTagLength`
 
@@ -4104,9 +4128,9 @@ that are shorter than the default authentication tag length (i.e., shorter than
 
 <!-- YAML
 changes:
-  - version: REPLACEME
-    pr-url: https://github.com/nodejs/node/pull/63966
-    description: Runtime deprecation.
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/64777
+    description: End-of-Life.
   - version:
     - v22.4.0
     - v20.16.0
@@ -4114,18 +4138,23 @@ changes:
     description: Documentation-only deprecation.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
-OpenSSL 3 has deprecated support for custom engines with a recommendation to
-switch to its new provider model. The `clientCertEngine` option for
-`https.request()`, [`tls.createSecureContext()`][], and [`tls.createServer()`][];
-the `privateKeyEngine` and `privateKeyIdentifier` for [`tls.createSecureContext()`][];
-and [`crypto.setEngine()`][] all depend on this functionality from OpenSSL.
+The `crypto.setEngine()` API and the `crypto.constants.ENGINE_METHOD_*`
+constants have been removed. The `clientCertEngine` option for
+[`https.request()`][], [`tls.createSecureContext()`][], and
+[`tls.createServer()`][] and the `privateKeyEngine` and `privateKeyIdentifier`
+options for [`tls.createSecureContext()`][] now throw
+`ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED` when used. There is no direct
+replacement API in Node.js. OpenSSL's provider model replaces engines upstream.
 
 ### DEP0184: Instantiating `node:zlib` classes without `new`
 
 <!-- YAML
 changes:
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/64849
+    description: End-of-Life.
   - version: v24.0.0
     pr-url: https://github.com/nodejs/node/pull/55718
     description: Runtime deprecation.
@@ -4136,11 +4165,12 @@ changes:
     description: Documentation-only deprecation.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
-Instantiating classes without the `new` qualifier exported by the `node:zlib` module is deprecated.
-It is recommended to use the `new` qualifier instead. This applies to all Zlib classes, such as `Deflate`,
-`DeflateRaw`, `Gunzip`, `Inflate`, `InflateRaw`, `Unzip`, and `Zlib`.
+Instantiating classes without the `new` qualifier exported by the `node:zlib` module is no longer
+supported. The `new` qualifier must be used instead. This applies to all Zlib classes, such as
+`Deflate`, `DeflateRaw`, `Gunzip`, `Inflate`, `InflateRaw`, `Unzip`, `BrotliCompress`,
+`BrotliDecompress`, `ZstdCompress`, and `ZstdDecompress`.
 
 ### DEP0185: Instantiating `node:repl` classes without `new`
 
@@ -4177,6 +4207,9 @@ npx codemod@latest @nodejs/repl-classes-with-new
 
 <!-- YAML
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67494
+    description: End-of-Life.
   - version: v24.0.0
     pr-url: https://github.com/nodejs/node/pull/55753
     description: Runtime deprecation.
@@ -4188,10 +4221,10 @@ changes:
     description: Documentation-only.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
-Passing non-supported argument types is deprecated and, instead of returning `false`,
-will throw an error in a future version.
+Passing non-supported argument types to `fs.existsSync()` throws an
+`ERR_INVALID_ARG_TYPE` error instead of returning `false`.
 
 ### DEP0188: `process.features.ipv6` and `process.features.uv`
 
@@ -4273,7 +4306,7 @@ npx codemod@latest @nodejs/repl-builtin-modules
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/60658
     description: End-of-Life.
   - version:
@@ -4341,7 +4374,7 @@ npx codemod@latest @nodejs/http2-priority-signaling
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/64853
     description: Runtime deprecation.
   - version:
@@ -4412,7 +4445,7 @@ npx codemod@latest @nodejs/types-is-native-error
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/64000
     description: End-of-Life.
   - version: v25.0.0
@@ -4435,6 +4468,9 @@ Creating SHAKE-128 and SHAKE-256 digests without an explicit
 
 <!-- YAML
 changes:
+  - version: v27.0.0-alpha.0.0.0
+    pr-url: https://github.com/nodejs/node/pull/58535
+    description: Runtime deprecation.
   - version:
      - v24.6.0
      - v22.19.0
@@ -4442,7 +4478,7 @@ changes:
     description: Documentation-only deprecation.
 -->
 
-Type: Documentation-only
+Type: Runtime
 
 The `node:_http_agent`, `node:_http_client`, `node:_http_common`, `node:_http_incoming`,
 `node:_http_outgoing` and `node:_http_server` modules are deprecated as they should be considered
@@ -4556,7 +4592,7 @@ const server = http2.createSecureServer({
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/63188
     description: End-of-Life.
   - version: v26.0.0
@@ -4577,7 +4613,7 @@ Passing a [`CryptoKey`][] to `node:crypto` functions is no longer supported.
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/63188
     description: End-of-Life.
   - version: v26.0.0
@@ -4599,6 +4635,9 @@ no longer supported.
 
 <!-- YAML
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67090
+    description: End-of-Life.
   - version: v26.0.0
     pr-url: https://github.com/nodejs/node/pull/62401
     description: Runtime deprecation.
@@ -4609,24 +4648,24 @@ changes:
     description: Documentation-only deprecation.
 -->
 
-Type: Runtime
+Type: End-of-Life
 
-[`module.register()`][] is deprecated. Use [`module.registerHooks()`][]
-instead.
+The `module.register()` API and the `--experimental-loader` and `--loader`
+flags have been removed. Use [`module.registerHooks()`][] instead.
 
-The `module.register()` API provides off-thread async hooks for customizing ES modules;
-the `module.registerHooks()` API provides similar hooks that are synchronous, in-thread, and
-work for all types of modules.
-Supporting async hooks has proven to be complex, involving worker threads orchestration, and there are issues
-that have proven unresolvable. See [caveats of asynchronous customization hooks][]. Please migrate to
-`module.registerHooks()` as soon as possible as `module.register()` will be
-removed in a future version of Node.js.
+The `module.register()` API provided off-thread async module customization
+hooks for customizing ES modules. The `module.registerHooks()` API provides
+similar hooks that are synchronous, in-thread and work for all types of modules.
+To continue running async module customization off-thread, users can spawn their
+own threads to run the async customizations, communicate from the in-thread
+synchronous hooks and block for the results on the main thread, similar to how
+`module.register()` worked internally.
 
 ### DEP0206: Calling `digest()` on an already-finalized `Hmac` instance
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/63624
     description: Runtime deprecation.
   - version:
@@ -4643,11 +4682,11 @@ throwing an error. This behavior is inconsistent with `hash.digest()` and
 may lead to subtle bugs. Calling `hmac.digest()` on a finalized `Hmac` instance
 will throw an error in a future version.
 
-### DEP0207: `.aborted` property and `'aborted'` event in `http2`
+### DEP0207: `.aborted` property and `'aborted'` event in `node:http2`
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/63249
     description: Documentation-only deprecation.
 -->
@@ -4701,9 +4740,14 @@ successfully before the response closed.
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/64794
     description: Runtime deprecation.
+  - version:
+    - v26.8.2
+    - v24.22.0
+    pr-url: https://github.com/nodejs/node/pull/64794
+    description: Documentation-only.
 -->
 
 Type: Runtime
@@ -4713,6 +4757,184 @@ function that sets up the listening handle. It is kept only so that code
 replacing it keeps being called by [`server.listen()`][], and it will be
 removed in a future version of Node.js. Use [`server.listen()`][] instead of
 calling or overriding `_listen2`.
+
+### DEP0209: Using `AbortSignal` to dispose of resources
+
+<!-- YAML
+changes:
+  - version:
+    - v26.8.2
+    - v24.22.0
+    pr-url: https://github.com/nodejs/node/pull/64342
+    description: Documentation-only deprecation.
+-->
+
+Type: Documentation-only
+
+Using `AbortSignal` to destroy long-lived resources is deprecated. Prefer
+`using` for resource cleanup.
+
+`AbortSignal` is still a good fit for canceling actions, propagating
+cancellation from the outside, and timeouts.
+
+```js
+// Deprecated
+async function example() {
+  const ac = new AbortController();
+  const server = http.createServer(handler);
+  server.listen({ port: 3000, signal: ac.signal });
+
+  await doWork();
+  ac.abort();
+}
+```
+
+```js
+// Use this instead
+async function example() {
+  await using server = http.createServer(handler);
+  server.listen(3000);
+
+  await doWork();
+}
+```
+
+```js
+// Deprecated
+async function example() {
+  const ac = new AbortController();
+  const stream = addAbortSignal(ac.signal, fs.createReadStream(file));
+
+  await consume(stream);
+  ac.abort();
+}
+```
+
+```js
+// Use this instead
+async function example() {
+  await using stream = fs.createReadStream(file);
+
+  await consume(stream);
+}
+```
+
+```js
+// Deprecated
+async function example() {
+  const ac = new AbortController();
+  const child = spawn(command, args, { signal: ac.signal });
+
+  await doWork();
+  ac.abort();
+}
+```
+
+```js
+// Use this instead
+async function example() {
+  using child = spawn(command, args);
+
+  await doWork();
+}
+```
+
+### DEP0210: `sqlite.DatabaseSync`
+
+<!-- YAML
+changes:
+  - version: v26.11.0
+    pr-url: https://github.com/nodejs/node/pull/65988
+    description: Documentation-only deprecation.
+-->
+
+Type: Documentation-only
+
+`node:sqlite`'s `DatabaseSync` class was renamed to `Database`. `DatabaseSync`
+is kept as a deprecated alias. Use `Database` instead.
+
+### DEP0211: `sqlite.StatementSync`
+
+<!-- YAML
+changes:
+  - version: v26.11.0
+    pr-url: https://github.com/nodejs/node/pull/65988
+    description: Documentation-only deprecation.
+-->
+
+Type: Documentation-only
+
+`node:sqlite`'s `StatementSync` class was renamed to `Statement`.
+`StatementSync` is kept as a deprecated alias. Use `Statement` instead.
+
+### DEP0212: `util.TextDecoder` and `util.TextEncoder`
+
+<!-- YAML
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67461
+    description: Documentation-only deprecation.
+-->
+
+Type: Documentation-only
+
+`node:util`'s `util.TextDecoder` and `util.TextEncoder` are deprecated.
+Use global `TextDecoder` and `TextEncoder` instead.
+
+### DEP0213: TLS renegotiation
+
+<!-- YAML
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67618
+    description: Runtime deprecation. Renegotiation is disabled by default.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/67532
+    description: Documentation-only deprecation
+                 with `--pending-deprecation` support.
+-->
+
+Type: Runtime
+
+TLS renegotiation is deprecated and is disabled by default. This functionality
+will be largely removed in a subsequent release. Only a client accepting
+server-initiated renegotiation requests is expected to remain supported, and
+on an opt-in basis for legacy server compatibility.
+
+This only affects TLS 1.2. TLS 1.3 removed renegotiation from the standard,
+and so this has never been supported.
+
+Avoid using TLS renegotiation. A server that needs a client certificate should
+request it in the initial configuration, with the `requestCert` option of
+[`tls.createServer()`][]. A client that needs to change the configuration of
+an existing connection should create a new connection.
+
+This affects multiple TLS APIs:
+
+* Node.js TLS clients needing to initiate renegotiation locally, or accept
+  renegotiation requested by the server, must opt in by setting the
+  `allowRenegotiation` option of [`tls.connect()`][]. Accepting renegotiation
+  requested by the server does not emit a deprecation warning.
+* Node.js TLS servers needing to initiate renegotiation locally, or accept
+  renegotiation requested by the client, must opt in by setting the
+  `allowRenegotiation` option of [`tls.createServer()`][], which emits a
+  deprecation warning.
+  If renegotiation by clients is removed in future, setting this option to
+  `true` on a server will throw an error.
+* In either case, initiating renegotiation ([`tlsSocket.renegotiate()`][])
+  emits a deprecation warning, and should be avoided by using alternative
+  mechanisms. This method only works on connections created with the
+  `allowRenegotiation` option, and will throw an error if not.
+  If initiating renegotiation is removed in future, this method will throw
+  an error.
+* Using [`tlsSocket.disableRenegotiation()`][] to disable renegotiation is
+  no longer necessary. It is a no-op unless the connection was created with
+  the `allowRenegotiation` option.
+* The `tls.CLIENT_RENEG_LIMIT` and `tls.CLIENT_RENEG_WINDOW` properties which
+  limit renegotiation are unused unless a server sets the `allowRenegotiation`
+  option. Reading or writing either emits a deprecation warning.
+  If renegotiation by clients is removed in future these are likely to be
+  removed.
 
 [DEP0142]: #dep0142-repl_builtinlibs
 [DEP0156]: #dep0156-aborted-property-and-abort-aborted-event-in-http
@@ -4735,6 +4957,8 @@ calling or overriding `_listen2`.
 [`CryptoKey`]: webcrypto.md#class-cryptokey
 [`Decipheriv`]: crypto.md#class-decipheriv
 [`Duplex.toWeb()`]: stream.md#streamduplextowebstreamduplex-options
+[`ERR_INVALID_MODULE_SPECIFIER`]: errors.md#err_invalid_module_specifier
+[`ERR_INVALID_PACKAGE_TARGET`]: errors.md#err_invalid_package_target
 [`Error.isError`]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error/isError
 [`KeyObject.from()`]: crypto.md#static-method-keyobjectfromkey
 [`REPLServer.clearBufferedCommand()`]: repl.md#replserverclearbufferedcommand
@@ -4759,11 +4983,9 @@ calling or overriding `_listen2`.
 [`crypto.createDecipheriv()`]: crypto.md#cryptocreatedecipherivalgorithm-key-iv-options
 [`crypto.createHash()`]: crypto.md#cryptocreatehashalgorithm-options
 [`crypto.createHmac()`]: crypto.md#cryptocreatehmacalgorithm-key-options
-[`crypto.fips`]: crypto.md#cryptofips
 [`crypto.pbkdf2()`]: crypto.md#cryptopbkdf2password-salt-iterations-keylen-digest-callback
 [`crypto.randomBytes()`]: crypto.md#cryptorandombytessize-callback
 [`crypto.scrypt()`]: crypto.md#cryptoscryptpassword-salt-keylen-options-callback
-[`crypto.setEngine()`]: crypto.md#cryptosetengineengine-flags
 [`decipher.final()`]: crypto.md#decipherfinaloutputencoding
 [`decipher.setAuthTag()`]: crypto.md#deciphersetauthtagbuffer-encoding
 [`dirent.parentPath`]: fs.md#direntparentpath
@@ -4807,7 +5029,6 @@ calling or overriding `_listen2`.
 [`message.trailersDistinct`]: http.md#messagetrailersdistinct
 [`message.trailers`]: http.md#messagetrailers
 [`module.createRequire()`]: module.md#modulecreaterequirefilename
-[`module.register()`]: module.md#moduleregisterspecifier-parenturl-options
 [`module.registerHooks()`]: module.md#moduleregisterhooksoptions
 [`os.networkInterfaces()`]: os.md#osnetworkinterfaces
 [`os.tmpdir()`]: os.md#ostmpdir
@@ -4841,8 +5062,11 @@ calling or overriding `_listen2`.
 [`tls.SecureContext`]: tls.md#tlscreatesecurecontextoptions
 [`tls.TLSSocket`]: tls.md#class-tlstlssocket
 [`tls.checkServerIdentity()`]: tls.md#tlscheckserveridentityhostname-cert
+[`tls.connect()`]: tls.md#tlsconnectoptions-callback
 [`tls.createSecureContext()`]: tls.md#tlscreatesecurecontextoptions
 [`tls.createServer()`]: tls.md#tlscreateserveroptions-secureconnectionlistener
+[`tlsSocket.disableRenegotiation()`]: tls.md#tlssocketdisablerenegotiation
+[`tlsSocket.renegotiate()`]: tls.md#tlssocketrenegotiateoptions-callback
 [`url.format()`]: url.md#urlformaturlobject
 [`url.format(urlString)`]: url.md#urlformaturlstring
 [`url.parse()`]: url.md#urlparseurlstring-parsequerystring-slashesdenotehost
@@ -4863,7 +5087,6 @@ calling or overriding `_listen2`.
 [`zlib.bytesWritten`]: zlib.md#zlibbyteswritten
 [alloc]: buffer.md#static-method-bufferallocsize-fill-encoding
 [alloc_unsafe_size]: buffer.md#static-method-bufferallocunsafesize-alignment
-[caveats of asynchronous customization hooks]: module.md#caveats-of-asynchronous-customization-hooks
 [from_arraybuffer]: buffer.md#static-method-bufferfromarraybuffer-byteoffset-length
 [from_string_encoding]: buffer.md#static-method-bufferfromstring-encoding
 [legacy URL API]: url.md#legacy-url-api

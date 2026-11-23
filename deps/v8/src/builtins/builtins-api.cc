@@ -43,7 +43,7 @@ bool IsCompatibleReceiver(Isolate* isolate, Tagged<FunctionTemplateInfo> info,
   // The JSGlobalProxy might have a hidden prototype.
   if (V8_UNLIKELY(IsJSGlobalProxy(js_obj_receiver))) {
     Tagged<HeapObject> prototype = js_obj_receiver->map()->prototype();
-    if (!IsNull(prototype, isolate)) {
+    if (!IsNull(prototype)) {
       Tagged<JSObject> js_obj_prototype = Cast<JSObject>(prototype);
       if (signature->IsTemplateFor(js_obj_prototype)) return true;
     }
@@ -65,8 +65,8 @@ V8_WARN_UNUSED_RESULT MaybeHandle<Object> HandleApiCallHelper(
 
   Handle<JSReceiver> js_receiver;
   if (is_construct) {
-    DCHECK(IsTheHole(*receiver, isolate));
-    if (IsUndefined(fun_data->GetInstanceTemplate(), isolate)) {
+    DCHECK(IsTdzHole(*receiver));
+    if (IsUndefined(fun_data->GetInstanceTemplate())) {
       v8::Local<ObjectTemplate> templ =
           ObjectTemplate::New(reinterpret_cast<v8::Isolate*>(isolate),
                               ToApiHandle<v8::FunctionTemplate>(fun_data));
@@ -134,7 +134,7 @@ BUILTIN(HandleApiConstruct) {
   HandleScope scope(isolate);
   DirectHandle<Object> receiver = args.receiver();
   DirectHandle<HeapObject> new_target = args.new_target();
-  DCHECK(!IsUndefined(*new_target, isolate));
+  DCHECK(!IsUndefined(*new_target));
   DirectHandle<FunctionTemplateInfo> fun_data(
       args.target()->shared()->api_func_data(), isolate);
 
@@ -154,8 +154,31 @@ MaybeHandle<Object> Builtins::InvokeApiFunction(
     Isolate* isolate, bool is_construct,
     DirectHandle<FunctionTemplateInfo> function, DirectHandle<Object> receiver,
     base::Vector<const DirectHandle<Object>> args,
-    DirectHandle<HeapObject> new_target) {
+    DirectHandle<HeapObject> new_target,
+    SideEffectType overrider_side_effect_type) {
   RCS_SCOPE(isolate, RuntimeCallCounterId::kInvokeApiFunction);
+
+  if (!is_construct ||
+      (function->has_callback(isolate) && function->has_side_effects() &&
+       overrider_side_effect_type != SideEffectType::kHasNoSideEffect)) {
+    if (!AllowJavascriptExecution::IsAllowed(isolate)) {
+      GRACEFUL_FATAL("Invoke in DisallowJavascriptExecutionScope");
+    }
+    if (!ThrowOnJavascriptExecution::IsAllowed(isolate)) {
+      isolate->ThrowIllegalOperation();
+      return MaybeHandle<Object>();
+    }
+    if (!DumpOnJavascriptExecution::IsAllowed(isolate)) {
+      V8::GetCurrentPlatform()->DumpWithoutCrashing();
+      if (is_construct) {
+        // TODO(crbug.com/576333024): Fix callers to handle empty return values
+        // without a pending exception when DumpOnJavascriptExecution disallows
+        // execution.
+        return isolate->factory()->NewJSObject(isolate->object_function());
+      }
+      return isolate->factory()->undefined_value();
+    }
+  }
 
   // Do proper receiver conversion for non-strict mode api functions.
   if (!is_construct && !IsJSReceiver(*receiver)) {
@@ -206,7 +229,7 @@ HandleApiCallAsFunctionOrConstructorDelegate(Isolate* isolate,
   DCHECK(constructor->shared()->IsApiFunction());
   Tagged<Object> handler =
       constructor->shared()->api_func_data()->GetInstanceCallHandler();
-  DCHECK(!IsUndefined(handler, isolate));
+  DCHECK(!IsUndefined(handler));
   Tagged<FunctionTemplateInfo> templ = Cast<FunctionTemplateInfo>(handler);
   DCHECK(templ->is_object_template_call_handler());
   DCHECK(templ->has_callback(isolate));

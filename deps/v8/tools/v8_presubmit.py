@@ -36,7 +36,8 @@ import json
 import multiprocessing
 import optparse
 import os
-from os.path import abspath, join, dirname, basename, exists, isfile, isdir
+from os.path import (abspath, join, dirname, basename, exists, isfile, isdir,
+                     relpath)
 import pickle
 import re
 import subprocess
@@ -74,10 +75,11 @@ LINT_RULES = """
 """.split()
 
 LINT_OUTPUT_PATTERN = re.compile(r'^.+[:(]\d+[:)]')
-FLAGS_LINE = re.compile("//\s*Flags:.*--([A-z0-9-])+_[A-z0-9].*\n")
+FLAGS_LINE = re.compile(r"//\s*Flags:.*--([A-z0-9-])+_[A-z0-9].*\n")
 ASSERT_OPTIMIZED_PATTERN = re.compile("assertOptimized")
-FLAGS_ENABLE_MAGLEV = re.compile("//\s*Flags:.*--maglev[^-].*\n")
-FLAGS_ENABLE_TURBOFAN = re.compile("//\s*Flags:.*--turbofan[^-].*\n")
+FLAGS_ENABLE_MAGLEV = re.compile(r"//\s*Flags:.*--maglev[^-].*\n")
+FLAGS_ENABLE_TURBOLEV = re.compile(r"//\s*Flags:.*--turbolev[^-].*\n")
+FLAGS_ENABLE_TURBOFAN = re.compile(r"//\s*Flags:.*--turbofan[^-].*\n")
 ASSERT_UNOPTIMIZED_PATTERN = re.compile("assertUnoptimized")
 
 TOOLS_PATH = dirname(abspath(__file__))
@@ -248,13 +250,21 @@ class SourceFileProcessor(object):
   files and invoke a custom check on the files.
   """
 
+  # Checked-in generated files. The build compares them against the
+  # generator output, so editing them to satisfy a source check does not
+  # work. See src/gen/README.md. PRESUBMIT.py skips the same paths.
+  GENERATED_PATHS = (join('src', 'gen') + os.sep,)
+
   def RunOnPath(self, path):
     """Runs processor on all files under the given path."""
 
     all_files = []
     for file in self.GetPathsToSearch():
       all_files += self.FindFilesIn(join(path, file))
-    return self.ProcessFiles(all_files)
+    return self.ProcessFiles([
+        f for f in all_files
+        if not relpath(f, path).startswith(SourceFileProcessor.GENERATED_PATHS)
+    ])
 
   def RunOnFiles(self, files):
     """Runs processor only on affected files."""
@@ -540,7 +550,7 @@ class SourceProcessor(SourceFileProcessor):
       print ("Runtime functions list is suspiciously short. "
              "Consider updating the presubmit script.")
       sys.exit(1)
-    str = '(\%\s+(' + '|'.join(runtime_functions) + '))[\s\(]'
+    str = r'(\%\s+(' + '|'.join(runtime_functions) + r'))[\s\(]'
     return re.compile(str)
 
   # Overwriting the one in the parent class.
@@ -662,9 +672,10 @@ class SourceProcessor(SourceFileProcessor):
           not "mjsunit/mjsunit_numfuzz.js" in name):
         if ASSERT_OPTIMIZED_PATTERN.search(contents) and \
             not FLAGS_ENABLE_MAGLEV.search(contents) and \
+            not FLAGS_ENABLE_TURBOLEV.search(contents) and \
             not FLAGS_ENABLE_TURBOFAN.search(contents):
-          print("%s Flag --maglev or --turbofan should be set if " \
-                "assertOptimized() is used" % name)
+          print("%s Flag --maglev, --turbolev, or --turbofan should be " \
+                "set if assertOptimized() is used" % name)
           result = False
 
       match = self.runtime_function_call_pattern.search(contents)
@@ -787,7 +798,7 @@ class GCMoleProcessor(SourceFileProcessor):
   tools/gcmole/gcmole.py::build_file_list()
   """
   gcmole_re = re.compile('### gcmole(.*)')
-  arch_re = re.compile('\((.+)\) ###')
+  arch_re = re.compile(r'\((.+)\) ###')
 
   def IsRelevant(self, name):
     return True
@@ -847,6 +858,12 @@ def FindTests(workspace):
     if not any(exc_dir in script for exc_dir in exclude):
       scripts_without_excluded.append(script)
   return scripts_without_excluded
+
+
+def CheckMarkdown(workspace):
+  script = join(workspace, 'tools', 'dev', 'markdown_checker.py')
+  print('Running ' + script)
+  return subprocess.call(['vpython3', script], stdout=subprocess.PIPE) == 0
 
 
 def PyTests(workspace):
@@ -940,14 +957,15 @@ def Main():
   (options, args) = parser.parse_args()
   use_linter_cache = not options.no_linter_cache
   checks = [
-    CheckDeps,
-    ClangFormatProcessor(use_cache=use_linter_cache),
-    TorqueLintProcessor(use_cache=use_linter_cache),
-    JSLintProcessor(use_cache=use_linter_cache),
-    SourceProcessor(),
-    StatusFilesProcessor(),
-    PyTests,
-    GCMoleProcessor(),
+      CheckDeps,
+      ClangFormatProcessor(use_cache=use_linter_cache),
+      TorqueLintProcessor(use_cache=use_linter_cache),
+      JSLintProcessor(use_cache=use_linter_cache),
+      SourceProcessor(),
+      StatusFilesProcessor(),
+      CheckMarkdown,
+      PyTests,
+      GCMoleProcessor(),
   ]
   if not options.no_lint:
     checks.append(CppLintProcessor(use_cache=use_linter_cache))

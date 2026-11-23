@@ -5,6 +5,7 @@
 #include "src/profiler/profile-generator.h"
 
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 #include "include/v8-profiler.h"
@@ -270,7 +271,15 @@ CpuProfileDeoptInfo CodeEntry::GetDeoptInfo() {
 
 CodeEntry::RareData* CodeEntry::EnsureRareData() {
   if (!rare_data_) {
-    rare_data_.reset(new RareData());
+    // On platforms with store-store reordering, we need to ensure that the
+    // field initializations in RareData complete before the pointer (in the
+    // std::unique_ptr) becomes visible. Using an std::atomic for rare_data_
+    // would also work, but would penalize every read, also on platforms with
+    // no store-store reordering (like x64).
+    // See http://crbug.com/513435594 for additional details.
+    RareData* rare_data = new RareData();
+    std::atomic_thread_fence(std::memory_order_release);
+    rare_data_.reset(rare_data);
   }
   return rare_data_.get();
 }
@@ -346,8 +355,9 @@ CpuProfileNode::SourceType ProfileNode::source_type() const {
       entry_ == CodeEntry::root_entry()) {
     return CpuProfileNode::kInternal;
   }
-  if (entry_ == CodeEntry::unresolved_entry())
+  if (entry_ == CodeEntry::unresolved_entry()) {
     return CpuProfileNode::kUnresolved;
+  }
 
   // Otherwise, resolve based on logger tag.
   switch (entry_->code_tag()) {
@@ -429,10 +439,11 @@ void ProfileNode::Print(int indent) const {
   base::OS::Print("%5u %*s %s:%d:%d %d %d #%d", self_ticks_, indent, "",
                   entry_->name(), line_and_column.line, line_and_column.column,
                   source_type(), entry_->script_id(), id());
-  if (entry_->resource_name()[0] != '\0')
+  if (entry_->resource_name()[0] != '\0') {
     base::OS::Print(" %s:%d:%d", entry_->resource_name(),
                     entry_->line_and_column().line,
                     entry_->line_and_column().column);
+  }
   base::OS::Print("\n");
   for (const CpuProfileDeoptInfo& info : deopt_infos_) {
     base::OS::Print(
@@ -646,7 +657,8 @@ void CpuProfile::AddPath(base::TimeTicks timestamp,
                          bool update_stats, base::TimeDelta sampling_interval,
                          StateTag state_tag,
                          EmbedderStateTag embedder_state_tag,
-                         const std::optional<uint64_t> trace_id) {
+                         const std::optional<uint64_t> trace_id,
+                         void* sample_context) {
   if (!CheckSubsample(sampling_interval)) return;
   ProfileNode* top_frame_node =
       top_down_.AddPathFromEnd(path, src_pos, update_stats, options_.mode());
@@ -659,7 +671,7 @@ void CpuProfile::AddPath(base::TimeTicks timestamp,
 
   if (should_record_sample) {
     samples_.push_back({top_frame_node, timestamp, src_pos, state_tag,
-                        embedder_state_tag, trace_id});
+                        embedder_state_tag, trace_id, sample_context});
   } else if (is_buffer_full && delegate_ != nullptr) {
     const auto task_runner = V8::GetCurrentPlatform()->GetForegroundTaskRunner(
         reinterpret_cast<v8::Isolate*>(profiler_->isolate()));
@@ -814,8 +826,9 @@ void FlattenNodesTree(const v8::CpuProfileNode* node,
                       std::vector<const v8::CpuProfileNode*>* nodes) {
   nodes->emplace_back(node);
   const int childrenCount = node->GetChildrenCount();
-  for (int i = 0; i < childrenCount; i++)
+  for (int i = 0; i < childrenCount; i++) {
     FlattenNodesTree(node->GetChild(i), nodes);
+  }
 }
 
 }  // namespace
@@ -846,17 +859,18 @@ void CpuProfileJSONSerializer::SerializePositionTicks(
 
 void CpuProfileJSONSerializer::SerializeCallFrame(
     const v8::CpuProfileNode* node) {
-  writer_->AddString("\"functionName\":\"");
-  writer_->AddString(node->GetFunctionNameStr());
-  writer_->AddString("\",\"lineNumber\":");
+  writer_->AddString("\"functionName\":");
+  writer_->AddJsonEscapedString(
+      reinterpret_cast<const unsigned char*>(node->GetFunctionNameStr()));
+  writer_->AddString(",\"lineNumber\":");
   writer_->AddNumber(node->GetLineNumber() - 1);
   writer_->AddString(",\"columnNumber\":");
   writer_->AddNumber(node->GetColumnNumber() - 1);
   writer_->AddString(",\"scriptId\":");
   writer_->AddNumber(node->GetScriptId());
-  writer_->AddString(",\"url\":\"");
-  writer_->AddString(node->GetScriptResourceNameStr());
-  writer_->AddCharacter('"');
+  writer_->AddString(",\"url\":");
+  writer_->AddJsonEscapedString(
+      reinterpret_cast<const unsigned char*>(node->GetScriptResourceNameStr()));
 }
 
 void CpuProfileJSONSerializer::SerializeChildren(const v8::CpuProfileNode* node,
@@ -888,9 +902,9 @@ void CpuProfileJSONSerializer::SerializeNode(const v8::CpuProfileNode* node) {
 
   const char* deoptReason = node->GetBailoutReason();
   if (deoptReason && deoptReason[0] && strcmp(deoptReason, "no reason")) {
-    writer_->AddString(",\"deoptReason\":\"");
-    writer_->AddString(deoptReason);
-    writer_->AddCharacter('"');
+    writer_->AddString(",\"deoptReason\":");
+    writer_->AddJsonEscapedString(
+        reinterpret_cast<const unsigned char*>(deoptReason));
   }
 
   unsigned lineCount = node->GetHitLineCount();
@@ -1230,7 +1244,7 @@ void CpuProfilesCollection::AddPathToCurrentProfiles(
     LineAndColumn src_pos, bool update_stats, base::TimeDelta sampling_interval,
     StateTag state, EmbedderStateTag embedder_state_tag,
     Address native_context_address, Address embedder_native_context_address,
-    const std::optional<uint64_t> trace_id) {
+    const std::optional<uint64_t> trace_id, void* sample_context) {
   // As starting / stopping profiles is rare relatively to this
   // method, we don't bother minimizing the duration of lock holding,
   // e.g. copying contents of the list to a local vector.
@@ -1254,7 +1268,7 @@ void CpuProfilesCollection::AddPathToCurrentProfiles(
         timestamp, accepts_context ? path : empty_path, src_pos, update_stats,
         sampling_interval, state,
         accepts_embedder_context ? embedder_state_tag : EmbedderStateTag::EMPTY,
-        trace_id);
+        trace_id, sample_context);
   }
 }
 

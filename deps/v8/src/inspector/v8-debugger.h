@@ -75,7 +75,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
 
   void setPauseOnNextCall(bool, int targetContextGroupId);
   void stepIntoStatement(int targetContextGroupId, bool breakOnAsyncCall);
-  void stepOverStatement(int targetContextGroupId);
+  void stepOverStatement(int targetContextGroupId, bool enterFunctions);
   void stepOutOfFunction(int targetContextGroupId);
 
   void terminateExecution(v8::Local<v8::Context> context,
@@ -190,7 +190,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
                                            v8::Local<v8::Value> value);
 
   void asyncTaskScheduledForStack(const StringView& taskName, void* task,
-                                  bool recurring, bool skipTopFrame = false);
+                                  bool recurring, int skipFrameCount);
   void asyncTaskCanceledForStack(void* task);
   void asyncTaskStartedForStack(void* task);
   void asyncTaskFinishedForStack(void* task);
@@ -203,8 +203,8 @@ class V8Debugger : public v8::debug::DebugDelegate,
 
   // v8::debug::DebugEventListener implementation.
   void AsyncEventOccurred(v8::debug::DebugAsyncActionType type, int id,
-                          bool isBlackboxed) override;
-  void ScriptCompiled(v8::Local<v8::debug::Script> script, bool is_live_edited,
+                          bool isBlackboxed, int skipFrameCount = 0) override;
+  void ScriptCompiled(v8::Local<v8::debug::Script> script,
                       bool has_compile_error) override;
   void BreakProgramRequested(
       v8::Local<v8::Context> paused_context,
@@ -222,6 +222,9 @@ class V8Debugger : public v8::debug::DebugDelegate,
 
   bool ShouldBeSkipped(v8::Local<v8::debug::Script> script, int line,
                        int column) override;
+  bool ShouldEnterFunction(v8::Local<v8::debug::Script> script,
+                           const v8::debug::Location& start,
+                           const v8::debug::Location& end) override;
   void BreakpointConditionEvaluated(v8::Local<v8::Context> context,
                                     v8::debug::BreakpointId breakpoint_id,
                                     bool exception_thrown,

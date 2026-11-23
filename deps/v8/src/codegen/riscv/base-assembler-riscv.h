@@ -37,6 +37,7 @@
 
 #include <stdio.h>
 
+#include <array>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -74,9 +75,9 @@ class DebugFile : public std::ofstream {
 #define DEBUG_PRINTF(...) /*                                  force 80 cols */ \
   if (V8_UNLIKELY(v8_flags.riscv_debug)) {                                     \
     if (v8_flags.riscv_debug_file_path) {                                      \
-      base::EmbeddedVector<char, 1024> chars;                                  \
-      SNPrintF(chars, __VA_ARGS__);                                            \
-      DebugFile::GetDebugFile() << chars.begin();                              \
+      std::array<char, 1024> chars;                                            \
+      base::SNPrintF(chars, __VA_ARGS__);                                      \
+      DebugFile::GetDebugFile() << chars.data();                               \
     } else {                                                                   \
       PrintF(__VA_ARGS__);                                                     \
     }                                                                          \
@@ -181,6 +182,8 @@ class AssemblerRiscvBase {
                   uint8_t uimm8);
   void GenInstrCBA(uint8_t funct3, uint8_t funct2, BaseOpcode opcode,
                    Register rs1, int8_t imm6);
+  void GenInstrCU(uint8_t funct3, uint8_t funct2, BaseOpcode opcode,
+                  Register rd, uint8_t nzuimm);
 
   // ----- Instruction class templates match those in LLVM's RISCVInstrInfo.td
   void GenInstrBranchCC_rri(uint8_t funct3, Register rs1, Register rs2,

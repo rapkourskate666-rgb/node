@@ -8,6 +8,7 @@
 
 #include "src/api/api-inl.h"
 #include "src/codegen/compiler.h"
+#include "src/objects/contexts.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/objects.h"
@@ -157,6 +158,51 @@ TEST_F(ObjectWithIsolate, DictionaryGrowth) {
   CHECK_EQ(64, dict->Capacity());
 }
 
+TEST_F(TestWithNativeContext, ContextMaps) {
+  auto VerifyFunctionPrototypeMap = [this](int stored_map_context_index,
+                                           int stored_ctor_context_index) {
+    DirectHandle<Context> context = native_context();
+
+    DirectHandle<Map> this_map(
+        Cast<Map>(context->GetNoCell(stored_map_context_index)), i_isolate());
+
+    DirectHandle<JSFunction> fun(
+        Cast<JSFunction>(context->GetNoCell(stored_ctor_context_index)),
+        i_isolate());
+    DirectHandle<JSObject> proto(
+        Cast<JSObject>(fun->initial_map()->prototype()), i_isolate());
+    DirectHandle<Map> that_map(proto->map(), i_isolate());
+
+    EXPECT_TRUE(proto->HasFastProperties());
+    EXPECT_EQ(*this_map, *that_map);
+  };
+
+  VerifyFunctionPrototypeMap(Context::STRING_FUNCTION_PROTOTYPE_MAP_INDEX,
+                             Context::STRING_FUNCTION_INDEX);
+  VerifyFunctionPrototypeMap(Context::REGEXP_PROTOTYPE_MAP_INDEX,
+                             Context::REGEXP_FUNCTION_INDEX);
+  VerifyFunctionPrototypeMap(Context::OBJECT_FUNCTION_PROTOTYPE_MAP_INDEX,
+                             Context::OBJECT_FUNCTION_INDEX);
+}
+
+TEST_F(TestWithNativeContext, InitialObjects) {
+  // Initial ArrayIterator prototype.
+  EXPECT_EQ(native_context()->initial_array_iterator_prototype(),
+            *RunJS<JSObject>("[][Symbol.iterator]().__proto__"));
+  // Initial Array prototype.
+  EXPECT_EQ(native_context()->initial_array_prototype(),
+            *RunJS<JSObject>("Array.prototype"));
+  // Initial Generator prototype.
+  EXPECT_EQ(native_context()->initial_generator_prototype(),
+            *RunJS<JSObject>("(function*(){}).__proto__.prototype"));
+  // Initial Iterator prototype.
+  EXPECT_EQ(native_context()->initial_iterator_prototype(),
+            *RunJS<JSObject>("[][Symbol.iterator]().__proto__.__proto__"));
+  // Initial Object prototype.
+  EXPECT_EQ(native_context()->initial_object_prototype(),
+            *RunJS<JSObject>("Object.prototype"));
+}
+
 TEST_F(TestWithNativeContext, EmptyFunctionScopeInfo) {
   // Check that the empty_function has a properly set up ScopeInfo.
   DirectHandle<JSFunction> function = RunJS<JSFunction>("(function(){})");
@@ -166,7 +212,7 @@ TEST_F(TestWithNativeContext, EmptyFunctionScopeInfo) {
   DirectHandle<ScopeInfo> empty_function_scope_info(
       isolate()->empty_function()->shared()->scope_info(), i_isolate());
 
-  EXPECT_EQ(scope_info->Flags(), empty_function_scope_info->Flags());
+  EXPECT_EQ(scope_info->flags(), empty_function_scope_info->flags());
   EXPECT_EQ(scope_info->ParameterCount(),
             empty_function_scope_info->ParameterCount());
   EXPECT_EQ(scope_info->ContextLocalCount(),
@@ -178,8 +224,9 @@ TEST_F(TestWithNativeContext, CanOnlyAccessFixedFormalParameters) {
     DirectHandle<JSFunction> function = RunJS<JSFunction>(f);
     DirectHandle<ScopeInfo> scope_info(function->shared()->scope_info(),
                                        i_isolate());
-    auto flags = scope_info->Flags();
-    EXPECT_EQ(allocates, ScopeInfo::AllocatesArgumentsBit::decode(flags));
+    auto flags = scope_info->flags();
+    EXPECT_EQ(allocates,
+              ScopeInfo::Flags::AllocatesArgumentsBit::decode(flags));
     EXPECT_EQ(only_fixed, scope_info->CanOnlyAccessFixedFormalParameters());
   };
   run("(function(){})", false, false);
@@ -240,7 +287,7 @@ static void CheckObject(Isolate* isolate, DirectHandle<Object> obj,
   DirectHandle<String> print_string = String::Flatten(
       isolate,
       indirect_handle(Object::NoSideEffectsToString(isolate, obj), isolate));
-  CHECK(print_string->IsOneByteEqualTo(base::CStrVector(string)));
+  CHECK(print_string->IsOneByteEqualTo(string));
 }
 
 static void CheckSmi(Isolate* isolate, int value, const char* string) {
@@ -301,6 +348,21 @@ TEST_F(ObjectTest, NoSideEffectsToString) {
                   factory->NewJSObject(i_isolate()->object_function()),
                   factory->NewJSObject(i_isolate()->object_function()), false),
               "#<Object>");
+}
+
+TEST_F(ObjectTest, NoSideEffectsToMaybeStringWithProxy) {
+  Factory* factory = i_isolate()->factory();
+
+  HandleScope scope(i_isolate());
+
+  DirectHandle<JSObject> target =
+      factory->NewJSObject(i_isolate()->object_function());
+  JSObject::AddProperty(i_isolate(), target, factory->constructor_string(),
+                        factory->null_value(), NONE);
+  DirectHandle<JSProxy> proxy = factory->NewJSProxy(
+      target, factory->NewJSObject(i_isolate()->object_function()), false);
+
+  EXPECT_TRUE(Object::NoSideEffectsToMaybeString(i_isolate(), proxy).is_null());
 }
 
 TEST_F(ObjectTest, EnumCache) {
@@ -377,11 +439,11 @@ TEST_F(ObjectTest, EnumCache) {
     Tagged<EnumCache> enum_cache =
         cc->map()->instance_descriptors()->enum_cache();
     CHECK_NE(enum_cache, *factory->empty_enum_cache());
-    CHECK_EQ(enum_cache->keys()->length(), 3);
-    CHECK_EQ(enum_cache->indices()->length(), 3);
+    CHECK_EQ(enum_cache->keys()->length().value(), 3u);
+    CHECK_EQ(enum_cache->indices()->length().value(), 3u);
   }
 
-  // Initializing the EnumCache for the the topmost map {a} will not create the
+  // Initializing the EnumCache for the topmost map {a} will not create the
   // cache for the other maps.
   RunJS("var s = 0; for (let key in a) { s += a[key] };");
   {
@@ -402,8 +464,8 @@ TEST_F(ObjectTest, EnumCache) {
     CHECK_EQ(b->map()->instance_descriptors()->enum_cache(), enum_cache);
     CHECK_EQ(c->map()->instance_descriptors()->enum_cache(), enum_cache);
 
-    CHECK_EQ(enum_cache->keys()->length(), 1);
-    CHECK_EQ(enum_cache->indices()->length(), 1);
+    CHECK_EQ(enum_cache->keys()->length().value(), 1u);
+    CHECK_EQ(enum_cache->indices()->length().value(), 1u);
   }
 
   // Creating the EnumCache for {c} will create a new EnumCache on the shared
@@ -428,10 +490,10 @@ TEST_F(ObjectTest, EnumCache) {
     CHECK_EQ(enum_cache, *previous_enum_cache);
     CHECK_NE(enum_cache->keys(), *previous_keys);
     CHECK_NE(enum_cache->indices(), *previous_indices);
-    CHECK_EQ(previous_keys->length(), 1);
-    CHECK_EQ(previous_indices->length(), 1);
-    CHECK_EQ(enum_cache->keys()->length(), 3);
-    CHECK_EQ(enum_cache->indices()->length(), 3);
+    CHECK_EQ(previous_keys->length().value(), 1u);
+    CHECK_EQ(previous_indices->length().value(), 1u);
+    CHECK_EQ(enum_cache->keys()->length().value(), 3u);
+    CHECK_EQ(enum_cache->indices()->length().value(), 3u);
 
     // The enum cache is shared on the descriptor array of maps {a}, {b} and
     // {c} only.
@@ -465,8 +527,8 @@ TEST_F(ObjectTest, EnumCache) {
     CHECK_EQ(enum_cache, *previous_enum_cache);
     CHECK_EQ(enum_cache->keys(), *previous_keys);
     CHECK_EQ(enum_cache->indices(), *previous_indices);
-    CHECK_EQ(enum_cache->keys()->length(), 3);
-    CHECK_EQ(enum_cache->indices()->length(), 3);
+    CHECK_EQ(enum_cache->keys()->length().value(), 3u);
+    CHECK_EQ(enum_cache->indices()->length().value(), 3u);
 
     // The enum cache is shared on the descriptor array of maps {a}, {b} and
     // {c} only.
@@ -499,6 +561,26 @@ TEST_F(ObjectTest, ObjectMethodsThatTruncateMinusZero) {
                            MessageTemplate::kInvalidAtomicAccessIndex)
                .ToHandleChecked();
   CHECK(IsZero(*result));
+}
+
+TEST_F(ObjectTest, ToUint32) {
+  Factory* factory = i_isolate()->factory();
+
+  DirectHandle<Object> pos_smi(Smi::FromInt(42), i_isolate());
+  DirectHandle<Number> pos_res =
+      Object::ToUint32(i_isolate(), pos_smi).ToHandleChecked();
+  EXPECT_TRUE(IsSmi(*pos_res));
+  EXPECT_EQ(42.0, Object::NumberValue(*pos_res));
+
+  DirectHandle<Object> neg_smi(Smi::FromInt(-37), i_isolate());
+  DirectHandle<Number> neg_res =
+      Object::ToUint32(i_isolate(), neg_smi).ToHandleChecked();
+  EXPECT_EQ(4294967259.0, Object::NumberValue(*neg_res));
+
+  DirectHandle<Object> neg_str = factory->NewStringFromAsciiChecked("-37");
+  DirectHandle<Number> str_res =
+      Object::ToUint32(i_isolate(), neg_str).ToHandleChecked();
+  EXPECT_EQ(4294967259.0, Object::NumberValue(*str_res));
 }
 
 #define TEST_FUNCTION_KIND(Name)                                            \
@@ -674,17 +756,15 @@ bool FunctionKindIsConstructable(FunctionKind kind) {
 }
 TEST_FUNCTION_KIND(IsConstructable)
 
-bool FunctionKindIsStrictFunctionWithoutPrototype(FunctionKind kind) {
+bool FunctionKindIsFunctionWithoutPrototype(FunctionKind kind) {
   return IsArrowFunction(kind) || IsConciseMethod(kind) ||
          IsAccessorFunction(kind);
 }
-TEST_FUNCTION_KIND(IsStrictFunctionWithoutPrototype)
+TEST_FUNCTION_KIND(IsFunctionWithoutPrototype)
 
 #undef TEST_FUNCTION_KIND
 
 TEST_F(ObjectTest, ConstructorInstanceTypes) {
-  bool flag_was_enabled = i::v8_flags.js_float16array;
-  i::v8_flags.js_float16array = true;
   v8::HandleScope scope(isolate());
 
   DirectHandle<NativeContext> context = i_isolate()->native_context();
@@ -716,11 +796,10 @@ TEST_F(ObjectTest, ConstructorInstanceTypes) {
 
       default:
         // All the other functions must have the default instance type.
-        CHECK_EQ(instance_type, JS_FUNCTION_TYPE);
+        CHECK(InstanceTypeChecker::IsJSFunction(instance_type));
         break;
     }
   }
-  i::v8_flags.js_float16array = flag_was_enabled;
 }
 
 TEST_F(ObjectTest, AddDataPropertyNameCollision) {
@@ -887,6 +966,79 @@ TEST_F(ObjectTest, LookupIteratorWithStringLookupStartObject) {
               .IsNothing());
     ii->clear_exception();
   }
+}
+
+TEST_F(ObjectTest, JSObjectCopy) {
+  v8::HandleScope scope(isolate());
+  Factory* factory = i_isolate()->factory();
+  DirectHandle<JSFunction> constructor = i_isolate()->object_function();
+  Handle<JSObject> obj = factory->NewJSObject(constructor);
+  DirectHandle<String> first = factory->InternalizeUtf8String("first");
+  DirectHandle<String> second = factory->InternalizeUtf8String("second");
+
+  DirectHandle<Smi> one(Smi::FromInt(1), i_isolate());
+  DirectHandle<Smi> two(Smi::FromInt(2), i_isolate());
+
+  Object::SetProperty(i_isolate(), obj, first, one).Check();
+  Object::SetProperty(i_isolate(), obj, second, two).Check();
+
+  Object::SetElement(i_isolate(), obj, 0, first, ShouldThrow::kDontThrow)
+      .Check();
+  Object::SetElement(i_isolate(), obj, 1, second, ShouldThrow::kDontThrow)
+      .Check();
+
+  // Make the clone.
+  DirectHandle<JSObject> clone = factory->CopyJSObject(obj);
+  EXPECT_FALSE(clone.is_identical_to(obj));
+
+  DirectHandle<Object> value1 =
+      Object::GetElement(i_isolate(), obj, 0).ToHandleChecked();
+  DirectHandle<Object> value2 =
+      Object::GetElement(i_isolate(), clone, 0).ToHandleChecked();
+  EXPECT_EQ(*value1, *value2);
+  value1 = Object::GetElement(i_isolate(), obj, 1).ToHandleChecked();
+  value2 = Object::GetElement(i_isolate(), clone, 1).ToHandleChecked();
+  EXPECT_EQ(*value1, *value2);
+
+  value1 = Object::GetProperty(i_isolate(), obj, first).ToHandleChecked();
+  value2 = Object::GetProperty(i_isolate(), clone, first).ToHandleChecked();
+  EXPECT_EQ(*value1, *value2);
+  value1 = Object::GetProperty(i_isolate(), obj, second).ToHandleChecked();
+  value2 = Object::GetProperty(i_isolate(), clone, second).ToHandleChecked();
+  EXPECT_EQ(*value1, *value2);
+
+  // Flip the values on the clone.
+  Object::SetProperty(i_isolate(), clone, first, two).Check();
+  Object::SetProperty(i_isolate(), clone, second, one).Check();
+
+  Object::SetElement(i_isolate(), clone, 0, second, ShouldThrow::kDontThrow)
+      .Check();
+  Object::SetElement(i_isolate(), clone, 1, first, ShouldThrow::kDontThrow)
+      .Check();
+
+  value1 = Object::GetElement(i_isolate(), obj, 1).ToHandleChecked();
+  value2 = Object::GetElement(i_isolate(), clone, 0).ToHandleChecked();
+  EXPECT_EQ(*value1, *value2);
+  value1 = Object::GetElement(i_isolate(), obj, 0).ToHandleChecked();
+  value2 = Object::GetElement(i_isolate(), clone, 1).ToHandleChecked();
+  EXPECT_EQ(*value1, *value2);
+
+  value1 = Object::GetProperty(i_isolate(), obj, second).ToHandleChecked();
+  value2 = Object::GetProperty(i_isolate(), clone, first).ToHandleChecked();
+  EXPECT_EQ(*value1, *value2);
+  value1 = Object::GetProperty(i_isolate(), obj, first).ToHandleChecked();
+  value2 = Object::GetProperty(i_isolate(), clone, second).ToHandleChecked();
+  EXPECT_EQ(*value1, *value2);
+}
+
+TEST_F(ObjectTest, CorrectnessFuzzerSuppressionsFatalNoSecurityImpact) {
+  v8::HandleScope scope(isolate());
+  SaveFlags save_flags;
+  v8_flags.correctness_fuzzer_suppressions = true;
+  EXPECT_DEATH_IF_SUPPORTED(
+      RunJS("1n << (1n << 30n)"),
+      "Fatal error with no security impact:\n# Aborting on invalid BigInt "
+      "length");
 }
 
 }  // namespace internal

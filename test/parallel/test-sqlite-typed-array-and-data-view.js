@@ -1,7 +1,7 @@
 'use strict';
 const { skipIfSQLiteMissing } = require('../common');
 skipIfSQLiteMissing();
-const { DatabaseSync } = require('node:sqlite');
+const { Database } = require('node:sqlite');
 const { suite, test } = require('node:test');
 
 const arrayBuffer = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer;
@@ -24,10 +24,10 @@ const TypedArrays = [
   ['DataView', DataView],
 ];
 
-suite('StatementSync with TypedArray/DataView', () => {
+suite('Statement with TypedArray/DataView', () => {
   for (const [displayName, TypedArray] of TypedArrays) {
     test(displayName, (t) => {
-      const db = new DatabaseSync(':memory:');
+      const db = new Database(':memory:');
       t.after(() => { db.close(); });
       db.exec('CREATE TABLE test (data BLOB)');
       // insert
@@ -56,7 +56,7 @@ suite('StatementSync with TypedArray/DataView', () => {
   }
 });
 
-suite('StatementSync with ArrayBuffer and SharedArrayBuffer', () => {
+suite('Statement with ArrayBuffer and SharedArrayBuffer', () => {
   const buffers = [
     ['ArrayBuffer', arrayBuffer],
     ['SharedArrayBuffer', sharedArrayBuffer],
@@ -64,7 +64,7 @@ suite('StatementSync with ArrayBuffer and SharedArrayBuffer', () => {
 
   for (const [displayName, buffer] of buffers) {
     test(`${displayName} - anonymous binding`, (t) => {
-      const db = new DatabaseSync(':memory:');
+      const db = new Database(':memory:');
       t.after(() => { db.close(); });
       db.exec('CREATE TABLE test (data BLOB)');
       // insert
@@ -92,7 +92,7 @@ suite('StatementSync with ArrayBuffer and SharedArrayBuffer', () => {
     });
 
     test(`${displayName} - named binding (object)`, (t) => {
-      const db = new DatabaseSync(':memory:');
+      const db = new Database(':memory:');
       t.after(() => { db.close(); });
       db.exec('CREATE TABLE test (data BLOB)');
       // insert
@@ -116,6 +116,41 @@ suite('StatementSync with ArrayBuffer and SharedArrayBuffer', () => {
         t.assert.ok(rows[0].data instanceof Uint8Array);
         t.assert.strictEqual(rows[0].data.length, 8);
         t.assert.deepStrictEqual(rows[0].data, new Uint8Array(arrayBuffer));
+      }
+    });
+  }
+});
+
+suite('Statement with empty buffers', () => {
+  const emptyBuffers = [
+    ['ArrayBuffer', () => new ArrayBuffer(0)],
+    ['SharedArrayBuffer', () => new SharedArrayBuffer(0)],
+    ['Uint8Array', () => new Uint8Array()],
+    ['Uint8Array on empty ArrayBuffer', () => new Uint8Array(new ArrayBuffer(0))],
+    ['DataView on empty ArrayBuffer', () => new DataView(new ArrayBuffer(0))],
+  ];
+
+  for (const [displayName, createBuffer] of emptyBuffers) {
+    test(`${displayName} binds as an empty blob, not NULL`, (t) => {
+      using db = new Database(':memory:');
+      db.exec('CREATE TABLE test (data BLOB NOT NULL)');
+      const buffer = createBuffer();
+      // Anonymous binding
+      {
+        using stmt = db.prepare('SELECT typeof(?) AS type');
+        t.assert.strictEqual(stmt.get(buffer).type, 'blob');
+      }
+      // Named binding (object)
+      {
+        using stmt = db.prepare('SELECT typeof($data) AS type');
+        t.assert.strictEqual(stmt.get({ '$data': buffer }).type, 'blob');
+      }
+      // Insert into a NOT NULL column and read it back
+      {
+        using insert = db.prepare('INSERT INTO test VALUES (?)');
+        insert.run(buffer);
+        using select = db.prepare('SELECT data FROM test');
+        t.assert.deepStrictEqual(select.get().data, new Uint8Array());
       }
     });
   }

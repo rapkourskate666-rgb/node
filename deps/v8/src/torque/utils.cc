@@ -179,7 +179,8 @@ bool ContainsUpperCase(const std::string& s) {
 // These do not need to follow the default naming convention for constants.
 bool IsKeywordLikeName(std::string_view s) {
   static const char* const keyword_like_constants[]{
-      "True", "False", "TheHole", "PromiseHole", "Null", "Undefined"};
+      "True",        "False", "TheHole",  "TdzHole",
+      "PromiseHole", "Null",  "Undefined"};
 
   return std::find(std::begin(keyword_like_constants),
                    std::end(keyword_like_constants),
@@ -263,10 +264,10 @@ std::string CapifyStringWithUnderscores(const std::string& camellified_string) {
     if ((previousWasLowerOrDigit && isupper(current)) ||
         (js_position != std::string::npos &&
          index == js_position + strlen("JS"))) {
-      result += "_";
+      result += '_';
     }
     if (current == '.' || current == '-') {
-      result += "_";
+      result += '_';
       previousWasLowerOrDigit = false;
       continue;
     }
@@ -298,7 +299,7 @@ std::string SnakeifyString(const std::string& camel_string) {
   bool previousWasLower = false;
   for (auto current : camel_string) {
     if (previousWasLower && isupper(current)) {
-      result += "_";
+      result += '_';
     }
     result += tolower(current);
     previousWasLower = (islower(current));

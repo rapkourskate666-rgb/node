@@ -82,11 +82,49 @@ class GlobalContext : public base::ContextualClass<GlobalContext> {
     return Get().force_assert_statements_;
   }
   static void SetAnnotateIR() { Get().annotate_ir_ = true; }
+  static void SetTorqueDwarf() { Get().torque_dwarf_ = true; }
   static bool annotate_ir() { return Get().annotate_ir_; }
+  static void SetKytheInlineMetadata() {
+    Get().has_kythe_inline_metadata_ = true;
+  }
+  static bool has_kythe_inline_metadata() {
+    return Get().has_kythe_inline_metadata_;
+  }
+  static void SetKytheDefaultCorpus(std::string corpus) {
+    Get().kythe_default_corpus_ = std::move(corpus);
+  }
+  static const std::string& kythe_default_corpus() {
+    return Get().kythe_default_corpus_;
+  }
   static Ast* ast() { return &Get().ast_; }
   static std::string MakeUniqueName(const std::string& base) {
     return base + "_" + std::to_string(Get().fresh_ids_[base]++);
   }
+
+  struct KytheInlineMetadata {
+    size_t begin;
+    size_t end;
+    std::string vname_sig;
+    std::string vname_path = "";
+    size_t source_begin = 0;
+    size_t source_end = 0;
+    bool is_call_anchor = false;
+
+    static KytheInlineMetadata Generates(size_t begin, size_t end,
+                                         std::string vname_sig,
+                                         std::string vname_path) {
+      return {begin, end,  std::move(vname_sig), std::move(vname_path), 0,
+              0,     false};
+    }
+
+    static KytheInlineMetadata CallAnchor(size_t begin, size_t end,
+                                          size_t source_begin,
+                                          size_t source_end,
+                                          std::string vname_path) {
+      return {begin,        end,        "",  std::move(vname_path),
+              source_begin, source_end, true};
+    }
+  };
 
   struct PerFileStreams {
     PerFileStreams()
@@ -97,21 +135,10 @@ class GlobalContext : public base::ContextualClass<GlobalContext> {
     SourceId file;
     std::stringstream csa_headerfile;
     cpp::File csa_header;
+    std::vector<KytheInlineMetadata> csa_header_rules;
     std::stringstream csa_ccfile;
     cpp::File csa_cc;
-
-    std::stringstream class_definition_headerfile;
-
-    // The beginning of the generated -inl.inc file, which includes declarations
-    // for functions corresponding to Torque macros.
-    std::stringstream class_definition_inline_headerfile_macro_declarations;
-    // The second part of the generated -inl.inc file, which includes
-    // definitions for functions declared in the first part.
-    std::stringstream class_definition_inline_headerfile_macro_definitions;
-    // The portion of the generated -inl.inc file containing member function
-    // definitions for the generated class.
-    std::stringstream class_definition_inline_headerfile;
-
+    std::vector<KytheInlineMetadata> csa_cc_rules;
     std::stringstream class_definition_ccfile;
     cpp::File class_definition_cc;
 
@@ -130,18 +157,8 @@ class GlobalContext : public base::ContextualClass<GlobalContext> {
   static bool IsInstanceTypesInitialized() {
     return Get().instance_types_initialized_;
   }
-  static void EnsureInCCOutputList(TorqueMacro* macro, SourceId source) {
-    GlobalContext& c = Get();
-    auto item = std::make_pair(macro, source);
-    if (c.macros_for_cc_output_set_.insert(item).second) {
-      c.macros_for_cc_output_.push_back(item);
-    }
-    EnsureInCCDebugOutputList(macro, source);
-  }
-  static const std::vector<std::pair<TorqueMacro*, SourceId>>&
-  AllMacrosForCCOutput() {
-    return Get().macros_for_cc_output_;
-  }
+  static bool torque_dwarf() { return Get().torque_dwarf_; }
+
   static void EnsureInCCDebugOutputList(TorqueMacro* macro, SourceId source) {
     GlobalContext& c = Get();
     auto item = std::make_pair(macro, source);
@@ -159,14 +176,16 @@ class GlobalContext : public base::ContextualClass<GlobalContext> {
   bool collect_kythe_data_;
   bool force_assert_statements_;
   bool annotate_ir_;
+  bool torque_dwarf_;
+  bool has_kythe_inline_metadata_;
+  std::string kythe_default_corpus_;
   Namespace* default_namespace_;
   Ast ast_;
   std::vector<std::unique_ptr<Declarable>> declarables_;
   std::set<CppInclude> cpp_includes_;
   std::map<SourceId, PerFileStreams> generated_per_file_;
   std::map<std::string, size_t> fresh_ids_;
-  std::vector<std::pair<TorqueMacro*, SourceId>> macros_for_cc_output_;
-  std::set<std::pair<TorqueMacro*, SourceId>> macros_for_cc_output_set_;
+
   std::vector<std::pair<TorqueMacro*, SourceId>> macros_for_cc_debug_output_;
   std::set<std::pair<TorqueMacro*, SourceId>> macros_for_cc_debug_output_set_;
   bool instance_types_initialized_ = false;

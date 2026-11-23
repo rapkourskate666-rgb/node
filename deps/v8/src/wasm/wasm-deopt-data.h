@@ -9,6 +9,7 @@
 #endif  // !V8_ENABLE_WEBASSEMBLY
 
 #include "src/base/memory.h"
+#include "src/base/unique-array.h"
 #include "src/utils/utils.h"
 #include "src/wasm/baseline/liftoff-varstate.h"
 #include "src/zone/zone-containers.h"
@@ -69,7 +70,7 @@ class WasmDeoptView {
 
   WasmDeoptEntry GetDeoptEntry(uint32_t deopt_index) const {
     DCHECK(HasDeoptData());
-    DCHECK(deopt_index < base_data_.entry_count);
+    CHECK_LT(deopt_index, base_data_.entry_count);
     const uint8_t* begin = deopt_data_.begin() + sizeof(base_data_) +
                            base_data_.translation_array_size;
     return base::ReadUnalignedValue<WasmDeoptEntry>(reinterpret_cast<Address>(
@@ -85,7 +86,7 @@ class WasmDeoptView {
 
 class WasmDeoptDataProcessor {
  public:
-  static base::OwnedVector<uint8_t> Serialize(
+  static base::UniqueArray<uint8_t> Serialize(
       int deopt_exit_start_offset, int eager_deopt_count,
       base::Vector<const uint8_t> translation_array,
       base::Vector<wasm::WasmDeoptEntry> deopt_entries,

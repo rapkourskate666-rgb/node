@@ -15,6 +15,8 @@
 
 #define V8_COMPILER_TURBOSHAFT_ASSEMBLER_MACROS_DEFINED 1
 
+#include "src/utils/ostreams.h"
+
 #if defined(__clang__) || !defined(V8_CC_GNU)
 #define NO_SHADOW                                    \
   _Pragma("GCC diagnostic push")                     \
@@ -31,8 +33,13 @@
 #define RE_UNUSED
 #endif
 
-#define TSA_DCHECK(assembler, condition) \
-  (assembler)->Asm().Dcheck(condition, #condition, __FILE__, __LINE__ )
+#ifdef DEBUG
+#define TSA_DCHECK(assembler, ...)                                       \
+  (assembler)->Asm().Dcheck([&]() { return __VA_ARGS__; }, #__VA_ARGS__, \
+                            __FILE__, __LINE__)
+#else
+#define TSA_DCHECK(assembler, ...) ((void)0)
+#endif
 #ifdef ENABLE_SLOW_DCHECKS
 #define TSA_SLOW_DCHECK(assembler, ...)     \
   do {                                      \
@@ -165,10 +172,15 @@
   TypeswitchBuilder<decltype(Asm())> typeswitch_xx(Asm(), __ data(), expr); \
     while(typeswitch_xx.NextState())
 
-#define CASE_(type, name)                                                 \
-  for(auto [emit, name] = typeswitch_xx.template BeginCase<type>(__LINE__); emit; \
-      emit = (typeswitch_xx.EndCase(__LINE__), false))                   \
+#define CASE_(type, name)                                                   \
+  for(auto [emit, name] = typeswitch_xx.template BeginCase<type>(__LINE__); \
+      emit; emit = (typeswitch_xx.EndCase(__LINE__), false))                \
     NO_UNUSED CONCAT(case_label_xx_, __LINE__) RE_UNUSED
+
+#define DEFAULT                                             \
+    for(bool emit = typeswitch_xx.BeginDefault(); emit;     \
+      emit = (typeswitch_xx.EndDefault(), false))           \
+    NO_UNUSED CONCAT(default_label_xx_, __LINE__) RE_UNUSED
 
 
 #define Assert(condition) AssertImpl(condition, #condition, __FILE__, __LINE__)
@@ -188,7 +200,7 @@
       base::SmallVector<OperationStorageSlot, 32> storage;                    \
       operation##Op* op = CreateOperation<operation##Op>(storage, args...);   \
       PrintF("%*s", Asm().intermediate_tracing_depth(), "");                  \
-      std::cout << "[" << ReducerName() << "]: reducing " << *op << "\n";     \
+      StdoutStream{} << "[" << ReducerName() << "]: reducing " << *op << "\n";     \
     }                                                                         \
     Asm().intermediate_tracing_depth()++;                                     \
     decltype(CONCAT(CHECK_Reduce, operation)) result =                        \
@@ -209,7 +221,7 @@
                                               const operation##Op& op) {       \
     if (v8_flags.turboshaft_trace_intermediate_reductions) {                   \
       PrintF("%*s", Asm().intermediate_tracing_depth(), "");                   \
-      std::cout << "[" << ReducerName() << "]: @input-reducing " << op << "\n";\
+      StdoutStream{} << "[" << ReducerName() << "]: @input-reducing " << op << "\n";\
     }                                                                          \
     Asm().intermediate_tracing_depth()++;                                      \
     decltype(CONCAT(CHECK_ReduceInputGraph, operation)) result =               \

@@ -41,7 +41,7 @@ documented [on the V8 wiki][V8MergingPatching]. The summary of the process is:
 ## Node.js support requirements
 
 At any given time Node.js needs to be maintaining a few different V8 branches
-for the various Current, LTS, and nightly releases.
+for the various Alpha, Current, LTS, and nightly releases.
 The versions of V8 used in Node.js may have already been
 abandoned by upstream V8. However, Node.js needs to continue supporting
 these branches for many months (Current branches) or several
@@ -76,6 +76,28 @@ fixed upstream first.
 * Once the bug is fixed it may still need backporting, if it exists in other V8
   branches that are still active or are branches that Node.js cares about.
   Follow the process for backporting below.
+
+### Backporting patches to `main`
+
+As a general rule, do not backport individual V8 patches to the Node.js `main`
+branch. Wait for them to be included in a V8 major version update instead.
+An individual V8 patch adds up audit cost and further delays the pending V8
+update.
+
+A patch may be backported to `main` when at least one of these criteria applies:
+
+* It fixes a build issue on a platform or toolchain supported on `main`.
+* It fixes a security issue.
+* It unblocks a pending V8 update, for example by adjusting how the Node.js code
+  uses a V8 API so that it works with the future update.
+
+If the patch meet the following criteria, it's recommended to backport the patches
+to the release staging branches like `v<MAJOR>.x-staging` (see
+[Criteria for backporting](../backporting-to-release-lines.md#criteria-for-backporting)
+to decide what release line to target), instead of `main`:
+
+* It has demonstrated real-world urgency and impact that justifies landing it
+  before the next V8 major version update.
 
 ### Backporting to active branches
 
@@ -305,8 +327,19 @@ Revision_ from the 5.4 branch that can be useful in the update process above.
 
 ### Major updates
 
-We upgrade the version of V8 in Node.js `main` whenever a V8 release goes stable
-upstream, that is, whenever a new release of Chrome comes out.
+Along with Chrome, V8 has several
+[different release channels](https://chromium.googlesource.com/chromium/src/+/lkgr/docs/process/release_cycle.md).
+A V8 release only reaches stable after the stable cut has been rolled out and tested
+in several Chrome release channels, where regressions and bugs are discovered and fixed.
+
+In the Node.js `main` branch, we typically upgrade the version of V8 whenever a
+release of V8 finishes stable promotion and a _stable release_ is out.
+The schedule of V8 release cycles can be found
+[here](https://chromiumdash.appspot.com/schedule).
+
+V8 updates can require a `NODE_MODULE_VERSION` bump if they change the native
+addon ABI. See the release process documentation for when
+`NODE_MODULE_VERSION` may be updated during a release line.
 
 Upgrading major versions would be much harder to do with the patch mechanism
 above. A better strategy is to
@@ -321,22 +354,38 @@ above. A better strategy is to
 4. Refloat (cherry-pick) all the patches from list computed in 1) as necessary.
    Some of the patches may no longer be necessary.
 
-To audit for floating patches:
-
-```bash
-git log --oneline deps/v8
-```
-
-To replace the copy of V8 in Node.js, use the [`git-node`][] tool. For example,
-if you want to replace the copy of V8 in Node.js with the branch-head for V8 5.1
-branch:
+To audit for floating patches, use `git node v8 list-patches` with the
+target V8 release line. For example, before upgrading to V8 15.7:
 
 ```bash
 cd $NODE_DIR
-git node v8 major --branch=5.1-lkgr
+git node v8 list-patches --target=15.7
+```
+
+It lists every V8 patch floated since the last V8 import, and whether the
+target line already contains each one. See [`git-node-v8-list-patches`][] for
+how to read the output.
+
+To replace the copy of V8 in Node.js, use the [`git-node`][] tool. For example,
+if you want to replace the copy of V8 in Node.js with the branch-head for V8
+15.7 branch:
+
+```bash
+cd $NODE_DIR
+git node v8 major --branch=15.7-lkgr
 ```
 
 This should be followed up with manual refloating of all relevant patches.
+
+After refloating, run `list-patches` on the upgrade branch to verify the
+result:
+
+```bash
+git node v8 list-patches --base=HEAD --check-diff
+```
+
+Check that the listed patches match the ones the earlier run marked to refloat,
+and that each cherry-pick's diff matches its upstream commit.
 
 ## Proposal: Using a fork repository to track upstream V8
 
@@ -386,6 +435,7 @@ This would require some tooling to:
 [V8TemplateUpstreamBug]: https://bugs.chromium.org/p/v8/issues/entry?template=Node.js%20upstream%20bug
 [`@node-core/utils`]: https://github.com/nodejs/node-core-utils#Install
 [`git-node-v8-backport`]: https://github.com/nodejs/node-core-utils/blob/main/docs/git-node.md#git-node-v8-backport-sha
+[`git-node-v8-list-patches`]: https://github.com/nodejs/node-core-utils/blob/main/docs/git-node.md#git-node-v8-list-patches
 [`git-node-v8-minor`]: https://github.com/nodejs/node-core-utils/blob/main/docs/git-node.md#git-node-v8-minor
 [`git-node-v8`]: https://github.com/nodejs/node-core-utils/blob/HEAD/docs/git-node.md#git-node-v8
 [`git-node`]: https://github.com/nodejs/node-core-utils/blob/HEAD/docs/git-node.md#git-node-v8

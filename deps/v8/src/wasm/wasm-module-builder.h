@@ -10,6 +10,7 @@
 #endif  // !V8_ENABLE_WEBASSEMBLY
 
 #include <optional>
+#include <string_view>
 
 #include "src/base/memory.h"
 #include "src/base/numerics/safe_conversions.h"
@@ -19,6 +20,7 @@
 #include "src/wasm/leb-helper.h"
 #include "src/wasm/local-decl-encoder.h"
 #include "src/wasm/value-type.h"
+#include "src/wasm/wasm-init-expr.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-opcodes.h"
 #include "src/wasm/wasm-result.h"
@@ -41,12 +43,6 @@ class ZoneBuffer : public ZoneObject {
   void write_u8(uint8_t x) {
     EnsureSpace(1);
     *(pos_++) = x;
-  }
-
-  void write_u16(uint16_t x) {
-    EnsureSpace(2);
-    base::WriteLittleEndianValue<uint16_t>(reinterpret_cast<Address>(pos_), x);
-    pos_ += 2;
   }
 
   void write_u32(uint32_t x) {
@@ -100,9 +96,9 @@ class ZoneBuffer : public ZoneObject {
     pos_ += size;
   }
 
-  void write_string(base::Vector<const char> name) {
+  void write_string(std::string_view name) {
     write_size(name.size());
-    write(reinterpret_cast<const uint8_t*>(name.begin()), name.size());
+    write(reinterpret_cast<const uint8_t*>(name.data()), name.size());
   }
 
   size_t reserve_u32v() {
@@ -191,7 +187,6 @@ class V8_EXPORT_PRIVATE WasmFunctionBuilder : public ZoneObject {
   void EmitI64Const(int64_t val);
   void EmitF32Const(float val);
   void EmitF64Const(double val);
-  void EmitS128Const(Simd128 val);
   void EmitWithU8(WasmOpcode opcode, const uint8_t immediate);
   void EmitWithU8U8(WasmOpcode opcode, const uint8_t imm1, const uint8_t imm2);
   void EmitWithI32V(WasmOpcode opcode, int32_t immediate);
@@ -203,9 +198,7 @@ class V8_EXPORT_PRIVATE WasmFunctionBuilder : public ZoneObject {
   void EmitValueType(ValueType type);
   void EmitDirectCallIndex(uint32_t index);
   void EmitFromInitializerExpression(const WasmInitExpr& init_expr);
-  void SetName(base::Vector<const char> name);
-  void AddAsmWasmOffset(size_t call_position, size_t to_number_position);
-  void SetAsmFunctionStartPosition(size_t function_position);
+  void SetName(std::string_view name);
 
   size_t GetPosition() const { return body_.size(); }
   void FixupByte(size_t position, uint8_t value) {
@@ -215,7 +208,6 @@ class V8_EXPORT_PRIVATE WasmFunctionBuilder : public ZoneObject {
 
   void WriteSignature(ZoneBuffer* buffer) const;
   void WriteBody(ZoneBuffer* buffer) const;
-  void WriteAsmWasmOffsetTable(ZoneBuffer* buffer) const;
 
   WasmModuleBuilder* builder() const { return builder_; }
   uint32_t func_index() const { return func_index_; }
@@ -237,18 +229,12 @@ class V8_EXPORT_PRIVATE WasmFunctionBuilder : public ZoneObject {
   ModuleTypeIndex signature_index_;
   uint32_t func_index_;
   ZoneBuffer body_;
-  base::Vector<const char> name_;
+  std::string_view name_;
   ZoneVector<uint32_t> i32_temps_;
   ZoneVector<uint32_t> i64_temps_;
   ZoneVector<uint32_t> f32_temps_;
   ZoneVector<uint32_t> f64_temps_;
   ZoneVector<DirectCallIndex> direct_calls_;
-
-  // Delta-encoded mapping from wasm bytes to asm.js source positions.
-  ZoneBuffer asm_offsets_;
-  uint32_t last_asm_byte_offset_ = 0;
-  uint32_t last_asm_source_position_ = 0;
-  uint32_t asm_func_start_source_position_ = 0;
 };
 
 class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
@@ -261,12 +247,6 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
   // different than the version in wasm-module.h.
   class WasmElemSegment {
    public:
-    // asm.js gives function indices starting with the first non-imported
-    // function.
-    enum FunctionIndexingMode {
-      kRelativeToImports,
-      kRelativeToDeclaredFunctions
-    };
     enum Status {
       kStatusActive,      // copied automatically during instantiation.
       kStatusPassive,     // copied explicitly after instantiation.
@@ -307,7 +287,6 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
     ValueType type;
     uint32_t table_index;
     WasmInitExpr offset;
-    FunctionIndexingMode indexing_mode = kRelativeToImports;
     ZoneVector<Entry> entries;
     Status status;
 
@@ -324,15 +303,13 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
   };
 
   // Building methods.
-  uint32_t AddImport(base::Vector<const char> name, const FunctionSig* sig,
-                     base::Vector<const char> module = {},
-                     bool force_new_sig = false);
+  uint32_t AddImport(std::string_view name, const FunctionSig* sig,
+                     std::string_view module = {}, bool force_new_sig = false);
   WasmFunctionBuilder* AddFunction(const FunctionSig* sig = nullptr);
   WasmFunctionBuilder* AddFunction(ModuleTypeIndex sig_index);
   uint32_t AddGlobal(ValueType type, bool mutability, WasmInitExpr init);
-  uint32_t AddGlobalImport(base::Vector<const char> name, ValueType type,
-                           bool mutability,
-                           base::Vector<const char> module = {});
+  uint32_t AddGlobalImport(std::string_view name, ValueType type,
+                           bool mutability, std::string_view module = {});
   void AddDataSegment(const uint8_t* data, uint32_t size, uint32_t dest);
   void AddPassiveDataSegment(const uint8_t* data, uint32_t size);
   // Add an element segment to this {WasmModuleBuilder}. {segment}'s enties
@@ -341,8 +318,7 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
   // Helper method to create an active segment with one function. Assumes that
   // table segment at {table_index} is typed as funcref.
   void SetIndirectFunction(uint32_t table_index, uint32_t index_in_table,
-                           uint32_t direct_function_index,
-                           WasmElemSegment::FunctionIndexingMode indexing_mode);
+                           uint32_t direct_function_index);
   // Increase the starting size of the table at {table_index} by {count}. Also
   // increases the maximum table size if needed. Returns the former starting
   // size, or the maximum uint32_t value if the maximum table size has been
@@ -370,14 +346,14 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
   uint32_t AddMemory64(uint32_t min_pages);
   uint32_t AddMemory64(uint32_t min_pages, uint32_t max_pages);
   void MarkStartFunction(WasmFunctionBuilder* builder);
-  void AddExport(base::Vector<const char> name, ImportExportKindCode kind,
+  void AddExport(std::string_view name, ImportExportKindCode kind,
                  uint32_t index);
-  void AddExport(base::Vector<const char> name, WasmFunctionBuilder* builder) {
+  void AddExport(std::string_view name, WasmFunctionBuilder* builder) {
     AddExport(name, kExternalFunction, builder->func_index());
   }
   uint32_t AddExportedGlobal(ValueType type, bool mutability, WasmInitExpr init,
-                             base::Vector<const char> name);
-  void ExportImportedFunction(base::Vector<const char> name, int import_index);
+                             std::string_view name);
+  void ExportImportedFunction(std::string_view name, int import_index);
 
   // Start a recursive type group; must be followed by `EndRecursiveTypeGroup()`
   // after adding all types of the recursion group.
@@ -402,7 +378,6 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
 
   // Writing methods.
   void WriteTo(ZoneBuffer* buffer) const;
-  void WriteAsmJsOffsetTable(ZoneBuffer* buffer) const;
 
   Zone* zone() { return zone_; }
 
@@ -501,21 +476,21 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
 
  private:
   struct WasmFunctionImport {
-    base::Vector<const char> module;
-    base::Vector<const char> name;
+    std::string_view module;
+    std::string_view name;
     ModuleTypeIndex sig_index;
   };
 
   struct WasmGlobalImport {
-    base::Vector<const char> module;
-    base::Vector<const char> name;
+    std::string_view module;
+    std::string_view name;
     // TODO(manoskouk): Extend to full value type.
     ValueTypeCode type_code;
     bool mutability;
   };
 
   struct WasmExport {
-    base::Vector<const char> name;
+    std::string_view name;
     ImportExportKindCode kind;
     int index;  // Can be negative for re-exported imports.
   };

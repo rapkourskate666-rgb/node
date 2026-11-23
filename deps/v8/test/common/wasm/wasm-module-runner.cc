@@ -4,6 +4,7 @@
 
 #include "test/common/wasm/wasm-module-runner.h"
 
+#include "src/base/unique-array.h"
 #include "src/execution/isolate.h"
 #include "src/handles/handles.h"
 #include "src/objects/heap-number-inl.h"
@@ -13,7 +14,7 @@
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-js.h"
 #include "src/wasm/wasm-module.h"
-#include "src/wasm/wasm-objects.h"
+#include "src/wasm/wasm-objects-inl.h"
 #include "src/wasm/wasm-opcodes.h"
 #include "src/wasm/wasm-result.h"
 
@@ -25,7 +26,7 @@ MaybeDirectHandle<WasmModuleObject> CompileForTesting(
   auto enabled_features = WasmEnabledFeatures::FromIsolate(isolate);
   MaybeDirectHandle<WasmModuleObject> module = GetWasmEngine()->SyncCompile(
       isolate, enabled_features, CompileTimeImports{}, thrower,
-      base::OwnedCopyOf(bytes));
+      base::UniqueCopyOf(bytes));
   DCHECK_EQ(thrower->error(), module.is_null());
   return module;
 }
@@ -37,7 +38,7 @@ MaybeDirectHandle<WasmInstanceObject> CompileAndInstantiateForTesting(
       CompileForTesting(isolate, thrower, bytes);
   if (module.is_null()) return {};
   return GetWasmEngine()->SyncInstantiate(isolate, thrower,
-                                          module.ToHandleChecked(), {}, {});
+                                          module.ToHandleChecked(), {});
 }
 
 DirectHandleVector<Object> MakeDefaultArguments(Isolate* isolate,

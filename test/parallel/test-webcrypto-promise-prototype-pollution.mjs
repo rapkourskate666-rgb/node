@@ -878,6 +878,19 @@ for (const name of [
   }));
 }
 
+for (const name of [
+  'MLKEM768-P256',
+  'MLKEM768-X25519',
+  'MLKEM1024-P384',
+]) {
+  addFixture(name, kemFixture({
+    name,
+    generateAlgorithm: algorithm(name),
+    importAlgorithm: algorithm(name),
+    spki: false,
+  }));
+}
+
 for (const name of ['HKDF', 'PBKDF2']) {
   addFixture(name, kdfFixture({
     name,
@@ -996,7 +1009,8 @@ const keyLengthTargets = {
 function getSupportedAlgorithmOperations() {
   const algorithms = new Map();
   for (const operation of Object.keys(kSupportedAlgorithms)) {
-    if (operation === 'get key length')
+    if (operation === 'get key length' ||
+        operation === 'get shared key length')
       continue;
     for (const name of Object.keys(kSupportedAlgorithms[operation])) {
       if (!algorithms.has(name))
@@ -1029,6 +1043,7 @@ const operationOrder = [
 const coveredOperations = new Set([
   ...operationOrder,
   'get key length',
+  'get shared key length',
 ]);
 
 for (const operation of Object.keys(kSupportedAlgorithms)) {
@@ -1036,6 +1051,15 @@ for (const operation of Object.keys(kSupportedAlgorithms)) {
     coveredOperations.has(operation),
     `missing prototype pollution operation coverage for ${operation}`);
 }
+
+const sharedKeyLengthAlgorithms =
+  Object.keys(kSupportedAlgorithms['get shared key length'] ?? {});
+assert.deepStrictEqual(
+  sharedKeyLengthAlgorithms,
+  Object.keys(kSupportedAlgorithms.encapsulate ?? {}));
+assert.deepStrictEqual(
+  sharedKeyLengthAlgorithms,
+  Object.keys(kSupportedAlgorithms.decapsulate ?? {}));
 
 const supportedAlgorithms = getSupportedAlgorithmOperations();
 for (const [name, operations] of supportedAlgorithms) {
